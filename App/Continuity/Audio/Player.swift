@@ -1,47 +1,55 @@
 import AVFoundation
 import Observation
+import ContinuityCore
 
-/// M0 single-deck playback engine. Owns one `AVAudioEngine` + `AVAudioPlayerNode`, manages a
-/// queue, exposes observable transport state, and hard-cuts to the next track when one ends.
+/// Dual-deck playback engine with configurable equal-power crossfades between tracks (M2).
 ///
-/// This is intentionally the *single-deck* version. M2 replaces `startCurrent`/auto-advance
-/// with a dual-deck `TransitionController` that overlaps and crossfades the two decks.
+/// Owns one `AVAudioEngine` with two `Deck`s. As the current track nears its end, the next track
+/// is started on the idle deck and the two are crossfaded using gains from the unit-tested
+/// `TransitionPlan` / `CrossfadeCurve`. That overlap is what makes track changes "smooth".
+///
+/// The blend is driven by the **incoming** deck's clock so it can never get stuck if the outgoing
+/// file drains early. M3 will refine *when* and *how* (beat-aligned starts, tempo matching).
 @MainActor
 @Observable
 final class Player {
     // MARK: Observable state
     private(set) var queue: [Track] = []
-    private(set) var currentIndex: Int = 0
-    private(set) var isPlaying: Bool = false
+    private(set) var currentIndex = 0
+    private(set) var isPlaying = false
+    private(set) var isTransitioning = false
     /// Seconds into the current track (drives the scrubber + clock).
     var position: TimeInterval = 0
+    /// User-configurable crossfade settings (edited by `TransitionSettingsView`).
+    var transitionSettings = TransitionSettings.default
 
-    var currentTrack: Track? {
-        queue.indices.contains(currentIndex) ? queue[currentIndex] : nil
+    var currentTrack: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
+    /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
+    /// model only for the brief window before the first load.
+    var duration: TimeInterval {
+        currentDeck.loadedDuration > 0 ? currentDeck.loadedDuration : (currentTrack?.durationSeconds ?? 0)
     }
-    var duration: TimeInterval { currentTrack?.durationSeconds ?? 0 }
 
-    // MARK: Engine
+    // MARK: Engine / decks
     private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    /// Standard stereo float format used by the M0 synth loop.
-    private let format: AVAudioFormat
-    /// The format the player node is currently connected to the mixer with. Real audio
-    /// files often have a different sample rate / channel layout than `format`, so each
-    /// `startCurrent()` reconnects the node when the required format changes.
-    private var connectedFormat: AVAudioFormat
+    private let synthFormat: AVAudioFormat
+    private let deckA: Deck
+    private let deckB: Deck
+    /// The deck playing the current track. The other (`idleDeck`) hosts the incoming track during a blend.
+    private var currentDeck: Deck
+    private var idleDeck: Deck { currentDeck === deckA ? deckB : deckA }
+
     private var displayTimer: Timer?
-    /// Offset that lets `seek` move the clock without true audio seeking (M0 synth is a loop).
+    /// Clock baseline, so `position` can be offset for synth seeks.
     private var baselineSeconds: TimeInterval = 0
-    /// The audio file currently scheduled when playing a real downloaded track (nil for synth).
-    /// Lets `seek` perform a true frame-accurate seek instead of only moving the clock.
-    private var currentAudioFile: AVAudioFile?
+    /// Queue index the in-flight transition is moving to.
+    private var transitionTargetIndex = 0
 
     init() {
-        format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
-        connectedFormat = format
-        engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+        synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
+        deckB = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
+        currentDeck = deckA
         configureSession()
     }
 
@@ -54,174 +62,103 @@ final class Player {
     // MARK: Transport
 
     func play(tracks: [Track], startAt index: Int) {
+        cancelTransition()
         queue = tracks
         currentIndex = max(0, min(index, tracks.count - 1))
-        startCurrent()
+        startCurrentFresh()
     }
 
     func togglePlayPause() {
         guard currentTrack != nil else { return }
         if isPlaying {
-            playerNode.pause()
+            currentDeck.pause()
+            if isTransitioning { idleDeck.pause() }
             isPlaying = false
             stopTimer()
         } else {
             guard ensureRunning() else { isPlaying = false; return }
-            playerNode.play()
-            isPlaying = true
-            startTimer()
+            // If the queue had ended (the deck fully drained), replay from the start instead of
+            // calling play() on an empty node, which would just be silent.
+            if !isTransitioning, duration > 0, position >= duration - 0.05 {
+                startCurrentFresh()
+            } else {
+                currentDeck.play()
+                if isTransitioning { idleDeck.play() }
+                isPlaying = true
+                startTimer()
+            }
         }
     }
 
     func next() {
         guard !queue.isEmpty else { return }
+        cancelTransition()
         currentIndex = (currentIndex + 1) % queue.count
-        startCurrent()
+        startCurrentFresh()
     }
 
     func previous() {
         guard !queue.isEmpty else { return }
+        cancelTransition()
         // Restart the current track if we're more than 3s in; otherwise go back one.
         if position > 3 {
-            startCurrent()
+            startCurrentFresh()
             return
         }
         currentIndex = (currentIndex - 1 + queue.count) % queue.count
-        startCurrent()
+        startCurrentFresh()
     }
 
     func seek(to seconds: TimeInterval) {
         let clamped = max(0, min(seconds, duration))
-        if let audioFile = currentAudioFile {
-            // Real file: perform a true seek by rescheduling from the target frame.
-            seekRealFile(audioFile, to: clamped)
-        } else {
-            // Synth loop: the audible content is identical at any offset, so just move the clock
-            // (baseline offsets the ever-increasing node time).
-            baselineSeconds = clamped - nodeElapsed()
+        cancelTransition() // re-evaluate the transition window from the new position
+        if currentDeck.seekRealFile(to: clamped) {
+            baselineSeconds = clamped
             position = clamped
-        }
-    }
-
-    /// True audio seek for a downloaded file: stop, reschedule the remaining frames from the
-    /// target position, and remap the clock so `position` tracks the new offset.
-    private func seekRealFile(_ audioFile: AVAudioFile, to seconds: TimeInterval) {
-        let sampleRate = audioFile.processingFormat.sampleRate
-        let startFrame = AVAudioFramePosition(seconds * sampleRate)
-        guard startFrame < audioFile.length else {
-            // Seeking at/after the end → just advance to the next track.
-            next()
-            return
-        }
-        let remaining = AVAudioFrameCount(audioFile.length - startFrame)
-        let wasPlaying = isPlaying
-
-        playerNode.stop() // clears the prior schedule and resets the node's sample clock to 0
-        playerNode.scheduleSegment(audioFile, startingFrame: startFrame, frameCount: remaining, at: nil)
-        // After stop(), nodeElapsed() restarts from 0, so the clock maps node-time 0 → `seconds`.
-        baselineSeconds = seconds
-        position = seconds
-
-        if wasPlaying {
-            guard ensureRunning() else { isPlaying = false; return }
-            playerNode.play()
+            if isPlaying {
+                guard ensureRunning() else { isPlaying = false; return }
+                currentDeck.play()
+            }
+        } else {
+            // Synth deck: looped audio is identical at any offset, so just move the clock.
+            baselineSeconds = clamped - currentDeck.elapsed
+            position = clamped
         }
     }
 
     // MARK: Internals
 
-    /// Ensures the engine is running. Returns `false` if it couldn't be started (e.g. the audio
-    /// session couldn't be activated), so callers can avoid entering a silent fake "playing" state.
-    @discardableResult
+    /// Index of the next track for *auto-advance* (no wrap-around — a playlist stops at its end).
+    private var nextIndex: Int? {
+        let n = currentIndex + 1
+        return queue.indices.contains(n) ? n : nil
+    }
+
     private func ensureRunning() -> Bool {
         if engine.isRunning { return true }
         try? AVAudioSession.sharedInstance().setActive(true)
-        do {
-            try engine.start()
-            return true
-        } catch {
-            return false
-        }
+        do { try engine.start(); return true } catch { return false }
     }
 
-    private func startCurrent() {
+    /// Starts the current track from scratch on `currentDeck` (play / next / previous / restart).
+    private func startCurrentFresh() {
         guard let track = currentTrack else { return }
-        playerNode.stop()
-        guard ensureRunning() else {
-            // Engine couldn't start — show a stopped state rather than a silent "playing" one.
-            isPlaying = false
-            stopTimer()
-            return
-        }
-
-        // Prefer a real downloaded file once the track is prepared; otherwise fall back to
-        // the M0 synth loop. The file path drives both the audio and the auto-advance clock.
-        if !startRealFile(for: track) {
-            startSynth(for: track)
-        }
-
+        idleDeck.stop()
+        currentDeck.stop()
+        currentDeck.volume = 1
+        guard ensureRunning() else { isPlaying = false; stopTimer(); return }
+        currentDeck.load(track)
         baselineSeconds = 0
         position = 0
-        playerNode.play()
+        currentDeck.play()
         isPlaying = true
         startTimer()
     }
 
-    /// Attempts to schedule the track's downloaded audio file (non-looped). Returns `false`
-    /// if there is no ready file or anything throws, so the caller can fall back to the synth.
-    private func startRealFile(for track: Track) -> Bool {
-        guard let relativePath = track.localRelativePath else { return false }
-        let url = AudioCache.url(forRelativePath: relativePath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-
-        do {
-            let audioFile = try AVAudioFile(forReading: url)
-            currentAudioFile = audioFile
-            // Real files may not match the synth format; reconnect the node to the file's
-            // processing format before scheduling so the engine doesn't have to convert.
-            reconnect(to: audioFile.processingFormat)
-            // Not looped: the file plays once and `tick()` auto-advances at its end.
-            playerNode.scheduleFile(audioFile, at: nil)
-            // Backfill an unknown duration from the file so the scrubber/auto-advance work.
-            if track.durationSeconds <= 0 {
-                track.durationSeconds = Double(audioFile.length) / audioFile.processingFormat.sampleRate
-            }
-            return true
-        } catch {
-            // Decode/format error — fall back to the synth path.
-            currentAudioFile = nil
-            return false
-        }
-    }
-
-    /// Schedules the looped M0 synth phrase for `track`, reconnecting to the synth format if
-    /// the node was previously connected to a real file's format.
-    private func startSynth(for track: Track) {
-        currentAudioFile = nil
-        reconnect(to: format)
-        let buffer = ToneSynth.makeLoop(seed: track.gradientSeed, format: format)
-        playerNode.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
-    }
-
-    /// Reconnects the player node to the mixer with `newFormat` when it differs from the
-    /// currently-connected one. No-op when the format is unchanged (cheap fast path).
-    private func reconnect(to newFormat: AVAudioFormat) {
-        guard newFormat != connectedFormat else { return }
-        engine.disconnectNodeOutput(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: newFormat)
-        connectedFormat = newFormat
-    }
-
-    /// Elapsed seconds reported by the player node since it last started.
-    private func nodeElapsed() -> TimeInterval {
-        guard let nodeTime = playerNode.lastRenderTime,
-              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return 0 }
-        return Double(playerTime.sampleTime) / playerTime.sampleRate
-    }
-
     private func startTimer() {
         stopTimer()
-        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+        // 20 Hz: smooth enough for the volume ramp and the scrubber.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -235,10 +172,77 @@ final class Player {
 
     private func tick() {
         guard isPlaying else { return }
-        position = baselineSeconds + nodeElapsed()
-        if position >= duration - 0.05 {
-            // M0: hard cut to the next track. M2 replaces this with a beat-aligned crossfade.
-            next()
+        let elapsed = baselineSeconds + currentDeck.elapsed
+        position = elapsed
+        let dur = duration
+        let plan = TransitionPlan(curve: transitionSettings.curve, duration: transitionSettings.durationSeconds)
+
+        if isTransitioning {
+            // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
+            // outgoing file drains, so the transition can never get stuck half-faded.
+            let incomingElapsed = idleDeck.elapsed
+            let gains = plan.gains(position: incomingElapsed, startPosition: 0)
+            currentDeck.volume = Float(gains.outgoing)
+            idleDeck.volume = Float(gains.incoming)
+            if plan.isComplete(position: incomingElapsed, startPosition: 0) {
+                finishTransition()
+            }
+        } else if let next = nextIndex {
+            if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
+                beginTransition(toIndex: next)
+            } else if dur > 0 && elapsed >= dur - 0.05 {
+                // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
+                hardAdvance(toIndex: next)
+            }
+        } else if dur > 0 && elapsed >= dur - 0.05 {
+            // Last track in the queue: stop at the end (resume will restart it).
+            stopPlayback()
         }
+    }
+
+    /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
+    private func beginTransition(toIndex index: Int) {
+        guard queue.indices.contains(index) else { return }
+        let incoming = idleDeck
+        incoming.load(queue[index])
+        incoming.volume = 0
+        incoming.play()
+        transitionTargetIndex = index
+        isTransitioning = true
+    }
+
+    /// Completes the crossfade: stop the outgoing deck, promote the incoming deck to current.
+    private func finishTransition() {
+        let outgoing = currentDeck
+        let incoming = idleDeck
+        outgoing.stop()
+        outgoing.volume = 1
+        incoming.volume = 1
+        currentDeck = incoming
+        currentIndex = transitionTargetIndex
+        baselineSeconds = 0
+        position = currentDeck.elapsed
+        isTransitioning = false
+    }
+
+    /// Cancels an in-flight transition, discarding the incoming deck. `currentDeck`/`currentIndex`
+    /// remain the outgoing track; callers then restart on a chosen index.
+    private func cancelTransition() {
+        guard isTransitioning else { return }
+        idleDeck.stop()
+        idleDeck.volume = 1
+        currentDeck.volume = 1
+        isTransitioning = false
+    }
+
+    private func hardAdvance(toIndex index: Int) {
+        currentIndex = index
+        startCurrentFresh()
+    }
+
+    private func stopPlayback() {
+        currentDeck.pause()
+        isPlaying = false
+        stopTimer()
     }
 }

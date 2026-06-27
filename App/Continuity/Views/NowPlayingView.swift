@@ -9,8 +9,7 @@ struct NowPlayingView: View {
 
     @State private var isEditing = false
     @State private var scrubValue: Double = 0
-
-    private let settings = TransitionSettings.default
+    @State private var showingTransitionSettings = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -38,6 +37,10 @@ struct NowPlayingView: View {
         }
         .padding(.top, 12)
         .background(backdrop)
+        // Tapping the transition chip opens the live transition settings.
+        .sheet(isPresented: $showingTransitionSettings) {
+            TransitionSettingsView()
+        }
     }
 
     private var grabberSpacer: some View {
@@ -45,11 +48,20 @@ struct NowPlayingView: View {
     }
 
     private var transitionChip: some View {
-        Label("\(Int(settings.durationSeconds))s · \(settings.curve.rawValue)", systemImage: "wand.and.stars")
+        // Reads live from the Player so the chip reflects edits made in the settings sheet.
+        Button {
+            showingTransitionSettings = true
+        } label: {
+            Label(
+                "\(Int(player.transitionSettings.durationSeconds))s · \(player.transitionSettings.curve.rawValue)",
+                systemImage: "wand.and.stars"
+            )
             .font(.footnote.weight(.medium))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .continuityGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
     }
 
     private var scrubber: some View {
