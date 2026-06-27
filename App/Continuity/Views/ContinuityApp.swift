@@ -5,6 +5,8 @@ import SwiftData
 struct ContinuityApp: App {
     let container: ModelContainer
     @State private var player = Player()
+    /// Drives YouTube ingestion (resolve → download → ready) for newly added tracks.
+    @State private var prepQueue = PreparationQueue()
 
     init() {
         do {
@@ -24,6 +26,7 @@ struct ContinuityApp: App {
         WindowGroup {
             RootView()
                 .environment(player)
+                .environment(prepQueue)
         }
         .modelContainer(container)
     }

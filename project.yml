@@ -9,6 +9,9 @@ options:
 packages:
   ContinuityCore:
     path: Packages/ContinuityCore
+  YouTubeKit:
+    url: https://github.com/alexeichhorn/YouTubeKit
+    branch: main   # TODO: pin to a tagged version once verified building
 
 settings:
   base:
@@ -26,6 +29,7 @@ targets:
       - path: App/Continuity
     dependencies:
       - package: ContinuityCore
+      - package: YouTubeKit
     info:
       path: App/Continuity/Info.plist
       properties:
