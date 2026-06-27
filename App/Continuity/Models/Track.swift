@@ -31,6 +31,16 @@ final class Track {
     /// Path, relative to the audio cache directory, of the downloaded/decoded file once `.ready`.
     var localRelativePath: String?
 
+    // MARK: Analysis (M3) — populated by TrackAnalyzer after the file is downloaded
+    /// Detected tempo in beats per minute.
+    var bpm: Double?
+    /// Human-readable detected key (e.g. "C Major").
+    var keyName: String?
+    /// Camelot wheel code (e.g. "8B") for harmonic mixing.
+    var camelotCode: String?
+    /// Beat onset times (seconds) — the beat grid used for beat-aligned transitions.
+    var beatTimes: [Double] = []
+
     /// Inverse side of the Playlist ↔ Track relationship.
     var playlist: Playlist?
 
