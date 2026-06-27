@@ -27,6 +27,12 @@ struct NowPlayingView: View {
                 VStack(spacing: 4) {
                     Text(track.title).font(.title2.bold()).lineLimit(1)
                     Text(track.artist).font(.title3).foregroundStyle(.secondary).lineLimit(1)
+                    if let meta = analysisLabel(for: track) {
+                        Text(meta)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                    }
                 }
             }
 
@@ -45,6 +51,14 @@ struct NowPlayingView: View {
 
     private var grabberSpacer: some View {
         Color.clear.frame(height: 8)
+    }
+
+    /// "124 BPM · 8A" once tempo/key analysis is available for the track.
+    private func analysisLabel(for track: Track) -> String? {
+        var parts: [String] = []
+        if let bpm = track.bpm, bpm > 0 { parts.append("\(Int(bpm.rounded())) BPM") }
+        if let camelot = track.camelotCode { parts.append(camelot) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var transitionChip: some View {

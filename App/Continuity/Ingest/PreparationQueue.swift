@@ -54,10 +54,26 @@ final class PreparationQueue {
         do {
             let resolved = try await resolver.resolveAudio(videoID: id)
             let fileURL = try await downloader.downloadAudio(resolved)
+            // The track could have been deleted while we were off the main actor; don't write to
+            // (or resurrect) a dead model.
+            guard track.modelContext != nil else { return }
             track.localRelativePath = AudioCache.relativePath(for: fileURL)
+
+            // Analyse tempo + key off the main actor (full-track FFTs). Non-fatal: if analysis
+            // fails the track still plays, just without BPM/key metadata.
+            if let analysis = try? await Task.detached(priority: .utility, operation: {
+                try TrackAnalyzer.analyze(fileURL: fileURL)
+            }).value, track.modelContext != nil {
+                track.bpm = analysis.bpm > 0 ? analysis.bpm : nil
+                track.beatTimes = analysis.beatTimes
+                track.keyName = analysis.key?.displayName
+                track.camelotCode = analysis.camelot?.code
+            }
+
+            guard track.modelContext != nil else { return }
             track.prepState = .ready
         } catch {
-            track.prepState = .failed
+            if track.modelContext != nil { track.prepState = .failed }
         }
         try? context.save()
     }
