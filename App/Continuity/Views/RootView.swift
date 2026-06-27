@@ -5,11 +5,25 @@ import SwiftUI
 struct RootView: View {
     @Environment(Player.self) private var player
     @State private var showNowPlaying = false
+    @State private var showingAdd = false
 
     var body: some View {
         NavigationStack {
             LibraryView()
                 .navigationTitle("Continuity")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingAdd = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Add from YouTube")
+                    }
+                }
+        }
+        .sheet(isPresented: $showingAdd) {
+            AddFromYouTubeView()
         }
         .safeAreaInset(edge: .bottom) {
             if player.currentTrack != nil {

@@ -23,6 +23,14 @@ final class Track {
     var sortIndex: Int
     private var prepStateRaw: String
 
+    // MARK: Source (M1) — nil for the M0 synth samples
+    /// The YouTube video ID this track was ingested from.
+    var youtubeVideoID: String?
+    /// The original URL the user supplied.
+    var sourceURLString: String?
+    /// Path, relative to the audio cache directory, of the downloaded/decoded file once `.ready`.
+    var localRelativePath: String?
+
     /// Inverse side of the Playlist ↔ Track relationship.
     var playlist: Playlist?
 
@@ -39,7 +47,10 @@ final class Track {
         artworkSymbol: String = "music.note",
         gradientSeed: Int,
         sortIndex: Int,
-        prepState: PrepState = .ready
+        prepState: PrepState = .ready,
+        youtubeVideoID: String? = nil,
+        sourceURLString: String? = nil,
+        localRelativePath: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -49,5 +60,8 @@ final class Track {
         self.gradientSeed = gradientSeed
         self.sortIndex = sortIndex
         self.prepStateRaw = prepState.rawValue
+        self.youtubeVideoID = youtubeVideoID
+        self.sourceURLString = sourceURLString
+        self.localRelativePath = localRelativePath
     }
 }
