@@ -20,6 +20,25 @@ enum SampleData {
     static func makePlaylists() -> [Playlist] {
         [
             playlist(
+                title: "Dangerous Summer",
+                subtitle: "Yeat · 11 tracks",
+                symbol: "flame.fill",
+                seed: 7,
+                titles: [
+                    ("PUT IT ONG", "Yeat"),
+                    ("LOCO", "Yeat"),
+                    ("LOOSE LEAF", "Yeat"),
+                    ("OH I DID (ft. NGeeYL)", "Yeat"),
+                    ("COMË N GO", "Yeat"),
+                    ("ADL IS COMING", "Yeat"),
+                    ("IM YEAT", "Yeat"),
+                    ("M.F.U. (ft. SahBabii)", "Yeat"),
+                    ("2TONE (ft. Don Toliver)", "Yeat"),
+                    ("FLY NITË (ft. FKA Twigs)", "Yeat"),
+                    ("GROWING PAINS", "Yeat"),
+                ]
+            ),
+            playlist(
                 title: "Late Night Drive",
                 subtitle: "Synthwave · 6 tracks",
                 symbol: "moon.stars.fill",
