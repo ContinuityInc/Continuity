@@ -33,11 +33,17 @@ public enum BeatTracker {
     /// between consecutive frames to produce one onset-envelope sample per hop.
     private static let frameSize = 1024
     private static let hopSize = 512
-    /// Tempo search window. We resolve octave errors by preferring a tempo inside `preferredBPM`.
-    private static let minBPM = 70.0
-    private static let maxBPM = 180.0
-    private static let preferredLowBPM = 80.0
-    private static let preferredHighBPM = 160.0
+    /// Floor for log-magnitude flux (scale-invariant onset detection).
+    private static let fluxEpsilon = 1e-6
+    /// Tempo search window (BPM). Octave/subdivision errors are resolved by a comb over the metric
+    /// hierarchy plus a gentle perceptual prior — not a hard preferred band.
+    private static let minBPM = 60.0
+    private static let maxBPM = 200.0
+    /// Log-normal perceptual tempo prior, used to resolve octave / metric ambiguity (beat vs.
+    /// eighth-note tatum) by favoring tempi near the center. Narrow enough to break octave ties,
+    /// wide enough not to override genuinely fast or slow tracks.
+    private static let preferredCenterBPM = 124.0
+    private static let preferredWidthOctaves = 0.75
 
     /// Analyze `samples` (mono PCM float, downmixed) recorded at `sampleRate` Hz.
     ///
@@ -98,11 +104,13 @@ public enum BeatTracker {
             if isFirst {
                 isFirst = false
             } else {
-                // Sum of positive differences across bins.
+                // Sum of positive log-magnitude differences across bins. The log makes flux
+                // scale-invariant and emphasizes rhythmic onsets (a bin going 1→100 counts the
+                // same as 10→1000) rather than being dominated by a few loud broadband transients.
                 var sum = 0.0
                 for i in 0..<bins {
-                    let d = current[i] - previousMag[i]
-                    if d > 0 { sum += Double(d) }
+                    let d = log(Double(current[i]) + fluxEpsilon) - log(Double(previousMag[i]) + fluxEpsilon)
+                    if d > 0 { sum += d }
                 }
                 flux.append(sum)
             }
@@ -157,67 +165,56 @@ public enum BeatTracker {
         let mean = envelope.reduce(0, +) / Double(n)
         let centered = envelope.map { $0 - mean }
 
-        // Lag bounds (in envelope samples) for the BPM search window.
-        // lagSeconds = lag / envSampleRate; bpm = 60 / lagSeconds → lag = 60 * envSampleRate / bpm.
-        let minLag = max(1, Int((60.0 * envSampleRate / maxBPM).rounded(.down)))
+        // Candidate beat-period lags (envelope samples) for the BPM search window.
+        // lag = 60 * envSampleRate / bpm. The comb reaches up to `combHarmonics`× the slowest
+        // period, so the ACF is computed out to that longer lag.
+        let minLag = max(2, Int((60.0 * envSampleRate / maxBPM).rounded(.down)))
         let maxLag = min(n - 1, Int((60.0 * envSampleRate / minBPM).rounded(.up)))
         guard maxLag > minLag else { return nil }
 
-        // Autocorrelation at lag 0 (energy) for normalization.
         var energy = 0.0
         for v in centered { energy += v * v }
         guard energy > 0 else { return nil }
 
-        // Compute autocorrelation across the candidate lags.
+        // Energy-normalized autocorrelation across the candidate lags.
         var acf = [Double](repeating: 0, count: maxLag + 1)
-        for lag in minLag...maxLag {
+        for lag in 1...maxLag {
             var sum = 0.0
             var i = lag
             while i < n {
                 sum += centered[i] * centered[i - lag]
                 i += 1
             }
-            acf[lag] = sum
+            acf[lag] = sum / energy
         }
 
-        // Strongest in-range lag.
-        var bestLag = minLag
-        var bestVal = acf[minLag]
-        for lag in minLag...maxLag where acf[lag] > bestVal {
-            bestVal = acf[lag]
-            bestLag = lag
-        }
-        guard bestVal > 0 else { return nil }
-
-        // Octave correction: if the peak's BPM is outside the preferred band, see whether the
-        // half/double-period candidate lands in band with comparable strength, and prefer it.
-        var chosenLag = Double(bestLag)
-        var chosenVal = bestVal
         func bpm(forLag lag: Double) -> Double { 60.0 * envSampleRate / lag }
 
-        if !(bpm(forLag: chosenLag) >= preferredLowBPM && bpm(forLag: chosenLag) <= preferredHighBPM) {
-            // Candidate lags that map to the same beat at a different octave.
-            let candidates: [Double] = [chosenLag * 0.5, chosenLag * 2.0, chosenLag * (1.0 / 3.0), chosenLag * 3.0]
-            for cand in candidates {
-                let lagInt = Int(cand.rounded())
-                guard lagInt >= minLag, lagInt <= maxLag else { continue }
-                let candBPM = bpm(forLag: Double(lagInt))
-                guard candBPM >= preferredLowBPM, candBPM <= preferredHighBPM else { continue }
-                // Accept the in-band octave if it has a real peak (at least a fraction of the best).
-                if acf[lagInt] >= 0.5 * chosenVal {
-                    chosenLag = Double(lagInt)
-                    chosenVal = acf[lagInt]
-                    break
-                }
+        // Pick the lag maximizing ACF × perceptual prior. The prior resolves octave / metric
+        // ambiguity (beat vs. eighth-note tatum): a plain ACF max tends to lock onto whichever
+        // subdivision is loudest, while the prior gently favors a musically-plausible tempo.
+        var bestLag = minLag
+        var bestScore = -Double.infinity
+        for lag in minLag...maxLag {
+            let score = acf[lag] * tempoPrior(bpm: bpm(forLag: Double(lag)))
+            if score > bestScore {
+                bestScore = score
+                bestLag = lag
             }
         }
+        guard bestScore > 0 else { return nil }
 
-        // Refine the lag to sub-sample precision with a parabolic fit on the integer peak.
-        let lagInt = Int(chosenLag.rounded())
-        let refinedLag = parabolicPeak(acf, around: lagInt, lo: minLag, hi: maxLag) ?? chosenLag
-
-        let confidence = min(max(chosenVal / energy, 0), 1)
+        // Sub-sample refinement on the ACF peak around the chosen lag.
+        let refinedLag = parabolicPeak(acf, around: bestLag, lo: 1, hi: maxLag) ?? Double(bestLag)
+        let confidence = min(max(acf[bestLag], 0), 1)
         return Tempo(bpm: bpm(forLag: refinedLag), periodSamples: refinedLag, confidence: confidence)
+    }
+
+    /// Gentle log-normal perceptual prior, favoring tempi near `preferredCenterBPM`.
+    private static func tempoPrior(bpm: Double) -> Double {
+        guard bpm > 0 else { return 0 }
+        let z = log2(bpm / preferredCenterBPM) / preferredWidthOctaves
+        return exp(-0.5 * z * z)
     }
 
     /// Parabolic interpolation around an integer peak index to get a sub-sample lag.
