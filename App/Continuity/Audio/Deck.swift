@@ -12,6 +12,9 @@ import AVFoundation
 @MainActor
 final class Deck {
     let playerNode = AVAudioPlayerNode()
+    /// Tempo shifter for beatmatching — changes tempo without affecting pitch. Sits in this deck's
+    /// isolated submix so retempo-ing the incoming track never disturbs the outgoing deck.
+    private let timePitch = AVAudioUnitTimePitch()
     private let deckMixer = AVAudioMixerNode()
 
     private let engine: AVAudioEngine
@@ -32,8 +35,10 @@ final class Deck {
         self.synthFormat = synthFormat
         self.inputFormat = synthFormat
         engine.attach(playerNode)
+        engine.attach(timePitch)
         engine.attach(deckMixer)
-        engine.connect(playerNode, to: deckMixer, format: synthFormat)
+        engine.connect(playerNode, to: timePitch, format: synthFormat)
+        engine.connect(timePitch, to: deckMixer, format: synthFormat)
         engine.connect(deckMixer, to: mainMixer, format: synthFormat) // fixed; never reconnected
     }
 
@@ -43,11 +48,18 @@ final class Deck {
         set { playerNode.volume = newValue }
     }
 
+    /// Tempo multiplier for beatmatching (1.0 = original tempo; pitch is preserved).
+    var rate: Float {
+        get { timePitch.rate }
+        set { timePitch.rate = newValue }
+    }
+
     /// Loads `track` (real file if ready, else synth loop) and schedules it, but does NOT start
     /// playback. Returns the duration the clock should use.
     @discardableResult
     func load(_ track: Track) -> TimeInterval {
         playerNode.stop()
+        timePitch.rate = 1 // reset any beatmatch stretch from a previous track on this deck
         self.track = track
 
         if let url = readyFileURL(for: track), let file = try? AVAudioFile(forReading: url) {
@@ -112,7 +124,9 @@ final class Deck {
     private func setInputFormat(_ format: AVAudioFormat) {
         guard format != inputFormat else { return }
         engine.disconnectNodeOutput(playerNode)
-        engine.connect(playerNode, to: deckMixer, format: format)
+        engine.disconnectNodeOutput(timePitch)
+        engine.connect(playerNode, to: timePitch, format: format)
+        engine.connect(timePitch, to: deckMixer, format: format)
         inputFormat = format
     }
 }
