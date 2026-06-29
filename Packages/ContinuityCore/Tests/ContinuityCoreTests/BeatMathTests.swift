@@ -25,6 +25,26 @@ final class BeatMathTests: XCTestCase {
         XCTAssertTrue(BeatMath.isStretchAcceptable(ratio))
     }
 
+    func testMatchRateSmallStretchAccepted() {
+        // 120 → 124: ~3.3% stretch, accepted.
+        XCTAssertEqual(BeatMath.matchRate(incomingBPM: 120, outgoingBPM: 124)!, 124.0 / 120.0, accuracy: 1e-9)
+    }
+
+    func testMatchRateUsesDoubleWhenCloser() {
+        // 170 incoming vs 86 outgoing → match at the double (172/170), a tiny stretch.
+        XCTAssertEqual(BeatMath.matchRate(incomingBPM: 170, outgoingBPM: 86)!, 172.0 / 170.0, accuracy: 1e-9)
+    }
+
+    func testMatchRateRejectsTooFar() {
+        // 100 → 150: nearest interpretation (0.75) is a 25% stretch → reject (nil).
+        XCTAssertNil(BeatMath.matchRate(incomingBPM: 100, outgoingBPM: 150))
+    }
+
+    func testMatchRateRejectsUnknownTempo() {
+        XCTAssertNil(BeatMath.matchRate(incomingBPM: 0, outgoingBPM: 120))
+        XCTAssertNil(BeatMath.matchRate(incomingBPM: 120, outgoingBPM: 0))
+    }
+
     func testSecondsPerBeat() {
         XCTAssertEqual(BeatMath.secondsPerBeat(bpm: 120), 0.5, accuracy: 1e-9)
         XCTAssertEqual(BeatMath.secondsPerBeat(bpm: 60), 1.0, accuracy: 1e-9)

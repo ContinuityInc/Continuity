@@ -206,6 +206,19 @@ final class Player {
         let incoming = idleDeck
         incoming.load(queue[index])
         incoming.volume = 0
+        incoming.rate = 1
+
+        // Beatmatch: when both tracks have a detected tempo and the stretch is modest, retempo the
+        // incoming deck to the outgoing track so they beat together through the blend. Otherwise
+        // (synth samples, missing tempo, or too large a stretch) leave rate at 1 and fall back to
+        // the plain equal-power crossfade.
+        if transitionSettings.beatmatchEnabled,
+           let outBPM = currentDeck.track?.bpm,
+           let inBPM = queue[index].bpm,
+           let rate = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
+            incoming.rate = Float(rate)
+        }
+
         incoming.play()
         transitionTargetIndex = index
         isTransitioning = true
