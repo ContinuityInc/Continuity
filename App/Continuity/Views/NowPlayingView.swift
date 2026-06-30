@@ -58,6 +58,7 @@ struct NowPlayingView: View {
         var parts: [String] = []
         if let bpm = track.bpm, bpm > 0 { parts.append("\(Int(bpm.rounded())) BPM") }
         if let camelot = track.camelotCode { parts.append(camelot) }
+        if track.hasStems { parts.append("stems") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 

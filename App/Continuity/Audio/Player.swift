@@ -184,6 +184,11 @@ final class Player {
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
             currentDeck.volume = Float(gains.outgoing)
             idleDeck.volume = Float(gains.incoming)
+            // When both decks have stems, shape the per-stem gains so the outgoing vocals duck out
+            // under the incoming track — the M4 flagship "vocal-aware" blend.
+            if currentDeck.hasStems && idleDeck.hasStems {
+                applyVocalHandling(progress: plan.progress(position: incomingElapsed, startPosition: 0))
+            }
             if plan.isComplete(position: incomingElapsed, startPosition: 0) {
                 finishTransition()
             }
@@ -219,9 +224,35 @@ final class Player {
             incoming.rate = Float(rate)
         }
 
+        // Vocal-aware setup: for instrumental-overlap / hard-swap the incoming vocals start silent
+        // (they enter later); for ducking they ride in with the track.
+        if incoming.hasStems {
+            switch transitionSettings.vocalMode {
+            case .duck: incoming.vocalsGain = 1
+            case .instrumentalOverlap, .hardSwap: incoming.vocalsGain = 0
+            }
+        }
+
         incoming.play()
         transitionTargetIndex = index
         isTransitioning = true
+    }
+
+    /// Shapes the per-stem vocal gains during a blend per the chosen vocal mode. Only called when
+    /// both decks have stems.
+    private func applyVocalHandling(progress: Double) {
+        switch transitionSettings.vocalMode {
+        case .duck:
+            // Outgoing vocals fade out over the first ~70% of the blend; incoming vocals ride in.
+            currentDeck.vocalsGain = Float(max(0, 1 - progress / 0.7))
+        case .instrumentalOverlap:
+            // Outgoing vocals out fast; incoming vocals only enter in the second half.
+            currentDeck.vocalsGain = Float(max(0, 1 - progress / 0.5))
+            idleDeck.vocalsGain = Float(min(1, max(0, (progress - 0.5) / 0.5)))
+        case .hardSwap:
+            currentDeck.vocalsGain = progress < 0.5 ? 1 : 0
+            idleDeck.vocalsGain = progress < 0.5 ? 0 : 1
+        }
     }
 
     /// Completes the crossfade: stop the outgoing deck, promote the incoming deck to current.
@@ -230,7 +261,9 @@ final class Player {
         let incoming = idleDeck
         outgoing.stop()
         outgoing.volume = 1
+        outgoing.vocalsGain = 1
         incoming.volume = 1
+        incoming.vocalsGain = 1
         currentDeck = incoming
         currentIndex = transitionTargetIndex
         baselineSeconds = 0
@@ -244,7 +277,9 @@ final class Player {
         guard isTransitioning else { return }
         idleDeck.stop()
         idleDeck.volume = 1
+        idleDeck.vocalsGain = 1
         currentDeck.volume = 1
+        currentDeck.vocalsGain = 1
         isTransitioning = false
     }
 

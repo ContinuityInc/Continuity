@@ -47,28 +47,26 @@ struct TransitionSettingsView: View {
                     Text("0s = hard cut. Equal Power keeps perceived loudness steady through the blend.")
                 }
 
-                // MARK: Mixing (present but disabled — full vision, wired up in M3/M4)
+                // MARK: Mixing
                 Section {
-                    // Beatmatching — M3
+                    // Beatmatching — M3c: tempo-matches tracks with a detected BPM during a blend.
                     Toggle("Beatmatching", isOn: $player.transitionSettings.beatmatchEnabled)
-                        .disabled(true)
 
-                    // Harmonic mixing — M3
+                    // Harmonic mixing — not yet wired into the transition.
                     Toggle("Harmonic Mixing", isOn: $player.transitionSettings.harmonicMixingEnabled)
                         .disabled(true)
 
-                    // Vocal handling — M4 (stem-aware)
+                    // Vocal handling — M4: how vocals overlap (applies once a track's stems exist).
                     Picker("Vocals", selection: $player.transitionSettings.vocalMode) {
                         ForEach(TransitionSettings.VocalMode.allCases, id: \.self) { mode in
                             Text(mode.label).tag(mode)
                         }
                     }
                     .pickerStyle(.menu)
-                    .disabled(true)
                 } header: {
-                    Text("Mixing (coming soon)")
+                    Text("Mixing")
                 } footer: {
-                    Text("Beatmatching and harmonic mixing arrive in M3. Stem-aware vocals arrive in M4.")
+                    Text("Beatmatching tempo-matches tracks with a detected BPM. Vocal handling shapes how vocals overlap once a track's stems are separated. Harmonic mixing is coming.")
                 }
             }
             .navigationTitle("Transition")
