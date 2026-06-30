@@ -41,6 +41,14 @@ final class Track {
     /// Beat onset times (seconds) — the beat grid used for beat-aligned transitions.
     var beatTimes: [Double] = []
 
+    // MARK: Stems (M4) — populated by stem separation after the track is ready
+    /// Path (relative to the stem cache) of the isolated-vocals file, once separated.
+    var vocalsRelativePath: String?
+    /// Path (relative to the stem cache) of the accompaniment file, once separated.
+    var accompanimentRelativePath: String?
+    /// Whether both stems are available for vocal-aware transitions.
+    var hasStems: Bool { vocalsRelativePath != nil && accompanimentRelativePath != nil }
+
     /// Inverse side of the Playlist ↔ Track relationship.
     var playlist: Playlist?
 

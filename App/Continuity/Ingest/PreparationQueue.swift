@@ -76,5 +76,46 @@ final class PreparationQueue {
             if track.modelContext != nil { track.prepState = .failed }
         }
         try? context.save()
+
+        // Stems are a slow, optional enhancement — start them in the background AFTER the track is
+        // playable. They enable vocal-aware transitions once ready; the track plays meanwhile.
+        if track.modelContext != nil, track.prepState == .ready {
+            separateStems(track, in: context)
+        }
+    }
+
+    /// Separates the track into vocals + accompaniment stems (very slow, off the main actor),
+    /// caching them and pointing the track at them. Best-effort: failure just means no vocal-aware
+    /// transition for this track.
+    private func separateStems(_ track: Track, in context: ModelContext) {
+        guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath else { return }
+
+        // Already separated (e.g. a re-add) — just link the track to the cached stems.
+        if StemCache.hasStems(key: key) {
+            track.vocalsRelativePath = StemCache.relativePath(for: StemCache.vocalsURL(key: key))
+            track.accompanimentRelativePath = StemCache.relativePath(for: StemCache.accompanimentURL(key: key))
+            try? context.save()
+            return
+        }
+
+        let inputURL = AudioCache.url(forRelativePath: relativePath)
+        let vocalsOut = StemCache.vocalsURL(key: key)
+        let accompanimentOut = StemCache.accompanimentURL(key: key)
+
+        Task.detached(priority: .utility) {
+            do {
+                let modelURL = try await StemModelStore.ensureModel()
+                let separator = OnnxStemSeparator(modelURL: modelURL)
+                _ = try separator.separate(inputURL: inputURL, vocalsOut: vocalsOut, accompanimentOut: accompanimentOut)
+                await MainActor.run {
+                    guard track.modelContext != nil else { return }
+                    track.vocalsRelativePath = StemCache.relativePath(for: vocalsOut)
+                    track.accompanimentRelativePath = StemCache.relativePath(for: accompanimentOut)
+                    try? context.save()
+                }
+            } catch {
+                // best-effort; the track still plays without stems
+            }
+        }
     }
 }
