@@ -9,6 +9,12 @@ options:
 packages:
   ContinuityCore:
     path: Packages/ContinuityCore
+  YouTubeKit:
+    url: https://github.com/alexeichhorn/YouTubeKit
+    branch: main   # TODO: pin to a tagged version once verified building
+  onnxruntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager
+    exactVersion: "1.20.0"   # ONNX Runtime (Obj-C bindings + xcframework, incl. CoreML EP) for M4 stem separation
 
 settings:
   base:
@@ -26,6 +32,9 @@ targets:
       - path: App/Continuity
     dependencies:
       - package: ContinuityCore
+      - package: YouTubeKit
+      - package: onnxruntime
+        product: onnxruntime
     info:
       path: App/Continuity/Info.plist
       properties:

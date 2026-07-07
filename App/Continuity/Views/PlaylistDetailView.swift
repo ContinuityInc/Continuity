@@ -69,10 +69,28 @@ private struct TrackRow: View {
                     .foregroundStyle(.tint)
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
+            prepIndicator
             Text(Theme.time(track.durationSeconds))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    /// Subtle trailing badge reflecting the track's ingest state. Ready tracks show nothing.
+    @ViewBuilder
+    private var prepIndicator: some View {
+        switch track.prepState {
+        case .pending, .preparing:
+            // Downloading/resolving — a quiet spinner sized to match the caption row.
+            ProgressView()
+                .controlSize(.mini)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .ready:
+            EmptyView()
+        }
     }
 }
