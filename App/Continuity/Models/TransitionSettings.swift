@@ -24,8 +24,11 @@ struct TransitionSettings: Codable, Equatable, Sendable {
     var durationSeconds: Double = 8
     /// Crossfade shape (from the verified ContinuityCore curves).
     var curve: CrossfadeCurve = .equalPower
-    /// Tempo-sync the incoming track to the outgoing one.
+    /// Tempo-sync + beat-align the incoming track to the outgoing one.
     var beatmatchEnabled: Bool = true
+    /// Fade the incoming track's low end in over the blend so the two basslines don't stack
+    /// into low-end mud (a low-shelf "bass swap").
+    var bassSwapEnabled: Bool = true
     /// Restrict/queue toward harmonically compatible keys.
     var harmonicMixingEnabled: Bool = true
     /// How to handle overlapping vocals.

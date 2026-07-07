@@ -50,6 +50,55 @@ final class BeatMathTests: XCTestCase {
         XCTAssertEqual(BeatMath.secondsPerBeat(bpm: 60), 1.0, accuracy: 1e-9)
     }
 
+    func testIncomingStartOffsetAlignsToOutgoingBeat() {
+        // Outgoing at 10.0s; beats every 0.5s (120 BPM). Incoming beats every 0.5s from 0.
+        // Next outgoing beat >= 10.08 is 10.5 -> lead 0.5s. rate 1 -> target 0.5s. First incoming
+        // beat >= 0.5 is 0.5 -> offset 0. Playing from 0, the incoming beat at 0.5 lands at t=0.5
+        // == the outgoing beat. Verify the grids stay phase-locked from there.
+        let out = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let inc = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let offset = BeatMath.incomingStartOffset(outgoingPosition: 10.0, outgoingBeats: out, incomingBeats: inc)!
+        XCTAssertEqual(offset, 0.0, accuracy: 1e-9)
+
+        // After the offset seek, the incoming beat reached `lead` seconds later coincides with the
+        // outgoing beat — i.e. (inBeat - offset)/rate == lead.
+        let lead = 0.5
+        XCTAssertEqual((0.5 - offset) / 1.0, lead, accuracy: 1e-9)
+    }
+
+    func testIncomingStartOffsetSeeksToPhaseAlign() {
+        // Incoming grid offset by 0.2s (beats at 0.2, 0.7, 1.2, …) against an on-grid outgoing.
+        // Outgoing at 4.0; next beat 4.5 -> lead 0.5, target 0.5. First incoming beat >= 0.5 is 0.7,
+        // so seek 0.2s in so that 0.7 is reached exactly 0.5s after start.
+        let out = stride(from: 0.0, through: 10.0, by: 0.5).map { $0 }
+        let inc = stride(from: 0.2, through: 10.0, by: 0.5).map { $0 }
+        let offset = BeatMath.incomingStartOffset(outgoingPosition: 4.0, outgoingBeats: out, incomingBeats: inc)!
+        XCTAssertEqual(offset, 0.2, accuracy: 1e-9)
+    }
+
+    func testIncomingStartOffsetAccountsForRate() {
+        // With rate 2 the incoming plays twice as fast, so `target` (file-seconds before the beat)
+        // doubles. Outgoing at 0.0; next beat 0.5 -> lead 0.5; target = 0.5*2 = 1.0. First incoming
+        // beat >= 1.0 is 1.0 -> offset 0.
+        let out = stride(from: 0.0, through: 5.0, by: 0.5).map { $0 }
+        let inc = stride(from: 0.0, through: 5.0, by: 0.5).map { $0 }
+        let offset = BeatMath.incomingStartOffset(outgoingPosition: 0.0, outgoingBeats: out, incomingBeats: inc, rate: 2)!
+        XCTAssertEqual(offset, 0.0, accuracy: 1e-9)
+    }
+
+    func testIncomingStartOffsetDeclinesOnLongIntro() {
+        // Incoming's first beat is 10s in; aligning to a near outgoing beat would require skipping
+        // ~9.5s (> maxSkip) -> decline so the caller just starts at 0.
+        let out = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let inc = [10.0, 10.5, 11.0]
+        XCTAssertNil(BeatMath.incomingStartOffset(outgoingPosition: 5.0, outgoingBeats: out, incomingBeats: inc))
+    }
+
+    func testIncomingStartOffsetNilWithoutGrids() {
+        XCTAssertNil(BeatMath.incomingStartOffset(outgoingPosition: 1, outgoingBeats: [], incomingBeats: [0.5]))
+        XCTAssertNil(BeatMath.incomingStartOffset(outgoingPosition: 1, outgoingBeats: [1.5], incomingBeats: []))
+    }
+
     func testAlignmentStartFrame() {
         // Outgoing beat at 180.0s, incoming downbeat 0.5s into its file, 44.1kHz.
         // Incoming deck must start at (180.0 - 0.5) * 44100 = 7,915,950.

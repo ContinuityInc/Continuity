@@ -49,10 +49,13 @@ struct TransitionSettingsView: View {
 
                 // MARK: Mixing
                 Section {
-                    // Beatmatching — M3c: tempo-matches tracks with a detected BPM during a blend.
+                    // Beatmatching — tempo-matches AND beat-aligns tracks with a detected BPM/grid.
                     Toggle("Beatmatching", isOn: $player.transitionSettings.beatmatchEnabled)
 
-                    // Harmonic mixing — not yet wired into the transition.
+                    // Bass swap — fades the incoming low end in so basslines don't stack.
+                    Toggle("Bass Swap", isOn: $player.transitionSettings.bassSwapEnabled)
+
+                    // Harmonic mixing — not yet wired into the transition (needs reliable key detection).
                     Toggle("Harmonic Mixing", isOn: $player.transitionSettings.harmonicMixingEnabled)
                         .disabled(true)
 
@@ -66,7 +69,7 @@ struct TransitionSettingsView: View {
                 } header: {
                     Text("Mixing")
                 } footer: {
-                    Text("Beatmatching tempo-matches tracks with a detected BPM. Vocal handling shapes how vocals overlap once a track's stems are separated. Harmonic mixing is coming.")
+                    Text("Beatmatching tempo-matches and beat-aligns tracks with a detected grid. Bass swap fades the incoming low end in so basslines don't clash. Vocal handling shapes how vocals overlap once stems are separated. Harmonic mixing is coming.")
                 }
             }
             .navigationTitle("Transition")

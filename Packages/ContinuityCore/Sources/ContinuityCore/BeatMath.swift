@@ -46,6 +46,44 @@ public enum BeatMath {
         return isStretchAcceptable(ratio, maxPercent: maxPercent) ? ratio : nil
     }
 
+    /// How many seconds to seek **into** the incoming track so that, when it starts playing now
+    /// (with the outgoing track at `outgoingPosition`), one of its beats lands on an upcoming
+    /// outgoing beat — phase-locking the two beat grids through the blend. This is the core of a
+    /// beat-aligned transition: without it the incoming downbeat lands at a random phase and the
+    /// two grooves fight.
+    ///
+    /// - Parameters:
+    ///   - outgoingPosition: current playhead of the outgoing track (s).
+    ///   - outgoingBeats: outgoing beat grid (s, ascending).
+    ///   - incomingBeats: incoming beat grid (s, ascending).
+    ///   - rate: playback rate applied to the incoming for tempo matching (its beats play back
+    ///     `rate`× faster, so real-time spacing is scaled). 1 when not beatmatched.
+    ///   - minLead: don't align to an outgoing beat sooner than this — we need a moment to actually
+    ///     start the deck.
+    ///   - maxSkip: cap on how much intro we'll skip; beyond this we decline (return nil) rather
+    ///     than jump deep into the track. Guards against sparse/mis-detected grids.
+    /// - Returns: the incoming seek offset (s) in `[0, maxSkip]`, or nil when no reasonable
+    ///   alignment exists (caller should just start the incoming at 0).
+    public static func incomingStartOffset(
+        outgoingPosition: Double,
+        outgoingBeats: [Double],
+        incomingBeats: [Double],
+        rate: Double = 1,
+        minLead: Double = 0.08,
+        maxSkip: Double = 2.0
+    ) -> Double? {
+        guard rate > 0, !incomingBeats.isEmpty else { return nil }
+        // The outgoing beat we'll land the incoming on: the first one comfortably ahead.
+        guard let outBeat = outgoingBeats.first(where: { $0 >= outgoingPosition + minLead }) else { return nil }
+        let lead = outBeat - outgoingPosition          // real seconds until that outgoing beat
+        let target = lead * rate                        // incoming file-seconds that must elapse first
+        // Land the first incoming beat at/after `target` exactly on the outgoing beat.
+        guard let inBeat = incomingBeats.first(where: { $0 >= target }) else { return nil }
+        let offset = inBeat - target
+        guard offset >= 0, offset <= maxSkip else { return nil }
+        return offset
+    }
+
     /// The sample frame at which to start the incoming deck so that its first downbeat
     /// lands exactly on the chosen outgoing beat.
     ///

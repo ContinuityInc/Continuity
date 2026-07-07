@@ -44,6 +44,12 @@ final class Player {
     private var baselineSeconds: TimeInterval = 0
     /// Queue index the in-flight transition is moving to.
     private var transitionTargetIndex = 0
+    /// Seconds the incoming deck was seeked into its track for beat alignment — becomes the
+    /// promoted deck's clock baseline when the transition completes.
+    private var incomingStartOffset: TimeInterval = 0
+    /// Low-shelf cut (dB) applied to the incoming deck's low end at the start of a bass-swap blend,
+    /// ramped back to flat over the first part of the transition.
+    private let bassSwapCutDB: Float = -9
 
     init() {
         synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
@@ -184,17 +190,22 @@ final class Player {
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
             currentDeck.volume = Float(gains.outgoing)
             idleDeck.volume = Float(gains.incoming)
+            let progress = plan.progress(position: incomingElapsed, startPosition: 0)
+            // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
+            if transitionSettings.bassSwapEnabled {
+                applyBassSwap(progress: progress)
+            }
             // When both decks have stems, shape the per-stem gains so the outgoing vocals duck out
             // under the incoming track — the M4 flagship "vocal-aware" blend.
             if currentDeck.hasStems && idleDeck.hasStems {
-                applyVocalHandling(progress: plan.progress(position: incomingElapsed, startPosition: 0))
+                applyVocalHandling(progress: progress)
             }
             if plan.isComplete(position: incomingElapsed, startPosition: 0) {
                 finishTransition()
             }
         } else if let next = nextIndex {
             if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
-                beginTransition(toIndex: next)
+                beginTransition(toIndex: next, outgoingPosition: elapsed)
             } else if dur > 0 && elapsed >= dur - 0.05 {
                 // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
                 hardAdvance(toIndex: next)
@@ -206,22 +217,40 @@ final class Player {
     }
 
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
-    private func beginTransition(toIndex index: Int) {
+    private func beginTransition(toIndex index: Int, outgoingPosition: Double) {
         guard queue.indices.contains(index) else { return }
         let incoming = idleDeck
         incoming.load(queue[index])
         incoming.volume = 0
         incoming.rate = 1
+        incomingStartOffset = 0
 
         // Beatmatch: when both tracks have a detected tempo and the stretch is modest, retempo the
         // incoming deck to the outgoing track so they beat together through the blend. Otherwise
         // (synth samples, missing tempo, or too large a stretch) leave rate at 1 and fall back to
         // the plain equal-power crossfade.
+        var rate = 1.0
         if transitionSettings.beatmatchEnabled,
            let outBPM = currentDeck.track?.bpm,
            let inBPM = queue[index].bpm,
-           let rate = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
-            incoming.rate = Float(rate)
+           let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
+            rate = matched
+            incoming.rate = Float(matched)
+        }
+
+        // Beat-align: seek the incoming so one of its beats lands on an upcoming outgoing beat,
+        // phase-locking the two grids through the blend (the "you won't notice" bit). Needs a beat
+        // grid on both tracks; declines gracefully — and only when the seek lands — leaving the
+        // incoming at its start otherwise.
+        if transitionSettings.beatmatchEnabled,
+           let outBeats = currentDeck.track?.beatTimes, !outBeats.isEmpty,
+           let offset = BeatMath.incomingStartOffset(
+               outgoingPosition: outgoingPosition,
+               outgoingBeats: outBeats,
+               incomingBeats: queue[index].beatTimes,
+               rate: rate
+           ), incoming.seekRealFile(to: offset) {
+            incomingStartOffset = offset
         }
 
         // Vocal-aware setup: for instrumental-overlap / hard-swap the incoming vocals start silent
@@ -232,6 +261,10 @@ final class Player {
             case .instrumentalOverlap, .hardSwap: incoming.vocalsGain = 0
             }
         }
+
+        // Start the incoming with its low end cut so the bass-swap has something to ramp up from
+        // (avoids a low-end blip before the first tick).
+        if transitionSettings.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
 
         incoming.play()
         transitionTargetIndex = index
@@ -255,6 +288,12 @@ final class Player {
         }
     }
 
+    /// Fades the incoming deck's low end in over the first ~60% of the blend, so the two basslines
+    /// don't stack into low-end mud. Only called while `bassSwapEnabled`.
+    private func applyBassSwap(progress: Double) {
+        idleDeck.bassGainDB = bassSwapCutDB * Float(max(0, 1 - progress / 0.6))
+    }
+
     /// Completes the crossfade: stop the outgoing deck, promote the incoming deck to current.
     private func finishTransition() {
         let outgoing = currentDeck
@@ -262,12 +301,16 @@ final class Player {
         outgoing.stop()
         outgoing.volume = 1
         outgoing.vocalsGain = 1
+        outgoing.bassGainDB = 0
         incoming.volume = 1
         incoming.vocalsGain = 1
+        incoming.bassGainDB = 0
         currentDeck = incoming
         currentIndex = transitionTargetIndex
-        baselineSeconds = 0
-        position = currentDeck.elapsed
+        // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
+        // (elapsed-since-start) is that much behind the true track position — offset the baseline.
+        baselineSeconds = incomingStartOffset
+        position = baselineSeconds + currentDeck.elapsed
         isTransitioning = false
     }
 
@@ -278,8 +321,10 @@ final class Player {
         idleDeck.stop()
         idleDeck.volume = 1
         idleDeck.vocalsGain = 1
+        idleDeck.bassGainDB = 0
         currentDeck.volume = 1
         currentDeck.vocalsGain = 1
+        currentDeck.bassGainDB = 0
         isTransitioning = false
     }
 
