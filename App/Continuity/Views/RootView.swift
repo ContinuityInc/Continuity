@@ -4,6 +4,8 @@ import SwiftUI
 /// expands into the full Now Playing sheet.
 struct RootView: View {
     @Environment(Player.self) private var player
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
     @State private var showNowPlaying = false
     @State private var showingAdd = false
 
@@ -36,6 +38,11 @@ struct RootView: View {
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
                 .presentationDragIndicator(.visible)
+        }
+        // On launch, pick up any ingestion left unfinished by a previous run (interrupted
+        // imports, evicted files, half-separated stems).
+        .task {
+            prepQueue.resumePreparation(in: modelContext)
         }
     }
 }

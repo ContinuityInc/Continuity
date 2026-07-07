@@ -55,6 +55,31 @@ final class PreparationQueue {
         Task { await process(track, in: context) }
     }
 
+    /// Resumes preparation for a persisted library at launch: re-enqueues tracks that were
+    /// interrupted mid-ingest (e.g. the app was killed partway through a large import) or whose
+    /// downloaded audio went missing, and finishes stem separation for tracks that have audio but
+    /// no stems yet. `.failed` tracks are left as-is for an explicit retry.
+    func resumePreparation(in context: ModelContext) {
+        guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
+        for track in tracks {
+            switch track.prepState {
+            case .ready:
+                let hasAudio = track.localRelativePath.map {
+                    FileManager.default.fileExists(atPath: AudioCache.url(forRelativePath: $0).path)
+                } ?? false
+                if !hasAudio {
+                    enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
+                } else if !track.hasStems {
+                    separateStems(track, in: context)     // audio is fine; finish the optional stems
+                }
+            case .pending, .preparing:
+                enqueue(track, in: context)              // interrupted before finishing → pick back up
+            case .failed:
+                break
+            }
+        }
+    }
+
     /// Resolves a YouTube playlist, creates a matching library `Playlist` with one placeholder
     /// `Track` per video, and enqueues every track for ingestion. The page fetch runs off the
     /// main actor inside the awaited resolver; the model writes happen here on the main actor.
