@@ -24,8 +24,12 @@ final class Track {
     private var prepStateRaw: String
 
     // MARK: Source (M1) — nil for the M0 synth samples
-    /// The YouTube video ID this track was ingested from.
+    /// The YouTube video ID this track was ingested from. For Spotify-sourced tracks this starts
+    /// nil and is filled in by a YouTube search (see `searchQuery`) during preparation.
     var youtubeVideoID: String?
+    /// For tracks without a known video ID (e.g. imported from Spotify), the text query used to
+    /// find the song on YouTube, e.g. "Blinding Lights The Weeknd".
+    var searchQuery: String?
     /// The original URL the user supplied.
     var sourceURLString: String?
     /// Path, relative to the audio cache directory, of the downloaded/decoded file once `.ready`.
@@ -67,6 +71,7 @@ final class Track {
         sortIndex: Int,
         prepState: PrepState = .ready,
         youtubeVideoID: String? = nil,
+        searchQuery: String? = nil,
         sourceURLString: String? = nil,
         localRelativePath: String? = nil
     ) {
@@ -79,6 +84,7 @@ final class Track {
         self.sortIndex = sortIndex
         self.prepStateRaw = prepState.rawValue
         self.youtubeVideoID = youtubeVideoID
+        self.searchQuery = searchQuery
         self.sourceURLString = sourceURLString
         self.localRelativePath = localRelativePath
     }

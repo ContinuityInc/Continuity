@@ -18,12 +18,12 @@ struct RootView: View {
                         } label: {
                             Image(systemName: "plus")
                         }
-                        .accessibilityLabel("Add from YouTube")
+                        .accessibilityLabel("Add music")
                     }
                 }
         }
         .sheet(isPresented: $showingAdd) {
-            AddFromYouTubeView()
+            AddMusicView()
         }
         .safeAreaInset(edge: .bottom) {
             if player.currentTrack != nil {
