@@ -36,12 +36,17 @@ struct NowPlayingView: View {
                 }
             }
 
+            if player.isTransitioning, let next = player.incomingTrack {
+                blendIndicator(next: next)
+            }
+
             scrubber
             transport
 
             Spacer(minLength: 0)
         }
         .padding(.top, 12)
+        .animation(.easeInOut, value: player.isTransitioning)
         .background(backdrop)
         // Tapping the transition chip opens the live transition settings.
         .sheet(isPresented: $showingTransitionSettings) {
@@ -53,8 +58,24 @@ struct NowPlayingView: View {
         Color.clear.frame(height: 8)
     }
 
-    /// "124 BPM · 8A" once tempo/key analysis is available for the track.
+    /// Live blend meter shown while a transition is in flight — the flagship feature made visible.
+    private func blendIndicator(next: Track) -> some View {
+        VStack(spacing: 6) {
+            Label("Blending into \(next.title)", systemImage: "arrow.triangle.merge")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            ProgressView(value: min(max(player.transitionProgress, 0), 1))
+                .tint(.primary)
+        }
+        .padding(.horizontal, 40)
+        .transition(.opacity)
+    }
+
+    /// "124 BPM · 8A" once tempo/key analysis is available — or a "Demo tone" note for the
+    /// synthesized sample tracks so they're not mistaken for real playback.
     private func analysisLabel(for track: Track) -> String? {
+        if track.isDemo { return "Demo tone" }
         var parts: [String] = []
         if let bpm = track.bpm, bpm > 0 { parts.append("\(Int(bpm.rounded())) BPM") }
         if let camelot = track.camelotCode { parts.append(camelot) }

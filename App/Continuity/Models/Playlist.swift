@@ -38,4 +38,7 @@ final class Playlist {
     var orderedTracks: [Track] {
         tracks.sorted { $0.sortIndex < $1.sortIndex }
     }
+
+    /// True when every track is a synthesized demo (the seeded sample albums).
+    var isDemo: Bool { !tracks.isEmpty && tracks.allSatisfy(\.isDemo) }
 }

@@ -18,12 +18,18 @@ final class Player {
     private(set) var currentIndex = 0
     private(set) var isPlaying = false
     private(set) var isTransitioning = false
+    /// 0→1 progress of the in-flight blend, for the Now Playing blend meter. 0 when idle.
+    private(set) var transitionProgress: Double = 0
     /// Seconds into the current track (drives the scrubber + clock).
     var position: TimeInterval = 0
     /// User-configurable crossfade settings (edited by `TransitionSettingsView`).
     var transitionSettings = TransitionSettings.default
 
     var currentTrack: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
+    /// The track being blended in during a transition (drives the Now Playing "blending into…").
+    var incomingTrack: Track? {
+        isTransitioning && queue.indices.contains(transitionTargetIndex) ? queue[transitionTargetIndex] : nil
+    }
     /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
     /// model only for the brief window before the first load.
     var duration: TimeInterval {
@@ -191,6 +197,7 @@ final class Player {
             currentDeck.volume = Float(gains.outgoing)
             idleDeck.volume = Float(gains.incoming)
             let progress = plan.progress(position: incomingElapsed, startPosition: 0)
+            transitionProgress = progress
             // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
             if transitionSettings.bassSwapEnabled {
                 applyBassSwap(progress: progress)
@@ -312,6 +319,7 @@ final class Player {
         baselineSeconds = incomingStartOffset
         position = baselineSeconds + currentDeck.elapsed
         isTransitioning = false
+        transitionProgress = 0
     }
 
     /// Cancels an in-flight transition, discarding the incoming deck. `currentDeck`/`currentIndex`
@@ -326,6 +334,7 @@ final class Player {
         currentDeck.vocalsGain = 1
         currentDeck.bassGainDB = 0
         isTransitioning = false
+        transitionProgress = 0
     }
 
     private func hardAdvance(toIndex index: Int) {

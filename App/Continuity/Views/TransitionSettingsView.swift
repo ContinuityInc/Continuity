@@ -15,6 +15,37 @@ struct TransitionSettingsView: View {
 
         NavigationStack {
             Form {
+                // MARK: Presets — one-tap starting points
+                Section {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(TransitionSettings.presets) { preset in
+                                let isActive = player.transitionSettings.matchingPresetName == preset.name
+                                Button {
+                                    player.transitionSettings = preset.settings
+                                } label: {
+                                    Text(preset.name)
+                                        .font(.subheadline.weight(.medium))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary),
+                                            in: Capsule()
+                                        )
+                                        .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                } header: {
+                    Text("Presets")
+                } footer: {
+                    Text("A starting point — tweak anything below and the highlight clears.")
+                }
+
                 // MARK: Crossfade (live — actively edits player.transitionSettings)
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
