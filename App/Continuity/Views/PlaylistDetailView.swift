@@ -9,21 +9,24 @@ struct PlaylistDetailView: View {
 
     var body: some View {
         List {
-            Section {
-                ForEach(Array(playlist.orderedTracks.enumerated()), id: \.element.id) { index, track in
-                    TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // A failed ingest can't be played — tapping it retries instead.
-                            if track.prepState == .failed {
-                                prepQueue.enqueue(track, in: modelContext)
-                            } else {
-                                player.play(tracks: playlist.orderedTracks, startAt: index)
-                            }
+            // The header is a regular row — NOT a pinned section header, which in a plain list
+            // floats transparently over the rows and lets them scroll underneath the Play button.
+            // As a row it scrolls away with the content, Apple Music-style.
+            header
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+
+            ForEach(Array(playlist.orderedTracks.enumerated()), id: \.element.id) { index, track in
+                TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // A failed ingest can't be played — tapping it retries instead.
+                        if track.prepState == .failed {
+                            prepQueue.enqueue(track, in: modelContext)
+                        } else {
+                            player.play(tracks: playlist.orderedTracks, startAt: index)
                         }
-                }
-            } header: {
-                header
+                    }
             }
         }
         .listStyle(.plain)
@@ -48,7 +51,6 @@ struct PlaylistDetailView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
-        .textCase(nil)
     }
 }
 

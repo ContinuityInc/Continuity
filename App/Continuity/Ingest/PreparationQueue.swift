@@ -1,6 +1,12 @@
 import Foundation
 import SwiftData
 import ContinuityCore
+import os
+
+extension Logger {
+    /// Stem-separation pipeline logging (subsystem matches the bundle id for easy filtering).
+    static let stems = Logger(subsystem: "com.continuity.app", category: "stems")
+}
 
 /// Drives tracks through the M1 ingest pipeline (resolve → download → analyse → ready) and,
 /// once playable, the optional M4 stem separation — writing the resulting `prepState` /
@@ -62,6 +68,13 @@ final class PreparationQueue {
     func resumePreparation(in context: ModelContext) {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
         for track in tracks {
+            // Demo tracks have no source and play synthesized audio — there is nothing to ingest
+            // or resume. Without this guard they'd be re-enqueued (they have no audio file), fail
+            // for lack of a source, and show up as retry-able failures. Heal any that already did.
+            if track.isDemo {
+                if track.prepState != .ready { track.prepState = .ready; try? context.save() }
+                continue
+            }
             switch track.prepState {
             case .ready:
                 let hasAudio = track.localRelativePath.map {
@@ -261,8 +274,11 @@ final class PreparationQueue {
                     track.accompanimentRelativePath = StemCache.relativePath(for: accompanimentOut)
                     try? context.save()
                 }
+                Logger.stems.info("separated stems for \(key, privacy: .public)")
             } catch {
-                // best-effort; the track still plays without stems
+                // Best-effort — the track still plays without stems — but never silently: a broken
+                // separator would otherwise look like "stems just never finish".
+                Logger.stems.error("stem separation failed for \(key, privacy: .public): \(String(describing: error), privacy: .public)")
             }
             await limiter.release()
         }
