@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import SwiftData
 import ContinuityCore
@@ -29,6 +30,8 @@ final class PreparationQueue {
     let spotifyResolver: SpotifyPlaylistResolving
     /// Finds a YouTube video for a Spotify-sourced track (title + artist → video ID).
     let searcher: YouTubeSearching
+    /// Resolves a video's real title/channel (replaces bare-ID placeholders).
+    let metadataResolver: VideoMetadataResolving
     /// Downloads a resolved stream into the on-disk audio cache.
     let downloader: AudioFileDownloading
 
@@ -42,12 +45,14 @@ final class PreparationQueue {
         playlistResolver: PlaylistResolving = YouTubePlaylistResolver(),
         spotifyResolver: SpotifyPlaylistResolving = SpotifyPlaylistResolver(),
         searcher: YouTubeSearching = YouTubeSearchResolver(),
+        metadataResolver: VideoMetadataResolving = YouTubeOEmbedResolver(),
         downloader: AudioFileDownloading = AudioDownloader()
     ) {
         self.resolver = resolver
         self.playlistResolver = playlistResolver
         self.spotifyResolver = spotifyResolver
         self.searcher = searcher
+        self.metadataResolver = metadataResolver
         self.downloader = downloader
     }
 
@@ -82,8 +87,11 @@ final class PreparationQueue {
                 } ?? false
                 if !hasAudio {
                     enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
-                } else if !track.hasStems {
-                    separateStems(track, in: context)     // audio is fine; finish the optional stems
+                } else {
+                    if !track.hasStems {
+                        separateStems(track, in: context) // audio is fine; finish the optional stems
+                    }
+                    backfillTrackDetails(track, in: context)
                 }
             case .pending, .preparing:
                 enqueue(track, in: context)              // interrupted before finishing → pick back up
@@ -212,6 +220,15 @@ final class PreparationQueue {
             if track.modelContext != nil {
                 track.localRelativePath = AudioCache.relativePath(for: fileURL)
 
+                // Real duration for the row (bare-ID adds start at 0, which renders as "0:00").
+                if track.durationSeconds <= 0, let file = try? AVAudioFile(forReading: fileURL) {
+                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+                }
+
+                // NOTE: the real title/channel (oEmbed) is deliberately NOT fetched here — it
+                // would block readiness and hold an ingest slot on a slow endpoint even though
+                // the audio is already playable. It runs post-ready via backfillTrackDetails.
+
                 // Analyse tempo + key off the main actor (full-track FFTs). Non-fatal: if analysis
                 // fails the track still plays, just without BPM/key metadata.
                 if let analysis = try? await Task.detached(priority: .utility, operation: {
@@ -235,10 +252,49 @@ final class PreparationQueue {
         }
         try? context.save()
 
-        // Stems are a slow, optional enhancement — start them in the background AFTER the track is
-        // playable. They enable vocal-aware transitions once ready; the track plays meanwhile.
+        // Stems and display metadata are optional enhancements — start them in the background
+        // AFTER the track is playable. The track plays meanwhile.
         if track.modelContext != nil, track.prepState == .ready {
             separateStems(track, in: context)
+            backfillTrackDetails(track, in: context)
+        }
+    }
+
+    /// Whether the track still shows the "YouTube Video (abc123)" placeholder from a bare-ID add.
+    private static func hasPlaceholderMetadata(_ track: Track) -> Bool {
+        track.youtubeVideoID != nil && track.title.hasPrefix("YouTube Video (")
+    }
+
+    /// Best-effort, fire-and-forget healing of a ready track's display details:
+    /// - `durationSeconds` from the local audio file when the model still says 0 ("0:00" rows),
+    /// - real title/channel via oEmbed when the bare-ID placeholder is still showing.
+    ///
+    /// Runs post-`.ready` (never blocks playability) from both the ingest pipeline and
+    /// `resumePreparation`. The network lookup is gated by `ingestLimiter` so a large library's
+    /// launch backfill can't burst dozens of simultaneous oEmbed requests (which would get
+    /// throttled and silently fail).
+    private func backfillTrackDetails(_ track: Track, in context: ModelContext) {
+        let needsTitle = Self.hasPlaceholderMetadata(track)
+        let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
+        guard needsTitle || needsDuration else { return }
+
+        Task {
+            guard track.modelContext != nil else { return }
+            if needsDuration, let relativePath = track.localRelativePath,
+               let file = try? AVAudioFile(forReading: AudioCache.url(forRelativePath: relativePath)) {
+                track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+            }
+            if needsTitle, let id = track.youtubeVideoID {
+                await ingestLimiter.acquire()
+                let meta = try? await metadataResolver.metadata(videoID: id)
+                await ingestLimiter.release()
+                if let meta, track.modelContext != nil {
+                    track.title = meta.title
+                    if let author = meta.author, !author.isEmpty { track.artist = author }
+                }
+            }
+            guard track.modelContext != nil else { return }
+            try? context.save()
         }
     }
 

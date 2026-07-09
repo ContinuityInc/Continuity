@@ -72,6 +72,11 @@ final class Deck {
         get { timePitch.rate }
         set { timePitch.rate = newValue }
     }
+    /// Pitch offset in cents (100 = one semitone), for harmonic mixing. Tempo is unaffected.
+    var pitchCents: Float {
+        get { timePitch.pitch }
+        set { timePitch.pitch = newValue }
+    }
     /// Low-shelf gain (dB) on this deck's low end. 0 = flat; negative cuts bass. Ramped during a
     /// blend so the incoming bassline fades in instead of stacking on the outgoing one.
     var bassGainDB: Float {
@@ -84,6 +89,7 @@ final class Deck {
         stop()
         self.track = track
         timePitch.rate = 1
+        timePitch.pitch = 0
         volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0
 
         if track.hasStems,

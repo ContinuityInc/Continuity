@@ -56,6 +56,12 @@ final class Player {
     /// Low-shelf cut (dB) applied to the incoming deck's low end at the start of a bass-swap blend,
     /// ramped back to flat over the first part of the transition.
     private let bassSwapCutDB: Float = -9
+    /// Harmonic-mixing pitch shift (semitones) applied to the CURRENT track, so the next
+    /// transition compares keys against what's actually sounding, not the stored analysis.
+    private var currentPitchShiftSemitones = 0
+    /// Pitch shift staged on the incoming deck; promoted to `currentPitchShiftSemitones` when the
+    /// transition completes.
+    private var incomingPitchShiftSemitones = 0
 
     init() {
         synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
@@ -159,7 +165,8 @@ final class Player {
         currentDeck.stop()
         currentDeck.volume = 1
         guard ensureRunning() else { isPlaying = false; stopTimer(); return }
-        currentDeck.load(track)
+        currentDeck.load(track)   // load() resets rate/pitch, so the fresh track plays true
+        currentPitchShiftSemitones = 0
         baselineSeconds = 0
         position = 0
         currentDeck.play()
@@ -260,6 +267,22 @@ final class Player {
             incomingStartOffset = offset
         }
 
+        // Harmonic mixing: when both tracks have a detected key and they clash, nudge the incoming
+        // track's pitch by ±1 semitone so it lands in a Camelot-compatible key (like DJ "key sync",
+        // the shift persists for the whole track — Deck.load resets it on the next load). Compare
+        // against the outgoing track's EFFECTIVE key: it may itself be playing shifted.
+        incomingPitchShiftSemitones = 0
+        if transitionSettings.harmonicMixingEnabled,
+           let outKey = currentDeck.track?.camelotCode.flatMap(Camelot.parse),
+           let inKey = queue[index].camelotCode.flatMap(Camelot.parse),
+           let shift = HarmonicMix.pitchShiftSemitones(
+               incoming: inKey,
+               outgoing: outKey.transposed(bySemitones: currentPitchShiftSemitones)
+           ), shift != 0 {
+            incoming.pitchCents = Float(shift * 100)
+            incomingPitchShiftSemitones = shift
+        }
+
         // Vocal-aware setup: for instrumental-overlap / hard-swap the incoming vocals start silent
         // (they enter later); for ducking they ride in with the track.
         if incoming.hasStems {
@@ -318,6 +341,7 @@ final class Player {
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
         baselineSeconds = incomingStartOffset
         position = baselineSeconds + currentDeck.elapsed
+        currentPitchShiftSemitones = incomingPitchShiftSemitones
         isTransitioning = false
         transitionProgress = 0
     }
