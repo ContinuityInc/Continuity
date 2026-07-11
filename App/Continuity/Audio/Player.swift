@@ -234,11 +234,22 @@ final class Player {
         displayTimer = nil
     }
 
+    /// The moment transitions treat as the current track's end. With silence trimming on, that's
+    /// the last audible moment (gapless) rather than the file's end — a blend into trailing
+    /// silence reads as a gap. Falls back to the full duration when unscanned or disabled.
+    private var effectiveEndSeconds: TimeInterval {
+        let full = duration
+        guard transitionSettings.trimSilenceEnabled,
+              let audibleEnd = currentDeck.track?.audibleEndSeconds,
+              audibleEnd > 1, audibleEnd < full else { return full }
+        return audibleEnd
+    }
+
     private func tick() {
         guard isPlaying else { return }
         let elapsed = baselineSeconds + currentDeck.elapsed
         position = elapsed
-        let dur = duration
+        let dur = effectiveEndSeconds
         let plan = TransitionPlan(curve: transitionSettings.curve, duration: transitionSettings.durationSeconds)
 
         if isTransitioning {
@@ -310,6 +321,15 @@ final class Player {
                rate: rate
            ), incoming.seekRealFile(to: offset) {
             incomingStartOffset = offset
+        }
+
+        // Gapless: if beat-alignment didn't already seek, skip the incoming track's leading
+        // silence so the blend brings in audio, not dead air. (Beat grids start at the first
+        // onsets, so an aligned seek is already past any leading silence.)
+        if transitionSettings.trimSilenceEnabled, incomingStartOffset == 0,
+           let audibleStart = queue[index].audibleStartSeconds, audibleStart > 0.05,
+           incoming.seekRealFile(to: audibleStart) {
+            incomingStartOffset = audibleStart
         }
 
         // Harmonic mixing: when both tracks have a detected key and they clash, nudge the incoming

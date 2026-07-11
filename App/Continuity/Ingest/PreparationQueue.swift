@@ -276,13 +276,26 @@ final class PreparationQueue {
     private func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsTitle = Self.hasPlaceholderMetadata(track)
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
-        guard needsTitle || needsDuration else { return }
+        let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil
+        guard needsTitle || needsDuration || needsSilenceScan else { return }
 
         Task {
             guard track.modelContext != nil else { return }
             if needsDuration, let relativePath = track.localRelativePath,
                let file = try? AVAudioFile(forReading: AudioCache.url(forRelativePath: relativePath)) {
                 track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+            }
+            // Audible bounds for gapless transitions (targeted head/tail decode, off the main
+            // actor — it reads ~20 MB of PCM).
+            if needsSilenceScan, let relativePath = track.localRelativePath {
+                let url = AudioCache.url(forRelativePath: relativePath)
+                let bounds = await Task.detached(priority: .utility) {
+                    SilenceScan.audibleBounds(fileURL: url)
+                }.value
+                if let bounds, track.modelContext != nil {
+                    track.audibleStartSeconds = bounds.audibleStart
+                    track.audibleEndSeconds = bounds.audibleEnd
+                }
             }
             if needsTitle, let id = track.youtubeVideoID {
                 await ingestLimiter.acquire()

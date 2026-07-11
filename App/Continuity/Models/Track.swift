@@ -45,6 +45,12 @@ final class Track {
     /// Beat onset times (seconds) — the beat grid used for beat-aligned transitions.
     var beatTimes: [Double] = []
 
+    // MARK: Gapless (M5) — audible bounds from the silence scan, nil until scanned
+    /// Time (s) of the first audible audio — leading silence ends here.
+    var audibleStartSeconds: Double?
+    /// Time (s) just after the last audible audio — trailing silence starts here.
+    var audibleEndSeconds: Double?
+
     // MARK: Stems (M4) — populated by stem separation after the track is ready
     /// Path (relative to the stem cache) of the isolated-vocals file, once separated.
     var vocalsRelativePath: String?

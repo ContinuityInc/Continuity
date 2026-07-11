@@ -72,10 +72,13 @@ struct TransitionSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
+
+                    // Gapless — trim trailing/leading silence so blends never fade into dead air.
+                    Toggle("Trim Silence", isOn: $player.transitionSettings.trimSilenceEnabled)
                 } header: {
                     Text("Crossfade")
                 } footer: {
-                    Text("0s = hard cut. Equal Power keeps perceived loudness steady through the blend.")
+                    Text("0s = hard cut. Equal Power keeps perceived loudness steady through the blend. Trim Silence starts the transition from the last audible moment instead of fading into a silent tail.")
                 }
 
                 // MARK: Mixing

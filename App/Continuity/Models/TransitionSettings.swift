@@ -24,6 +24,9 @@ struct TransitionSettings: Codable, Equatable, Sendable {
     var durationSeconds: Double = 8
     /// Crossfade shape (from the verified ContinuityCore curves).
     var curve: CrossfadeCurve = .equalPower
+    /// Gapless playback: treat a track's last audible moment as its end (skip trailing silence),
+    /// and start incoming tracks at their first audible moment. Opt-out; on by default.
+    var trimSilenceEnabled: Bool = true
     /// Tempo-sync + beat-align the incoming track to the outgoing one.
     var beatmatchEnabled: Bool = true
     /// Fade the incoming track's low end in over the blend so the two basslines don't stack
