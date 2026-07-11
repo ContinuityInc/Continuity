@@ -58,9 +58,9 @@ public enum KeyDetector {
 
     // MARK: - Chroma
 
-    /// Build a normalized 12-bin chroma vector (index 0 = C ... 11 = B) by summing the
-    /// magnitude spectrum of every Hann-windowed STFT frame into pitch-class buckets.
-    /// Returns `nil` if the audio is too short for even one frame.
+    /// Build a normalized 12-bin chroma vector (index 0 = C ... 11 = B) from the STFT magnitude
+    /// spectrum, **corrected for global tuning** so recordings that sit off A440 (very common) still
+    /// land in the right pitch classes. Returns `nil` if the audio is too short for even one frame.
     private static func makeChroma(samples: [Float], sampleRate: Double) -> [Double]? {
         let n = samples.count
         guard n >= frameSize else { return nil }
@@ -75,19 +75,19 @@ public enum KeyDetector {
         let halfN = frameSize / 2
         let window = makeHannWindow(frameSize)
 
-        // Frequency of each FFT bin → pitch class (or -1 if out of [minHz, maxHz]).
-        var binPitchClass = [Int](repeating: -1, count: halfN)
+        // Continuous MIDI number of each FFT bin (NaN if out of [minHz, maxHz]).
+        var binMidi = [Double](repeating: .nan, count: halfN)
         for bin in 1..<halfN {  // skip DC bin
             let f = Double(bin) * sampleRate / Double(frameSize)
             if f >= minHz && f <= maxHz {
-                let midi = 69.0 + 12.0 * log2(f / 440.0)
-                var pc = Int(midi.rounded()) % 12
-                if pc < 0 { pc += 12 }
-                binPitchClass[bin] = pc
+                binMidi[bin] = 69.0 + 12.0 * log2(f / 440.0)
             }
         }
 
-        var chroma = [Double](repeating: 0, count: 12)
+        // Sum the magnitude spectrum across all frames. Chroma is linear in magnitude, so summing
+        // the spectra first (then binning) is equivalent to per-frame binning — and it gives the
+        // tuning estimate the whole track's spectrum to work with.
+        var magSum = [Double](repeating: 0, count: halfN)
 
         // Reusable buffers for the split-complex FFT.
         var windowed = [Float](repeating: 0, count: frameSize)
@@ -97,7 +97,6 @@ public enum KeyDetector {
 
         var frameStart = 0
         while frameStart + frameSize <= n {
-            // Apply the Hann window to this frame.
             samples.withUnsafeBufferPointer { src in
                 window.withUnsafeBufferPointer { win in
                     vDSP_vmul(src.baseAddress! + frameStart, 1,
@@ -110,7 +109,6 @@ public enum KeyDetector {
                 imagp.withUnsafeMutableBufferPointer { ip in
                     var split = DSPSplitComplex(realp: rp.baseAddress!,
                                                 imagp: ip.baseAddress!)
-                    // Pack the real input into the split-complex even/odd form.
                     windowed.withUnsafeBufferPointer { wp in
                         wp.baseAddress!.withMemoryRebound(to: DSPComplex.self,
                                                           capacity: halfN) { cp in
@@ -118,20 +116,32 @@ public enum KeyDetector {
                         }
                     }
                     vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-                    // Magnitude spectrum: sqrt(re^2 + im^2).
                     vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(halfN))
                 }
             }
 
-            // Accumulate magnitudes into pitch-class buckets.
-            for bin in 1..<halfN {
-                let pc = binPitchClass[bin]
-                if pc >= 0 {
-                    chroma[pc] += Double(magnitudes[bin])
-                }
-            }
-
+            for bin in 1..<halfN { magSum[bin] += Double(magnitudes[bin]) }
             frameStart += hopSize
+        }
+
+        let tuning = estimateTuningSemitones(binMidi: binMidi, magSum: magSum, halfN: halfN)
+
+        // Bin into pitch classes using the tuning-corrected note number, splitting each bin between
+        // its two nearest pitch classes (linear interpolation) so a bin sitting between semitones
+        // doesn't tip entirely one way — this keeps the chroma stable near rounding boundaries.
+        var chroma = [Double](repeating: 0, count: 12)
+        for bin in 1..<halfN {
+            let midi = binMidi[bin]
+            if midi.isNaN { continue }
+            let corrected = midi - tuning
+            let lower = floor(corrected)
+            let frac = corrected - lower                 // [0, 1)
+            var pcLow = Int(lower) % 12
+            if pcLow < 0 { pcLow += 12 }
+            let pcHigh = (pcLow + 1) % 12
+            let w = magSum[bin]
+            chroma[pcLow] += w * (1 - frac)
+            chroma[pcHigh] += w * frac
         }
 
         // Normalize by L2 norm so the correlation isn't level-dependent.
@@ -139,6 +149,35 @@ public enum KeyDetector {
         guard norm > 0 else { return nil }
         for i in 0..<12 { chroma[i] /= norm }
         return chroma
+    }
+
+    /// Estimate the recording's global tuning offset from equal-temperament, in semitones within
+    /// `[-0.5, 0.5]`, as the magnitude-weighted circular mean of every bin's deviation from its
+    /// nearest semitone. A track mastered ~45¢ flat returns ≈ -0.45, which we then subtract before
+    /// quantizing — otherwise those bins tip across the rounding boundary and shift the whole
+    /// chroma by a semitone (the dominant real-world key-detection failure).
+    private static func estimateTuningSemitones(binMidi: [Double], magSum: [Double], halfN: Int) -> Double {
+        // Use only local spectral peaks well above the noise floor: their frequencies sit right on
+        // the played notes, so their deviations cluster tightly at the true offset. Averaging every
+        // bin instead lets windowing leakage straddle the ±0.5 wrap and bias the estimate.
+        let maxMag = magSum.max() ?? 0
+        guard maxMag > 0 else { return 0 }
+        let threshold = maxMag * 0.05
+
+        var sinAcc = 0.0
+        var cosAcc = 0.0
+        for bin in 2..<(halfN - 1) {
+            let midi = binMidi[bin]
+            if midi.isNaN { continue }
+            let m = magSum[bin]
+            guard m > threshold, m >= magSum[bin - 1], m >= magSum[bin + 1] else { continue }
+            let dev = midi - midi.rounded()          // deviation from nearest semitone, [-0.5, 0.5]
+            let angle = 2.0 * Double.pi * dev         // wrap at the ±0.5 boundary
+            sinAcc += m * sin(angle)
+            cosAcc += m * cos(angle)
+        }
+        guard sinAcc != 0 || cosAcc != 0 else { return 0 }
+        return atan2(sinAcc, cosAcc) / (2.0 * Double.pi)
     }
 
     private static func makeHannWindow(_ size: Int) -> [Float] {
