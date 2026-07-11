@@ -18,7 +18,7 @@ struct NowPlayingView: View {
             transitionChip
 
             if let track = player.currentTrack {
-                ArtworkView(symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28)
+                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28)
                     .frame(maxWidth: 320)
                     .aspectRatio(1, contentMode: .fit)
                     .shadow(color: .black.opacity(0.25), radius: 24, y: 12)

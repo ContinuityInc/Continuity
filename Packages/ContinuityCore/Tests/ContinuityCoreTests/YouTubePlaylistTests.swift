@@ -98,6 +98,80 @@ final class YouTubePlaylistTests: XCTestCase {
         XCTAssertEqual(second.lengthSeconds, 213)           // derived from "3:33"
     }
 
+    /// Faithful mini-fixture of the 2026 page shape: ytcfg (API key + client version) and a
+    /// continuation node nested `continuationItemViewModel → continuationCommand →
+    /// innertubeCommand → continuationCommand → token` alongside the video lockups.
+    private let pagedHTML = """
+    <script>ytcfg.set({"INNERTUBE_API_KEY":"AIzaTESTKEY123","INNERTUBE_CLIENT_VERSION":"2.20260708.00.00"});</script>
+    <script>var ytInitialData = {
+      "metadata": { "playlistMetadataRenderer": { "title": "Mega Mix" } },
+      "contents": { "items": [
+        { "lockupViewModel": {
+            "contentId": "aaaaaaaaaaa", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+            "metadata": { "lockupMetadataViewModel": { "title": { "content": "First" } } }
+        } },
+        { "continuationItemViewModel": {
+            "trigger": "CONTINUATION_TRIGGER_ON_ITEM_SHOWN",
+            "continuationCommand": { "innertubeCommand": {
+              "commandMetadata": { "webCommandMetadata": { "sendPost": true, "apiUrl": "/youtubei/v1/browse" } },
+              "continuationCommand": { "token": "4qmFTESTTOKEN", "request": "CONTINUATION_REQUEST_TYPE_BROWSE" }
+            } }
+        } }
+      ] }
+    };</script>
+    """
+
+    func testParsesContinuationTokenAndConfig() {
+        let contents = YouTubePlaylist.parse(html: pagedHTML)
+        XCTAssertEqual(contents.items.map(\.videoID), ["aaaaaaaaaaa"])
+        XCTAssertEqual(contents.continuationToken, "4qmFTESTTOKEN")
+
+        let config = YouTubePlaylist.innerTubeConfig(html: pagedHTML)
+        XCTAssertEqual(config, InnerTubeConfig(apiKey: "AIzaTESTKEY123", clientVersion: "2.20260708.00.00"))
+    }
+
+    func testNoContinuationOnLastPage() {
+        let contents = YouTubePlaylist.parse(html: sampleHTML)   // legacy fixture has no token
+        XCTAssertNil(contents.continuationToken)
+        XCTAssertNil(YouTubePlaylist.innerTubeConfig(html: sampleHTML))
+    }
+
+    /// Faithful mini-fixture of a `youtubei/v1/browse` continuation reply: more lockups inside
+    /// `onResponseReceivedActions`, plus (optionally) the token for the following page.
+    private func continuationJSON(withNextToken: Bool) -> Data {
+        let next = withNextToken ? """
+        , { "continuationItemViewModel": { "continuationCommand": { "innertubeCommand": {
+            "continuationCommand": { "token": "NEXTPAGETOKEN", "request": "CONTINUATION_REQUEST_TYPE_BROWSE" }
+        } } } }
+        """ : ""
+        return """
+        { "responseContext": { "visitorData": "xyz" },
+          "onResponseReceivedActions": [ { "appendContinuationItemsAction": { "continuationItems": [
+            { "lockupViewModel": { "contentId": "bbbbbbbbbbb", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+              "metadata": { "lockupMetadataViewModel": { "title": { "content": "Page Two" },
+                "metadata": { "contentMetadataViewModel": { "metadataRows": [
+                  { "metadataParts": [ { "text": { "content": "Artist Two" } } ] }
+                ] } } } } } }
+            \(next)
+          ] } } ]
+        }
+        """.data(using: .utf8)!
+    }
+
+    func testParsesContinuationResponse() {
+        let (items, token) = YouTubePlaylist.parseContinuationResponse(continuationJSON(withNextToken: true))
+        XCTAssertEqual(items.map(\.videoID), ["bbbbbbbbbbb"])
+        XCTAssertEqual(items[0].title, "Page Two")
+        XCTAssertEqual(items[0].author, "Artist Two")
+        XCTAssertEqual(token, "NEXTPAGETOKEN")
+    }
+
+    func testContinuationResponseWithoutNextTokenEndsPagination() {
+        let (items, token) = YouTubePlaylist.parseContinuationResponse(continuationJSON(withNextToken: false))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertNil(token)
+    }
+
     func testDeduplicatesRepeatedVideoIDs() {
         // Radio/mix playlists can repeat the same video; we keep first occurrence only.
         let html = """

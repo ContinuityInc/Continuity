@@ -11,10 +11,14 @@ import ContinuityCore
 /// runtime errors. All parsing lives in (unit-tested) ContinuityCore; this type only does the
 /// networking and translates errors into `IngestError`.
 ///
-/// **Coverage note:** the first page load lists up to ~100 videos. Longer playlists paginate
-/// via continuation tokens, which we don't yet follow — sufficient for albums/typical playlists,
-/// a later refinement for very long ones.
+/// Long playlists are followed page-by-page via InnerTube continuation tokens (the same
+/// `youtubei/v1/browse` calls the web player makes), capped at `maxTracks`. A mid-pagination
+/// failure returns the pages fetched so far — partial import beats none.
 final class YouTubePlaylistResolver: PlaylistResolving {
+
+    /// Upper bound on imported tracks: bounds memory/ingest work for pathological playlists
+    /// (each page is ~100 videos, so this is ~5 continuation calls at most).
+    private static let maxTracks = 500
 
     init() {}
 
@@ -59,6 +63,57 @@ final class YouTubePlaylistResolver: PlaylistResolving {
             throw IngestError.resolveFailed("no videos found in playlist (private, empty, or unavailable)")
         }
 
-        return ResolvedPlaylist(playlistID: playlistID, title: contents.title, items: contents.items)
+        var items = contents.items
+        var seen = Set(items.map(\.videoID))
+
+        // Follow continuations for playlists longer than one page. Best-effort: any failure just
+        // ends pagination with what we have.
+        if var token = contents.continuationToken,
+           let config = YouTubePlaylist.innerTubeConfig(html: html) {
+            while items.count < Self.maxTracks {
+                guard let page = try? await fetchContinuation(token: token, config: config),
+                      !page.items.isEmpty else { break }
+                for item in page.items where !seen.contains(item.videoID) {
+                    seen.insert(item.videoID)
+                    items.append(item)
+                }
+                guard let next = page.continuationToken else { break }
+                token = next
+            }
+        }
+
+        return ResolvedPlaylist(
+            playlistID: playlistID,
+            title: contents.title,
+            items: Array(items.prefix(Self.maxTracks))
+        )
+    }
+
+    /// One `youtubei/v1/browse` continuation call, parsed by ContinuityCore.
+    private func fetchContinuation(
+        token: String,
+        config: InnerTubeConfig
+    ) async throws -> (items: [YouTubePlaylistItem], continuationToken: String?) {
+        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(config.apiKey)") else {
+            throw IngestError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        let body: [String: Any] = [
+            "context": ["client": ["clientName": "WEB", "clientVersion": config.clientVersion, "hl": "en"]],
+            "continuation": token,
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw IngestError.resolveFailed("continuation HTTP \(http.statusCode)")
+        }
+        return YouTubePlaylist.parseContinuationResponse(data)
     }
 }

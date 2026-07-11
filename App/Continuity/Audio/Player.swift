@@ -127,6 +127,51 @@ final class Player {
         startCurrentFresh()
     }
 
+    /// Removes deleted tracks from the live queue BEFORE their SwiftData models are destroyed —
+    /// a deck or queue reference to a deleted `@Model` would crash on next access. Handles every
+    /// case: blend target deleted (cancel the blend), current track deleted (jump to the next
+    /// surviving track, preserving play/pause state), and plain queue shrinkage (fix indices).
+    func handleDeleted(trackIDs: Set<UUID>) {
+        guard queue.contains(where: { trackIDs.contains($0.id) }) else { return }
+
+        // Cancel an in-flight blend if either side of it is going away.
+        let targetTrack = isTransitioning && queue.indices.contains(transitionTargetIndex)
+            ? queue[transitionTargetIndex] : nil
+        let currentDeleted = currentTrack.map { trackIDs.contains($0.id) } ?? false
+        if currentDeleted || (targetTrack.map { trackIDs.contains($0.id) } ?? false) {
+            cancelTransition()
+        }
+
+        let wasPlaying = isPlaying
+        let survivorsBeforeCurrent = queue.prefix(currentIndex).filter { !trackIDs.contains($0.id) }.count
+        queue = queue.filter { !trackIDs.contains($0.id) }
+
+        if currentDeleted {
+            if queue.isEmpty {
+                currentDeck.stop()
+                idleDeck.stop()
+                currentIndex = 0
+                position = 0
+                isPlaying = false
+                stopTimer()
+            } else {
+                currentIndex = min(survivorsBeforeCurrent, queue.count - 1)
+                startCurrentFresh()
+                if !wasPlaying {
+                    currentDeck.pause()
+                    isPlaying = false
+                    stopTimer()
+                }
+            }
+        } else {
+            currentIndex = survivorsBeforeCurrent
+            if isTransitioning, let targetTrack {
+                // The blend survives; re-locate its target in the shrunken queue.
+                transitionTargetIndex = queue.firstIndex { $0.id == targetTrack.id } ?? currentIndex
+            }
+        }
+    }
+
     func seek(to seconds: TimeInterval) {
         let clamped = max(0, min(seconds, duration))
         cancelTransition() // re-evaluate the transition window from the new position

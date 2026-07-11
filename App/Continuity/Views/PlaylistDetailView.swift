@@ -27,6 +27,13 @@ struct PlaylistDetailView: View {
                             player.play(tracks: playlist.orderedTracks, startAt: index)
                         }
                     }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            delete(track)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
             }
         }
         .listStyle(.plain)
@@ -34,9 +41,21 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// Removes a track: the player drops it first (so no deck/queue reference dangles), then the
+    /// model goes, then any cached files no other track shares.
+    private func delete(_ track: Track) {
+        let videoID = track.youtubeVideoID
+        player.handleDeleted(trackIDs: [track.id])
+        modelContext.delete(track)
+        try? modelContext.save()
+        if let videoID {
+            LibraryCleanup.removeOrphanedFiles(videoIDs: [videoID], in: modelContext)
+        }
+    }
+
     private var header: some View {
         VStack(spacing: 12) {
-            ArtworkView(symbol: playlist.artworkSymbol, seed: playlist.gradientSeed, cornerRadius: 20)
+            RemoteArtworkView(url: playlist.artworkURL, symbol: playlist.artworkSymbol, seed: playlist.gradientSeed, cornerRadius: 20)
                 .frame(width: 180, height: 180)
             Text(playlist.title).font(.title2.bold())
             Text(playlist.subtitle).font(.subheadline).foregroundStyle(.secondary)
@@ -60,7 +79,7 @@ private struct TrackRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
+            RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)

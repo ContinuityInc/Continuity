@@ -15,18 +15,34 @@ public struct YouTubePlaylistItem: Equatable, Sendable {
     }
 }
 
-/// The parsed contents of a YouTube playlist page: its videos (in order) and, when present,
-/// the playlist's own title.
+/// The parsed contents of a YouTube playlist page: its videos (in order), the playlist's own
+/// title, and — for playlists longer than one page (~100 videos) — the InnerTube continuation
+/// token for fetching the next page.
 public struct YouTubePlaylistContents: Equatable, Sendable {
     public var title: String?
     public var items: [YouTubePlaylistItem]
+    /// Token for `youtubei/v1/browse` to fetch the next ~100 videos; nil when this is the last page.
+    public var continuationToken: String?
 
-    public init(title: String? = nil, items: [YouTubePlaylistItem]) {
+    public init(title: String? = nil, items: [YouTubePlaylistItem], continuationToken: String? = nil) {
         self.title = title
         self.items = items
+        self.continuationToken = continuationToken
     }
 
     public var isEmpty: Bool { items.isEmpty }
+}
+
+/// The InnerTube web-client parameters a playlist page embeds (in `ytcfg`), needed to call the
+/// `youtubei/v1/browse` continuation endpoint the way the web player does.
+public struct InnerTubeConfig: Equatable, Sendable {
+    public var apiKey: String
+    public var clientVersion: String
+
+    public init(apiKey: String, clientVersion: String) {
+        self.apiKey = apiKey
+        self.clientVersion = clientVersion
+    }
 }
 
 /// Pure extraction of a playlist's videos from the HTML of a `youtube.com/playlist?list=…`
@@ -43,12 +59,13 @@ public struct YouTubePlaylistContents: Equatable, Sendable {
 /// scraping in ContinuityCore means every shape we depend on is pinned by unit tests. Treat this
 /// as fragile: YouTube can change the embedded shape at any time (as it did with lockups).
 ///
-/// **Coverage note:** the first page load lists up to ~100 videos; longer playlists paginate via
-/// continuation tokens we don't yet follow — enough for albums/typical playlists.
+/// Pages beyond the first (~100 videos each) are fetched via InnerTube continuation:
+/// `parse(html:)` exposes the first page's `continuationToken` + `innerTubeConfig(html:)` the
+/// API parameters; `parseContinuationResponse(_:)` handles each `youtubei/v1/browse` reply.
 public enum YouTubePlaylist {
 
-    /// Parses the HTML of a playlist page into its (de-duplicated, ordered) videos + title.
-    /// Returns empty contents if no `ytInitialData` / no video entries are found.
+    /// Parses the HTML of a playlist page into its (de-duplicated, ordered) videos + title +
+    /// continuation token. Returns empty contents if no `ytInitialData` / no video entries found.
     public static func parse(html: String) -> YouTubePlaylistContents {
         guard let json = extractBracedObject(in: html, afterMarker: "ytInitialData"),
               let data = json.data(using: .utf8),
@@ -56,6 +73,32 @@ public enum YouTubePlaylist {
             return YouTubePlaylistContents(items: [])
         }
 
+        return YouTubePlaylistContents(
+            title: extractTitle(root),
+            items: collectItems(root),
+            continuationToken: firstContinuationToken(root)
+        )
+    }
+
+    /// Parses one `youtubei/v1/browse` continuation reply: the next batch of videos plus the
+    /// token for the page after it (nil once the playlist is exhausted).
+    public static func parseContinuationResponse(_ data: Data) -> (items: [YouTubePlaylistItem], continuationToken: String?) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return ([], nil) }
+        return (collectItems(root), firstContinuationToken(root))
+    }
+
+    /// Extracts the InnerTube API key + client version from a playlist page's `ytcfg`.
+    /// Returns nil if either is missing (pagination is then unavailable, first page still works).
+    public static func innerTubeConfig(html: String) -> InnerTubeConfig? {
+        guard let apiKey = quotedValue(in: html, afterMarker: "\"INNERTUBE_API_KEY\":\""),
+              let clientVersion = quotedValue(in: html, afterMarker: "\"INNERTUBE_CLIENT_VERSION\":\"") else {
+            return nil
+        }
+        return InnerTubeConfig(apiKey: apiKey, clientVersion: clientVersion)
+    }
+
+    /// All video items in the tree, document-ordered, de-duplicated by video ID.
+    private static func collectItems(_ root: Any) -> [YouTubePlaylistItem] {
         var seen = Set<String>()
         var items: [YouTubePlaylistItem] = []
         func consider(_ item: YouTubePlaylistItem?) {
@@ -72,8 +115,30 @@ public enum YouTubePlaylist {
                 consider(legacyItem(legacy))
             }
         }
+        return items
+    }
 
-        return YouTubePlaylistContents(title: extractTitle(root), items: items)
+    /// The first browse-continuation token in the tree. Shape (2026):
+    /// `continuationItemViewModel.continuationCommand.innertubeCommand.continuationCommand.token`
+    /// — we match any `continuationCommand` dict carrying a string `token`, so both the nested
+    /// page shape and the flatter legacy `continuationItemRenderer` shape resolve.
+    private static func firstContinuationToken(_ root: Any) -> String? {
+        var token: String?
+        walkDicts(root) { dict in
+            guard token == nil,
+                  let command = dict["continuationCommand"] as? [String: Any],
+                  let found = command["token"] as? String, !found.isEmpty else { return }
+            token = found
+        }
+        return token
+    }
+
+    /// The string value between `afterMarker` and the next unescaped quote (simple ytcfg values).
+    private static func quotedValue(in html: String, afterMarker marker: String) -> String? {
+        guard let markerRange = html.range(of: marker),
+              let end = html[markerRange.upperBound...].firstIndex(of: "\"") else { return nil }
+        let value = String(html[markerRange.upperBound..<end])
+        return value.isEmpty ? nil : value
     }
 
     // MARK: - JSON extraction from HTML
