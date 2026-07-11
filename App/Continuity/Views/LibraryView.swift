@@ -32,6 +32,16 @@ private struct PlaylistCard: View {
         VStack(alignment: .leading, spacing: 8) {
             ArtworkView(symbol: playlist.artworkSymbol, seed: playlist.gradientSeed)
                 .aspectRatio(1, contentMode: .fit)
+                .overlay(alignment: .topLeading) {
+                    if playlist.isDemo {
+                        Text("DEMO")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(8)
+                    }
+                }
             Text(playlist.title)
                 .font(.headline)
                 .lineLimit(1)

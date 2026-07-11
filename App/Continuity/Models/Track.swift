@@ -53,6 +53,10 @@ final class Track {
     /// Whether both stems are available for vocal-aware transitions.
     var hasStems: Bool { vocalsRelativePath != nil && accompanimentRelativePath != nil }
 
+    /// A seeded demo track (no real source) — it plays synthesized tones, not real audio. Used to
+    /// label the placeholder sample library so it isn't mistaken for real playback.
+    var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil }
+
     /// Inverse side of the Playlist ↔ Track relationship.
     var playlist: Playlist?
 

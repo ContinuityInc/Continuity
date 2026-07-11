@@ -5,16 +5,27 @@ import SwiftData
 /// (synthesised audio). Replaced in M1 by real YouTube-sourced content + persistence.
 enum SampleData {
 
+    /// Marks that the one-time demo library has been seeded, so we never re-inject the sample
+    /// albums on later launches — even if the user has since deleted them all.
+    private static let seededDefaultsKey = "hasSeededSampleLibrary"
+
     @MainActor
     static func seed(into context: ModelContext) {
-        // Avoid double-seeding if called more than once.
+        // Seed the demo albums exactly once, ever. With a persistent store, guarding only on an
+        // empty library would re-add them any time the user cleared everything.
+        if UserDefaults.standard.bool(forKey: seededDefaultsKey) { return }
+
         let existing = try? context.fetch(FetchDescriptor<Playlist>())
-        if let existing, !existing.isEmpty { return }
+        if let existing, !existing.isEmpty {
+            UserDefaults.standard.set(true, forKey: seededDefaultsKey)
+            return
+        }
 
         for playlist in makePlaylists() {
             context.insert(playlist)
         }
         try? context.save()
+        UserDefaults.standard.set(true, forKey: seededDefaultsKey)
     }
 
     static func makePlaylists() -> [Playlist] {

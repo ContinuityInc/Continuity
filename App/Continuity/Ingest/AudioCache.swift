@@ -1,19 +1,22 @@
 import Foundation
 
-/// On-disk location helper for downloaded audio in the M1 ingestion pipeline.
+/// On-disk location helper for downloaded audio in the ingestion pipeline.
 ///
-/// Cached files live flat in `<Caches>/ContinuityAudio`, named `<videoID>.<container>`.
+/// Files live flat in `<Application Support>/ContinuityAudio`, named `<videoID>.<container>`.
 /// This enum only computes URLs and ensures the directory exists; it does not read,
 /// write, or delete file contents.
 enum AudioCache {
-    /// The directory holding all cached audio, created on first access.
+    /// The directory holding all downloaded audio, created on first access.
     ///
-    /// Located under the user's caches directory so the OS may evict it under
-    /// storage pressure. Intermediate directories are created best-effort.
+    /// Under Application Support (not Caches) so the library survives relaunch and isn't evicted
+    /// under storage pressure. Excluded from iCloud backup — it's large and re-downloadable.
     static var directory: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        let dir = caches.appendingPathComponent("ContinuityAudio", isDirectory: true)
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        var dir = base.appendingPathComponent("ContinuityAudio", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
         return dir
     }
 

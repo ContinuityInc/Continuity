@@ -4,6 +4,8 @@ import SwiftUI
 struct PlaylistDetailView: View {
     let playlist: Playlist
     @Environment(Player.self) private var player
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         List {
@@ -12,7 +14,12 @@ struct PlaylistDetailView: View {
                     TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            player.play(tracks: playlist.orderedTracks, startAt: index)
+                            // A failed ingest can't be played — tapping it retries instead.
+                            if track.prepState == .failed {
+                                prepQueue.enqueue(track, in: modelContext)
+                            } else {
+                                player.play(tracks: playlist.orderedTracks, startAt: index)
+                            }
                         }
                 }
             } header: {
@@ -69,6 +76,14 @@ private struct TrackRow: View {
                     .foregroundStyle(.tint)
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
+            if track.isDemo {
+                Text("DEMO")
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
             prepIndicator
             Text(Theme.time(track.durationSeconds))
                 .font(.caption.monospacedDigit())
@@ -86,9 +101,10 @@ private struct TrackRow: View {
             ProgressView()
                 .controlSize(.mini)
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.red)
+            // Tapping the row retries a failed ingest — the retry glyph signals it's actionable.
+            Image(systemName: "arrow.clockwise")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
         case .ready:
             EmptyView()
         }

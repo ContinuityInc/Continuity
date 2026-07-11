@@ -4,9 +4,14 @@ import Foundation
 /// video ID). Mirrors `AudioCache`: flat files in one directory, addressed by relative path.
 enum StemCache {
     static var directory: URL {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        // Under Application Support (not Caches) so stems persist across launches. Excluded from
+        // iCloud backup — they're large and re-derivable from the cached audio.
+        var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Stems", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
         return dir
     }
 

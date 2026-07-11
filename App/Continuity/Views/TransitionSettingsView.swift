@@ -15,6 +15,37 @@ struct TransitionSettingsView: View {
 
         NavigationStack {
             Form {
+                // MARK: Presets — one-tap starting points
+                Section {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(TransitionSettings.presets) { preset in
+                                let isActive = player.transitionSettings.matchingPresetName == preset.name
+                                Button {
+                                    player.transitionSettings = preset.settings
+                                } label: {
+                                    Text(preset.name)
+                                        .font(.subheadline.weight(.medium))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary),
+                                            in: Capsule()
+                                        )
+                                        .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                } header: {
+                    Text("Presets")
+                } footer: {
+                    Text("A starting point — tweak anything below and the highlight clears.")
+                }
+
                 // MARK: Crossfade (live — actively edits player.transitionSettings)
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -49,10 +80,13 @@ struct TransitionSettingsView: View {
 
                 // MARK: Mixing
                 Section {
-                    // Beatmatching — M3c: tempo-matches tracks with a detected BPM during a blend.
+                    // Beatmatching — tempo-matches AND beat-aligns tracks with a detected BPM/grid.
                     Toggle("Beatmatching", isOn: $player.transitionSettings.beatmatchEnabled)
 
-                    // Harmonic mixing — not yet wired into the transition.
+                    // Bass swap — fades the incoming low end in so basslines don't stack.
+                    Toggle("Bass Swap", isOn: $player.transitionSettings.bassSwapEnabled)
+
+                    // Harmonic mixing — not yet wired into the transition (needs reliable key detection).
                     Toggle("Harmonic Mixing", isOn: $player.transitionSettings.harmonicMixingEnabled)
                         .disabled(true)
 
@@ -66,7 +100,7 @@ struct TransitionSettingsView: View {
                 } header: {
                     Text("Mixing")
                 } footer: {
-                    Text("Beatmatching tempo-matches tracks with a detected BPM. Vocal handling shapes how vocals overlap once a track's stems are separated. Harmonic mixing is coming.")
+                    Text("Beatmatching tempo-matches and beat-aligns tracks with a detected grid. Bass swap fades the incoming low end in so basslines don't clash. Vocal handling shapes how vocals overlap once stems are separated. Harmonic mixing is coming.")
                 }
             }
             .navigationTitle("Transition")

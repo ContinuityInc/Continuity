@@ -16,6 +16,7 @@ final class Deck {
     private let accompPlayer = AVAudioPlayerNode()
     private let stemMixer = AVAudioMixerNode()
     private let timePitch = AVAudioUnitTimePitch()
+    private let eq = AVAudioUnitEQ(numberOfBands: 1)   // low-shelf for the transition bass-swap
     private let deckMixer = AVAudioMixerNode()
 
     private let engine: AVAudioEngine
@@ -36,11 +37,18 @@ final class Deck {
         self.synthFormat = synthFormat
         self.accompFormat = synthFormat
         for node in [vocalsPlayer, accompPlayer] as [AVAudioNode] { engine.attach(node) }
-        engine.attach(stemMixer); engine.attach(timePitch); engine.attach(deckMixer)
+        engine.attach(stemMixer); engine.attach(timePitch); engine.attach(eq); engine.attach(deckMixer)
         engine.connect(vocalsPlayer, to: stemMixer, format: synthFormat)
         engine.connect(accompPlayer, to: stemMixer, format: synthFormat)
         engine.connect(stemMixer, to: timePitch, format: synthFormat)
-        engine.connect(timePitch, to: deckMixer, format: synthFormat)
+        // Low-shelf EQ sits after the tempo unit; its gain is ramped during a blend to swap bass.
+        let low = eq.bands[0]
+        low.filterType = .lowShelf
+        low.frequency = 120
+        low.gain = 0
+        low.bypass = false
+        engine.connect(timePitch, to: eq, format: synthFormat)
+        engine.connect(eq, to: deckMixer, format: synthFormat)
         engine.connect(deckMixer, to: mainMixer, format: synthFormat) // fixed; never reconnected
     }
 
@@ -64,13 +72,19 @@ final class Deck {
         get { timePitch.rate }
         set { timePitch.rate = newValue }
     }
+    /// Low-shelf gain (dB) on this deck's low end. 0 = flat; negative cuts bass. Ramped during a
+    /// blend so the incoming bassline fades in instead of stacking on the outgoing one.
+    var bassGainDB: Float {
+        get { eq.bands[0].gain }
+        set { eq.bands[0].gain = newValue }
+    }
 
     @discardableResult
     func load(_ track: Track) -> TimeInterval {
         stop()
         self.track = track
         timePitch.rate = 1
-        volume = 1; vocalsGain = 1; accompanimentGain = 1
+        volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0
 
         if track.hasStems,
            let vURL = stemURL(track.vocalsRelativePath), let aURL = stemURL(track.accompanimentRelativePath),

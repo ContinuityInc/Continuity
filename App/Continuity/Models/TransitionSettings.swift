@@ -24,12 +24,48 @@ struct TransitionSettings: Codable, Equatable, Sendable {
     var durationSeconds: Double = 8
     /// Crossfade shape (from the verified ContinuityCore curves).
     var curve: CrossfadeCurve = .equalPower
-    /// Tempo-sync the incoming track to the outgoing one.
+    /// Tempo-sync + beat-align the incoming track to the outgoing one.
     var beatmatchEnabled: Bool = true
+    /// Fade the incoming track's low end in over the blend so the two basslines don't stack
+    /// into low-end mud (a low-shelf "bass swap").
+    var bassSwapEnabled: Bool = true
     /// Restrict/queue toward harmonically compatible keys.
     var harmonicMixingEnabled: Bool = true
     /// How to handle overlapping vocals.
     var vocalMode: VocalMode = .duck
 
     static let `default` = TransitionSettings()
+}
+
+/// A named bundle of transition settings for one-tap application in the settings UI.
+struct TransitionPreset: Identifiable, Equatable {
+    var id: String { name }
+    let name: String
+    let settings: TransitionSettings
+}
+
+extension TransitionSettings {
+    /// Built-in starting points, from most seamless to a hard cut.
+    static let presets: [TransitionPreset] = [
+        TransitionPreset(name: "Smooth", settings: TransitionSettings(
+            durationSeconds: 12, curve: .equalPower, beatmatchEnabled: true,
+            bassSwapEnabled: true, harmonicMixingEnabled: true, vocalMode: .duck)),
+        TransitionPreset(name: "Club", settings: TransitionSettings(
+            durationSeconds: 8, curve: .smooth, beatmatchEnabled: true,
+            bassSwapEnabled: true, harmonicMixingEnabled: true, vocalMode: .instrumentalOverlap)),
+        TransitionPreset(name: "Quick", settings: TransitionSettings(
+            durationSeconds: 4, curve: .equalPower, beatmatchEnabled: true,
+            bassSwapEnabled: true, harmonicMixingEnabled: true, vocalMode: .hardSwap)),
+        TransitionPreset(name: "Radio", settings: TransitionSettings(
+            durationSeconds: 2, curve: .equalPower, beatmatchEnabled: false,
+            bassSwapEnabled: false, harmonicMixingEnabled: true, vocalMode: .hardSwap)),
+        TransitionPreset(name: "Cut", settings: TransitionSettings(
+            durationSeconds: 0, curve: .linear, beatmatchEnabled: false,
+            bassSwapEnabled: false, harmonicMixingEnabled: true, vocalMode: .hardSwap)),
+    ]
+
+    /// Name of the built-in preset matching these settings exactly, if any (for highlighting).
+    var matchingPresetName: String? {
+        TransitionSettings.presets.first { $0.settings == self }?.name
+    }
 }

@@ -11,9 +11,9 @@ struct ContinuityApp: App {
     init() {
         do {
             let schema = Schema([Playlist.self, Track.self])
-            // M0 uses an in-memory store seeded with sample data. M1 switches to a
-            // persistent configuration once real ingested content needs to survive launches.
-            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            // Persistent on-disk store so imported playlists/tracks + their analysis survive
+            // relaunches. Sample content is seeded exactly once (see SampleData.seed).
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             let container = try ModelContainer(for: schema, configurations: configuration)
             SampleData.seed(into: container.mainContext)
             self.container = container
