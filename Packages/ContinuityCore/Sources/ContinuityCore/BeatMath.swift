@@ -36,6 +36,16 @@ public enum BeatMath {
         return 60.0 / bpm
     }
 
+    /// The playback rate to apply to an INCOMING track so it beat-matches the outgoing track,
+    /// using the nearest half/double interpretation. Returns `nil` when either tempo is unknown
+    /// or the required time-stretch exceeds `maxPercent` — beyond which stretching audibly degrades,
+    /// so the caller should fall back to a non-beatmatched (plain equal-power) crossfade.
+    public static func matchRate(incomingBPM: Double, outgoingBPM: Double, maxPercent: Double = 8) -> Double? {
+        guard incomingBPM > 0, outgoingBPM > 0 else { return nil }
+        let ratio = bestTempoRatio(fromBPM: incomingBPM, toBPM: outgoingBPM)
+        return isStretchAcceptable(ratio, maxPercent: maxPercent) ? ratio : nil
+    }
+
     /// The sample frame at which to start the incoming deck so that its first downbeat
     /// lands exactly on the chosen outgoing beat.
     ///
