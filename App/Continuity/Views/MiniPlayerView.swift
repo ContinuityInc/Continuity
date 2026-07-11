@@ -7,7 +7,7 @@ struct MiniPlayerView: View {
     var body: some View {
         HStack(spacing: 12) {
             if let track = player.currentTrack {
-                ArtworkView(symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
+                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
                     .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(track.title).font(.subheadline.weight(.semibold)).lineLimit(1)

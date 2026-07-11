@@ -41,4 +41,9 @@ final class Playlist {
 
     /// True when every track is a synthesized demo (the seeded sample albums).
     var isDemo: Bool { !tracks.isEmpty && tracks.allSatisfy(\.isDemo) }
+
+    /// Cover art for the playlist card: the first track that has real artwork.
+    var artworkURL: URL? {
+        orderedTracks.lazy.compactMap(\.artworkURL).first
+    }
 }

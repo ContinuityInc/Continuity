@@ -49,3 +49,28 @@ struct ArtworkView: View {
             )
     }
 }
+
+/// Artwork tile that shows real remote cover art when available (YouTube thumbnail), falling
+/// back to the gradient `ArtworkView` while loading or when there is none (demo tracks).
+struct RemoteArtworkView: View {
+    let url: URL?
+    let symbol: String
+    let seed: Int
+    var cornerRadius: CGFloat = 16
+
+    var body: some View {
+        if let url {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    // YouTube thumbs are 4:3 with letterboxing; fill the square tile.
+                    Color.clear.overlay(image.resizable().scaledToFill())
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                } else {
+                    ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
+                }
+            }
+        } else {
+            ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
+        }
+    }
+}

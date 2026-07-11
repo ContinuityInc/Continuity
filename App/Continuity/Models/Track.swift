@@ -57,6 +57,12 @@ final class Track {
     /// label the placeholder sample library so it isn't mistaken for real playback.
     var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil }
 
+    /// Real cover art for YouTube-sourced tracks: the video's thumbnail, served from YouTube's
+    /// deterministic thumbnail CDN (no API call needed). nil for demo tracks → gradient artwork.
+    var artworkURL: URL? {
+        youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }
+    }
+
     /// Inverse side of the Playlist ↔ Track relationship.
     var playlist: Playlist?
 

@@ -39,9 +39,11 @@ struct RootView: View {
             NowPlayingView()
                 .presentationDragIndicator(.visible)
         }
-        // On launch, pick up any ingestion left unfinished by a previous run (interrupted
-        // imports, evicted files, half-separated stems).
+        // On launch: drop cached files orphaned by deletions (in-flight downloads can land after
+        // their tracks are gone), then pick up any ingestion left unfinished by a previous run
+        // (interrupted imports, evicted files, half-separated stems).
         .task {
+            LibraryCleanup.sweepOrphanedFiles(in: modelContext)
             prepQueue.resumePreparation(in: modelContext)
         }
     }
