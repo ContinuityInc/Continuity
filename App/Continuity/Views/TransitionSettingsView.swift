@@ -86,9 +86,8 @@ struct TransitionSettingsView: View {
                     // Bass swap — fades the incoming low end in so basslines don't stack.
                     Toggle("Bass Swap", isOn: $player.transitionSettings.bassSwapEnabled)
 
-                    // Harmonic mixing — not yet wired into the transition (needs reliable key detection).
+                    // Harmonic mixing — nudges the incoming track into a Camelot-compatible key.
                     Toggle("Harmonic Mixing", isOn: $player.transitionSettings.harmonicMixingEnabled)
-                        .disabled(true)
 
                     // Vocal handling — M4: how vocals overlap (applies once a track's stems exist).
                     Picker("Vocals", selection: $player.transitionSettings.vocalMode) {
@@ -100,7 +99,7 @@ struct TransitionSettingsView: View {
                 } header: {
                     Text("Mixing")
                 } footer: {
-                    Text("Beatmatching tempo-matches and beat-aligns tracks with a detected grid. Bass swap fades the incoming low end in so basslines don't clash. Vocal handling shapes how vocals overlap once stems are separated. Harmonic mixing is coming.")
+                    Text("Beatmatching tempo-matches and beat-aligns tracks with a detected grid. Bass swap fades the incoming low end in so basslines don't clash. Harmonic mixing nudges the incoming track up to a semitone into a compatible key. Vocal handling shapes how vocals overlap once stems are separated.")
                 }
             }
             .navigationTitle("Transition")

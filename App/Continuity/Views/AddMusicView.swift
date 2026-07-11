@@ -166,9 +166,8 @@ struct AddMusicView: View {
     private func addSingleVideo(_ videoID: String) {
         let playlist = findOrCreateYouTubePlaylist()
 
-        // NOTE: title/artist/duration/artwork are placeholders — fetching real video
-        // metadata (oEmbed / player response) is a later ingestion task. For now we key
-        // the title off the video ID so the row is recognisable before it's ready.
+        // Title/artist/duration start as placeholders so the row appears instantly; the
+        // ingest pipeline replaces them with the real oEmbed title/channel + decoded duration.
         let track = Track(
             title: "YouTube Video (\(videoID.prefix(6)))",
             artist: "YouTube",

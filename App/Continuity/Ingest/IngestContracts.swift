@@ -64,6 +64,18 @@ protocol YouTubeSearching: Sendable {
     func firstVideoID(query: String) async throws -> String?
 }
 
+/// Real display metadata for one YouTube video (title + channel/author).
+struct VideoMetadata: Sendable, Equatable {
+    let title: String
+    let author: String?
+}
+
+/// Resolves a video ID to its display metadata.
+/// Implemented by `YouTubeOEmbedResolver`.
+protocol VideoMetadataResolving: Sendable {
+    func metadata(videoID: String) async throws -> VideoMetadata
+}
+
 /// Downloads a resolved stream to local storage and returns the on-disk file URL.
 /// Implemented by `AudioDownloader`.
 protocol AudioFileDownloading: Sendable {

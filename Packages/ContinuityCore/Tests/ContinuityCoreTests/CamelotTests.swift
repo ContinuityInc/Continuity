@@ -51,4 +51,38 @@ final class CamelotTests: XCTestCase {
         // C major and A minor are relative keys -> harmonically compatible.
         XCTAssertTrue(MusicalKey.cMajor.camelot.isCompatible(with: MusicalKey.aMinor.camelot))
     }
+
+    func testParse() {
+        XCTAssertEqual(Camelot.parse("8B"), Camelot(number: 8, side: .b))
+        XCTAssertEqual(Camelot.parse("12a"), Camelot(number: 12, side: .a))
+        XCTAssertEqual(Camelot.parse(" 1A "), Camelot(number: 1, side: .a))
+        XCTAssertNil(Camelot.parse("13B"))   // hour out of range
+        XCTAssertNil(Camelot.parse("8C"))    // bad side
+        XCTAssertNil(Camelot.parse("B8"))
+        XCTAssertNil(Camelot.parse(""))
+    }
+
+    func testTransposition() {
+        // C major (8B) up a semitone is C#/Db major (3B): +7 hours on the wheel.
+        XCTAssertEqual(Camelot(number: 8, side: .b).transposed(bySemitones: 1), Camelot(number: 3, side: .b))
+        // Down a semitone from C major is B major (1B).
+        XCTAssertEqual(Camelot(number: 8, side: .b).transposed(bySemitones: -1), Camelot(number: 1, side: .b))
+        // A full octave (12 semitones) is the identity.
+        XCTAssertEqual(Camelot(number: 5, side: .a).transposed(bySemitones: 12), Camelot(number: 5, side: .a))
+    }
+
+    func testPitchShiftPrefersNoShift() {
+        // Already compatible (relative / neighbour) -> shift 0.
+        XCTAssertEqual(HarmonicMix.pitchShiftSemitones(incoming: Camelot.parse("8B")!, outgoing: Camelot.parse("8A")!), 0)
+        XCTAssertEqual(HarmonicMix.pitchShiftSemitones(incoming: Camelot.parse("9B")!, outgoing: Camelot.parse("8B")!), 0)
+    }
+
+    func testPitchShiftFindsSemitoneNudge() {
+        // C major (8B) into D major (10B): +1 -> 3B (no), -1 -> 1B (no) -> nil (too far to nudge).
+        XCTAssertNil(HarmonicMix.pitchShiftSemitones(incoming: Camelot.parse("8B")!, outgoing: Camelot.parse("10B")!))
+        // C major (8B) into E major (12B): +1 -> 3B (no), -1 -> 1B, a neighbour of 12B -> -1.
+        XCTAssertEqual(HarmonicMix.pitchShiftSemitones(incoming: Camelot.parse("8B")!, outgoing: Camelot.parse("12B")!), -1)
+        // F major (7B) into F# major (2B): +1 semitone lands exactly on 2B -> +1.
+        XCTAssertEqual(HarmonicMix.pitchShiftSemitones(incoming: Camelot.parse("7B")!, outgoing: Camelot.parse("2B")!), 1)
+    }
 }
