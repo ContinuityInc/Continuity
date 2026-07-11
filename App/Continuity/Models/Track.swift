@@ -44,6 +44,9 @@ final class Track {
     var camelotCode: String?
     /// Beat onset times (seconds) — the beat grid used for beat-aligned transitions.
     var beatTimes: [Double] = []
+    /// `TrackAnalyzer.analysisVersion` that produced the fields above; below-current (or nil)
+    /// triggers a launch-time re-analysis so analyzer fixes reach existing tracks.
+    var analysisVersion: Int?
 
     // MARK: Gapless (M5) — audible bounds from the silence scan, nil until scanned
     /// Time (s) of the first audible audio — leading silence ends here.

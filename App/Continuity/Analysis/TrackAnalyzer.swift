@@ -16,6 +16,12 @@ struct TrackAnalysis: Sendable {
 /// `analyze` is CPU-heavy (FFTs) and intentionally NOT `@MainActor` — callers run it off the main
 /// actor (e.g. `Task.detached`) and apply the `Sendable` result on the main actor.
 enum TrackAnalyzer {
+    /// Bump when analyzer improvements should retroactively re-analyze the library. Tracks
+    /// stamped below this (or unstamped) re-analyze at launch — otherwise results computed by an
+    /// old, buggier analyzer persist forever (e.g. keys detected before the tuning-correction fix).
+    /// v2 = tuning-corrected KeyDetector (PR #10).
+    static let analysisVersion = 2
+
     /// Only the first few minutes are analysed: tempo and key are stable over a track, and this
     /// bounds memory + time for long mixes/podcasts (no multi-GB whole-file decode).
     private static let maxAnalysisSeconds: Double = 360 // 6 minutes

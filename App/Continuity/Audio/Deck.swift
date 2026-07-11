@@ -120,11 +120,16 @@ final class Deck {
     }
 
     func play() {
+        // AVAudioPlayerNode.play() throws an ObjC exception ("_engine->IsRunning()") when the
+        // engine was stopped out from under us — interruptions, route changes, config resets.
+        // No-op instead; the Player's audio-environment recovery reschedules and replays.
+        guard engine.isRunning else { return }
         accompPlayer.play()
         if hasStems { vocalsPlayer.play() }
     }
 
     func pause() {
+        guard engine.isRunning else { return }
         accompPlayer.pause()
         if hasStems { vocalsPlayer.pause() }
     }
