@@ -48,14 +48,19 @@ final class OnnxStemSeparator: StemSeparating {
         let (left, right, frames) = try decodePlanar(inputURL)
         guard frames > 0 else { throw StemSeparationError.decode("no audio frames") }
 
-        // ONNX Runtime session — prefer the CoreML EP (Neural Engine) when available, else CPU.
+        // ONNX Runtime session — prefer the CoreML EP (Neural Engine) on a real device, else CPU.
         let session: ORTSession
         do {
             let env = try ORTEnv(loggingLevel: .warning)
             let options = try ORTSessionOptions()
+            // On the Simulator CoreML has no ANE/GPU and routes the whole model through a serial
+            // CPU-fallback queue — orders of magnitude slower than ORT's own CPU EP. Only use
+            // CoreML on hardware.
+            #if !targetEnvironment(simulator)
             if ORTIsCoreMLExecutionProviderAvailable() {
                 try? options.appendCoreMLExecutionProvider(with: ORTCoreMLExecutionProviderOptions())
             }
+            #endif
             session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
         } catch {
             throw StemSeparationError.inference("session: \(error)")
