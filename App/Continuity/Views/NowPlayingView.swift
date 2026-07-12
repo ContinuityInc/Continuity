@@ -141,8 +141,15 @@ struct NowPlayingView: View {
             }
             .buttonStyle(.glassProminent)
             .clipShape(Circle())
-            Button { player.next() } label: {
-                Image(systemName: "forward.fill").font(.title)
+            VStack(spacing: 4) {
+                Button { player.next() } label: {
+                    Image(systemName: "forward.fill").font(.title)
+                }
+                .disabled(player.skipsRemaining == 0)
+                .opacity(player.skipsRemaining == 0 ? 0.35 : 1)
+                Text("\(player.skipsRemaining)")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
         }
         .tint(.primary)

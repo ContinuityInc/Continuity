@@ -1,50 +1,45 @@
 import SwiftUI
+import SwiftData
 
-/// Top-level shell: the library, with a Liquid Glass mini-player docked at the bottom that
-/// expands into the full Now Playing sheet.
+/// Top-level shell: the app always opens onto the minimal Now Playing screen, resuming the
+/// previous session's song (or staging COMË N GO on first launch). The library lives in a
+/// sheet behind its corner button.
 struct RootView: View {
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
-    @State private var showNowPlaying = false
-    @State private var showingAdd = false
 
     var body: some View {
-        NavigationStack {
-            LibraryView()
-                .navigationTitle("Continuity")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            showingAdd = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add music")
-                    }
-                }
-        }
-        .sheet(isPresented: $showingAdd) {
-            AddMusicView()
-        }
-        .safeAreaInset(edge: .bottom) {
-            if player.currentTrack != nil {
-                MiniPlayerView()
-                    .onTapGesture { showNowPlaying = true }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
+        MinimalNowPlayingView()
+            // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
+            // then bring back the previous playback session (or stage the first-run track).
+            .task {
+                LibraryCleanup.sweepOrphanedFiles(in: modelContext)
+                prepQueue.resumePreparation(in: modelContext)
+                restorePlaybackSession()
             }
+    }
+
+    /// Restores the persisted session — same song, position, skip budget, and history — or, on a
+    /// fresh install, stages COMË N GO paused at the start of its playlist.
+    private func restorePlaybackSession() {
+        guard player.currentTrack == nil else { return }   // already playing (e.g. state restore re-entry)
+        let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
+
+        if let state = PlaybackStateStore.load() {
+            let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+            player.restore(state, resolving: byID)
+            if player.currentTrack != nil { return }
+            // Every persisted track was deleted — fall through to the first-run seed.
         }
-        .sheet(isPresented: $showNowPlaying) {
-            NowPlayingView()
-                .presentationDragIndicator(.visible)
-        }
-        // On launch: drop cached files orphaned by deletions (in-flight downloads can land after
-        // their tracks are gone), then pick up any ingestion left unfinished by a previous run
-        // (interrupted imports, evicted files, half-separated stems).
-        .task {
-            LibraryCleanup.sweepOrphanedFiles(in: modelContext)
-            prepQueue.resumePreparation(in: modelContext)
-        }
+
+        // First launch (or an emptied library): COMË N GO is always the first song. Prefer the
+        // real ingested track over the demo of the same name; queue its whole playlist from there.
+        let candidates = tracks.filter { $0.title.localizedCaseInsensitiveContains("COMË N GO") }
+        guard let seed = candidates.first(where: { !$0.isDemo }) ?? candidates.first,
+              let playlist = seed.playlist else { return }
+        let queue = playlist.orderedTracks
+        guard let index = queue.firstIndex(where: { $0.id == seed.id }) else { return }
+        player.prepare(tracks: queue, startAt: index)
     }
 }

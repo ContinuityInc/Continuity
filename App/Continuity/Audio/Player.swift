@@ -184,13 +184,87 @@ final class Player {
         try? session.setActive(true)
     }
 
+    // MARK: Skip budget + history
+
+    /// Radio-style forward-skip budget: `next()` spends one; finishing a track naturally earns
+    /// one back (capped). Previous-skips are unlimited and walk the persistent play history.
+    static let maxSkips = 3
+    private(set) var skipsRemaining = Player.maxSkips
+    /// IDs of previously played tracks, most recent last. Persisted, so "previous" works across
+    /// launches.
+    private var historyIDs: [UUID] = []
+    /// Ticks since the last periodic state save (persist every ~5 s while playing).
+    private var ticksSincePersist = 0
+
+    /// Records that we're leaving `track` by moving forward, so previous() can come back to it.
+    private func pushHistory(_ track: Track?) {
+        guard let track else { return }
+        historyIDs.append(track.id)
+        if historyIDs.count > 200 { historyIDs.removeFirst(historyIDs.count - 200) }
+    }
+
+    /// Saves the full playback session (queue, position, skips, history) for the next launch.
+    private func persistState() {
+        guard !queue.isEmpty else { return }
+        PlaybackStateStore.save(PersistedPlaybackState(
+            queueTrackIDs: queue.map(\.id),
+            currentIndex: currentIndex,
+            positionSeconds: position,
+            skipsRemaining: skipsRemaining,
+            historyTrackIDs: historyIDs
+        ))
+    }
+
     // MARK: Transport
 
     func play(tracks: [Track], startAt index: Int) {
         cancelTransition()
+        pushHistory(currentTrack)
         queue = tracks
         currentIndex = max(0, min(index, tracks.count - 1))
         startCurrentFresh()
+        persistState()
+    }
+
+    /// Like `play(tracks:startAt:)` but left paused at the start — used to stage the session's
+    /// first track on the Now Playing screen without blasting audio at launch.
+    func prepare(tracks: [Track], startAt index: Int) {
+        cancelTransition()
+        queue = tracks
+        currentIndex = max(0, min(index, tracks.count - 1))
+        guard let track = currentTrack else { return }
+        idleDeck.stop()
+        currentDeck.stop()
+        currentDeck.load(track)
+        currentPitchShiftSemitones = 0
+        baselineSeconds = 0
+        position = 0
+        isPlaying = false
+        persistState()
+    }
+
+    /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the
+    /// current track loaded and paused at its saved position.
+    func restore(_ state: PersistedPlaybackState, resolving tracksByID: [UUID: Track]) {
+        let tracks = state.queueTrackIDs.compactMap { tracksByID[$0] }
+        guard !tracks.isEmpty else { return }
+        skipsRemaining = max(0, min(Player.maxSkips, state.skipsRemaining))
+        historyIDs = state.historyTrackIDs.filter { tracksByID[$0] != nil }
+
+        // Map the saved index through any dropped tracks by following the saved current track ID.
+        let savedCurrentID = state.queueTrackIDs.indices.contains(state.currentIndex)
+            ? state.queueTrackIDs[state.currentIndex] : nil
+        let index = savedCurrentID.flatMap { id in tracks.firstIndex { $0.id == id } } ?? 0
+
+        prepare(tracks: tracks, startAt: index)
+
+        // Seek to the saved spot (real files only; the synth loop is position-agnostic).
+        let target = max(0, min(state.positionSeconds, duration > 0 ? duration : state.positionSeconds))
+        if target > 0, currentDeck.seekRealFile(to: target) {
+            baselineSeconds = target
+            position = target
+        }
+        persistState()
     }
 
     func togglePlayPause() {
@@ -213,25 +287,39 @@ final class Player {
                 startTimer()
             }
         }
+        persistState()
     }
 
     func next() {
-        guard !queue.isEmpty else { return }
+        guard !queue.isEmpty, skipsRemaining > 0 else { return }
+        skipsRemaining -= 1
         cancelTransition()
+        pushHistory(currentTrack)
         currentIndex = (currentIndex + 1) % queue.count
         startCurrentFresh()
+        persistState()
     }
 
     func previous() {
         guard !queue.isEmpty else { return }
         cancelTransition()
-        // Restart the current track if we're more than 3s in; otherwise go back one.
+        // Restart the current track if we're more than 3s in; otherwise step back through the
+        // play history (unlimited), falling back to the previous queue slot when history is empty
+        // or refers to tracks no longer in the queue.
         if position > 3 {
             startCurrentFresh()
             return
         }
-        currentIndex = (currentIndex - 1 + queue.count) % queue.count
+        var backIndex: Int?
+        while let lastID = historyIDs.popLast() {
+            if let found = queue.firstIndex(where: { $0.id == lastID }) {
+                backIndex = found
+                break
+            }
+        }
+        currentIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
         startCurrentFresh()
+        persistState()
     }
 
     /// Removes deleted tracks from the live queue BEFORE their SwiftData models are destroyed —
@@ -239,6 +327,8 @@ final class Player {
     /// case: blend target deleted (cancel the blend), current track deleted (jump to the next
     /// surviving track, preserving play/pause state), and plain queue shrinkage (fix indices).
     func handleDeleted(trackIDs: Set<UUID>) {
+        historyIDs.removeAll { trackIDs.contains($0) }
+        defer { persistState() }
         guard queue.contains(where: { trackIDs.contains($0.id) }) else { return }
 
         // Cancel an in-flight blend if either side of it is going away.
@@ -356,6 +446,12 @@ final class Player {
         guard isPlaying else { return }
         let elapsed = baselineSeconds + currentDeck.elapsed
         position = elapsed
+        // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
+        ticksSincePersist += 1
+        if ticksSincePersist >= 100 {
+            ticksSincePersist = 0
+            persistState()
+        }
         let dur = effectiveEndSeconds
         let plan = TransitionPlan(curve: transitionSettings.curve, duration: transitionSettings.durationSeconds)
 
@@ -507,6 +603,10 @@ final class Player {
         incoming.volume = 1
         incoming.vocalsGain = 1
         incoming.bassGainDB = 0
+        // The outgoing track played to its natural end — earn one forward skip back (capped),
+        // and remember it in the history for unlimited previous-skips.
+        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+        pushHistory(currentTrack)
         currentDeck = incoming
         currentIndex = transitionTargetIndex
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
@@ -516,6 +616,7 @@ final class Player {
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         isTransitioning = false
         transitionProgress = 0
+        persistState()
     }
 
     /// Cancels an in-flight transition, discarding the incoming deck. `currentDeck`/`currentIndex`
@@ -534,13 +635,19 @@ final class Player {
     }
 
     private func hardAdvance(toIndex index: Int) {
+        // Auto-advance (blend off / too short to blend): a natural completion, like
+        // finishTransition — earn a skip back and record the history step.
+        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+        pushHistory(currentTrack)
         currentIndex = index
         startCurrentFresh()
+        persistState()
     }
 
     private func stopPlayback() {
         currentDeck.pause()
         isPlaying = false
         stopTimer()
+        persistState()
     }
 }
