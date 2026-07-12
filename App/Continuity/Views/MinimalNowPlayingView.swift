@@ -12,11 +12,8 @@ struct MinimalNowPlayingView: View {
         ZStack {
             backdrop
 
-            VStack(spacing: 0) {
-                Spacer()
-                transport
-                    .padding(.bottom, 96)
-            }
+            // Transport sits dead-center on the artwork.
+            transport
         }
         .overlay(alignment: .topTrailing) {
             libraryButton
@@ -76,7 +73,8 @@ struct MinimalNowPlayingView: View {
             } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 44))
-                    .frame(width: 84, height: 84)
+                    .frame(width: 96, height: 96)
+                    .background(Circle().fill(Color.accentColor))   // accent circle behind play
             }
 
             // Next — spends one of the limited forward skips; the count sits underneath.
@@ -121,6 +119,8 @@ struct MinimalNowPlayingView: View {
 /// browse/add/delete playlists, with the mini player and the detailed Now Playing sheet intact.
 private struct LibrarySheetView: View {
     @Environment(Player.self) private var player
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
     @State private var showNowPlaying = false
     @State private var showingAdd = false
 
@@ -129,6 +129,17 @@ private struct LibrarySheetView: View {
             LibraryView()
                 .navigationTitle("Continuity")
                 .toolbar {
+                    // Manual whole-library sync (source-backed playlists only).
+                    ToolbarItem(placement: .secondaryAction) {
+                        Button {
+                            prepQueue.syncAll(in: modelContext)
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .symbolEffect(.rotate, isActive: !prepQueue.syncingPlaylistIDs.isEmpty)
+                        }
+                        .disabled(!prepQueue.syncingPlaylistIDs.isEmpty)
+                        .accessibilityLabel("Sync library")
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             showingAdd = true

@@ -14,9 +14,15 @@ struct RootView: View {
             // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
             // then bring back the previous playback session (or stage the first-run track).
             .task {
+                // Sync-driven deletions must clear the live queue before models are destroyed.
+                prepQueue.onTracksDeleted = { [weak player] ids in
+                    player?.handleDeleted(trackIDs: ids)
+                }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()
+                // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
+                prepQueue.autoSyncIfNeeded(in: modelContext)
             }
     }
 
