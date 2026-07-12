@@ -238,6 +238,7 @@ final class PreparationQueue {
                     track.beatTimes = analysis.beatTimes
                     track.keyName = analysis.key?.displayName
                     track.camelotCode = analysis.camelot?.code
+                    track.analysisVersion = TrackAnalyzer.analysisVersion
                 }
                 prepared = true
             }
@@ -277,7 +278,9 @@ final class PreparationQueue {
         let needsTitle = Self.hasPlaceholderMetadata(track)
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
         let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil
-        guard needsTitle || needsDuration || needsSilenceScan else { return }
+        let needsReanalysis = track.localRelativePath != nil
+            && (track.analysisVersion ?? 0) < TrackAnalyzer.analysisVersion
+        guard needsTitle || needsDuration || needsSilenceScan || needsReanalysis else { return }
 
         Task {
             guard track.modelContext != nil else { return }
@@ -295,6 +298,24 @@ final class PreparationQueue {
                 if let bounds, track.modelContext != nil {
                     track.audibleStartSeconds = bounds.audibleStart
                     track.audibleEndSeconds = bounds.audibleEnd
+                }
+            }
+            // Stale analysis: results computed by an older analyzer (e.g. pre-fix key detection)
+            // are refreshed so fixes reach the existing library. CPU-heavy → limiter-gated,
+            // off the main actor.
+            if needsReanalysis, track.modelContext != nil, let relativePath = track.localRelativePath {
+                let url = AudioCache.url(forRelativePath: relativePath)
+                await ingestLimiter.acquire()
+                let analysis = try? await Task.detached(priority: .utility) {
+                    try TrackAnalyzer.analyze(fileURL: url)
+                }.value
+                await ingestLimiter.release()
+                if let analysis, track.modelContext != nil {
+                    track.bpm = analysis.bpm > 0 ? analysis.bpm : nil
+                    track.beatTimes = analysis.beatTimes
+                    track.keyName = analysis.key?.displayName
+                    track.camelotCode = analysis.camelot?.code
+                    track.analysisVersion = TrackAnalyzer.analysisVersion
                 }
             }
             if needsTitle, let id = track.youtubeVideoID {
