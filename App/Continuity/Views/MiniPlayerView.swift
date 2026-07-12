@@ -30,6 +30,8 @@ struct MiniPlayerView: View {
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .disabled(player.skipsRemaining == 0)
+                .opacity(player.skipsRemaining == 0 ? 0.35 : 1)
             }
         }
         .padding(.horizontal, 12)
