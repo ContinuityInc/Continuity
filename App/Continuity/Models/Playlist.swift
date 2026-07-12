@@ -1,6 +1,13 @@
 import Foundation
 import SwiftData
 
+/// Where an imported playlist's tracklist lives remotely, for re-fetching on sync.
+enum PlaylistSource: String, Codable, Sendable {
+    case youtube
+    case spotifyPlaylist
+    case spotifyAlbum
+}
+
 /// A playlist or album. For M0 both concepts are represented by this one model; the
 /// library surfaces them as a simple grid of cards.
 @Model
@@ -11,6 +18,23 @@ final class Playlist {
     var artworkSymbol: String
     var gradientSeed: Int
     var createdAt: Date
+
+    // MARK: Source sync (playlists imported from YouTube/Spotify)
+    /// The remote service this playlist mirrors; nil for local/demo playlists.
+    private var sourceKindRaw: String?
+    /// The remote playlist/album ID at `sourceKind`.
+    var sourceID: String?
+    /// Opt-out: source-backed playlists refresh from the remote automatically unless disabled.
+    var autoSyncEnabled: Bool = true
+    /// When this playlist last successfully synced with its source.
+    var lastSyncedAt: Date?
+
+    var sourceKind: PlaylistSource? {
+        get { sourceKindRaw.flatMap(PlaylistSource.init(rawValue:)) }
+        set { sourceKindRaw = newValue?.rawValue }
+    }
+    /// Whether this playlist can be re-fetched from a remote source (and thus synced).
+    var isSourceBacked: Bool { sourceKind != nil && sourceID != nil }
 
     /// Owning side of the relationship; deleting a playlist deletes its tracks.
     @Relationship(deleteRule: .cascade, inverse: \Track.playlist)

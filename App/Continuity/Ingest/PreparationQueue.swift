@@ -7,6 +7,8 @@ import os
 extension Logger {
     /// Stem-separation pipeline logging (subsystem matches the bundle id for easy filtering).
     static let stems = Logger(subsystem: "com.continuity.app", category: "stems")
+    /// Playlist source-sync logging.
+    static let sync = Logger(subsystem: "com.continuity.app", category: "sync")
 }
 
 /// Drives tracks through the M1 ingest pipeline (resolve → download → analyse → ready) and,
@@ -121,6 +123,9 @@ final class PreparationQueue {
             artworkSymbol: "music.note.list",
             gradientSeed: seed
         )
+        playlist.sourceKind = .youtube
+        playlist.sourceID = resolved.playlistID
+        playlist.lastSyncedAt = Date()
         context.insert(playlist)
 
         for (index, item) in resolved.items.enumerated() {
@@ -162,6 +167,9 @@ final class PreparationQueue {
             artworkSymbol: "music.note.list",
             gradientSeed: seed
         )
+        playlist.sourceKind = link.kind == .album ? .spotifyAlbum : .spotifyPlaylist
+        playlist.sourceID = link.id
+        playlist.lastSyncedAt = Date()
         context.insert(playlist)
 
         for (index, spotifyTrack) in resolved.tracks.enumerated() {
@@ -182,6 +190,157 @@ final class PreparationQueue {
         }
         try? context.save()
         return playlist
+    }
+
+    // MARK: - Source sync
+
+    /// Playlists currently syncing (drives spinners and disables sync buttons).
+    private(set) var syncingPlaylistIDs: Set<UUID> = []
+
+    /// Coordination hook: sync deletes tracks removed remotely, and the live `Player` must drop
+    /// them from its queue BEFORE the models die. Wired to `Player.handleDeleted` at startup.
+    var onTracksDeleted: ((Set<UUID>) -> Void)?
+
+    /// How stale a playlist may get before launch-time auto-sync refreshes it. Sync is **polling**
+    /// (at launch + manual): push would need server infrastructure neither YouTube nor Spotify
+    /// offers a client-only app.
+    private static let autoSyncStaleness: TimeInterval = 6 * 60 * 60
+
+    /// Launch-time polling pass: refreshes each source-backed playlist that has auto-sync on
+    /// (the opt-out) and hasn't synced recently.
+    func autoSyncIfNeeded(in context: ModelContext) {
+        guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
+        for playlist in playlists where playlist.isSourceBacked && playlist.autoSyncEnabled {
+            let stale = playlist.lastSyncedAt.map {
+                Date().timeIntervalSince($0) > Self.autoSyncStaleness
+            } ?? true
+            if stale {
+                Task { await syncPlaylist(playlist, in: context) }
+            }
+        }
+    }
+
+    /// Manual "sync everything now" — ignores staleness but still skips in-flight playlists.
+    func syncAll(in context: ModelContext) {
+        guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
+        for playlist in playlists where playlist.isSourceBacked {
+            Task { await syncPlaylist(playlist, in: context) }
+        }
+    }
+
+    /// Mirrors one playlist against its remote source: tracks added remotely are created (and
+    /// ingested), tracks removed remotely are deleted locally (Player-coordinated, files cleaned
+    /// share-aware), and local ordering follows the remote. Best-effort: a resolve failure leaves
+    /// the local playlist untouched.
+    func syncPlaylist(_ playlist: Playlist, in context: ModelContext) async {
+        guard playlist.isSourceBacked, let sourceID = playlist.sourceID, let kind = playlist.sourceKind,
+              !syncingPlaylistIDs.contains(playlist.id) else { return }
+        syncingPlaylistIDs.insert(playlist.id)
+        defer { syncingPlaylistIDs.remove(playlist.id) }
+
+        do {
+            switch kind {
+            case .youtube:
+                let resolved = try await playlistResolver.resolvePlaylist(playlistID: sourceID)
+                guard playlist.modelContext != nil, !resolved.items.isEmpty else { return }
+                applyYouTubeSync(resolved.items, to: playlist, in: context)
+            case .spotifyPlaylist, .spotifyAlbum:
+                let link = SpotifyLink(kind: kind == .spotifyAlbum ? .album : .playlist, id: sourceID)
+                let resolved = try await spotifyResolver.resolvePlaylist(link)
+                guard playlist.modelContext != nil, !resolved.tracks.isEmpty else { return }
+                applySpotifySync(resolved.tracks, to: playlist, in: context)
+            }
+            playlist.lastSyncedAt = Date()
+            try? context.save()
+            Logger.sync.info("synced \(playlist.title, privacy: .public)")
+        } catch {
+            // The local playlist is never modified on a failed fetch; next sync retries.
+            Logger.sync.error("sync failed for \(playlist.title, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Applies a fresh remote YouTube tracklist: key = video ID.
+    private func applyYouTubeSync(_ remote: [YouTubePlaylistItem], to playlist: Playlist, in context: ModelContext) {
+        var localByKey: [String: Track] = [:]
+        for track in playlist.tracks {
+            if let id = track.youtubeVideoID { localByKey[id] = track }
+        }
+
+        let remoteKeys = Set(remote.map(\.videoID))
+        removeTracks(playlist.tracks.filter { track in
+            guard let id = track.youtubeVideoID else { return false }
+            return !remoteKeys.contains(id)
+        }, in: context)
+
+        let seed = playlist.gradientSeed
+        for (index, item) in remote.enumerated() {
+            if let existing = localByKey[item.videoID] {
+                existing.sortIndex = index      // follow remote ordering
+            } else {
+                let track = Track(
+                    title: item.title ?? "YouTube Video (\(item.videoID.prefix(6)))",
+                    artist: item.author ?? "YouTube",
+                    durationSeconds: Double(item.lengthSeconds ?? 0),
+                    artworkSymbol: playlist.artworkSymbol,
+                    gradientSeed: seed * 100 + index,
+                    sortIndex: index,
+                    prepState: .pending,
+                    youtubeVideoID: item.videoID,
+                    sourceURLString: "https://www.youtube.com/watch?v=\(item.videoID)"
+                )
+                playlist.tracks.append(track)
+                context.insert(track)
+                enqueue(track, in: context)
+            }
+        }
+        playlist.subtitle = "From YouTube · \(remote.count) tracks"
+    }
+
+    /// Applies a fresh remote Spotify tracklist: key = the YouTube search query (title + artist),
+    /// the identity Spotify-sourced tracks carry locally.
+    private func applySpotifySync(_ remote: [SpotifyTrack], to playlist: Playlist, in context: ModelContext) {
+        var localByKey: [String: Track] = [:]
+        for track in playlist.tracks {
+            if let query = track.searchQuery { localByKey[query] = track }
+        }
+
+        let remoteKeys = Set(remote.map(\.youtubeSearchQuery))
+        removeTracks(playlist.tracks.filter { track in
+            guard let query = track.searchQuery else { return false }
+            return !remoteKeys.contains(query)
+        }, in: context)
+
+        let seed = playlist.gradientSeed
+        for (index, item) in remote.enumerated() {
+            if let existing = localByKey[item.youtubeSearchQuery] {
+                existing.sortIndex = index
+            } else {
+                let track = Track(
+                    title: item.title,
+                    artist: item.artist ?? "Unknown Artist",
+                    durationSeconds: Double(item.durationSeconds ?? 0),
+                    artworkSymbol: playlist.artworkSymbol,
+                    gradientSeed: seed * 100 + index,
+                    sortIndex: index,
+                    prepState: .pending,
+                    searchQuery: item.youtubeSearchQuery
+                )
+                playlist.tracks.append(track)
+                context.insert(track)
+                enqueue(track, in: context)
+            }
+        }
+        playlist.subtitle = "From Spotify · \(remote.count) tracks"
+    }
+
+    /// Deletes tracks the same way the UI does: Player first (so the live queue never holds a
+    /// dead model), then the models, then share-aware file cleanup.
+    private func removeTracks(_ tracks: [Track], in context: ModelContext) {
+        guard !tracks.isEmpty else { return }
+        onTracksDeleted?(Set(tracks.map(\.id)))
+        let videoIDs = tracks.compactMap(\.youtubeVideoID)
+        for track in tracks { context.delete(track) }
+        LibraryCleanup.removeOrphanedFiles(videoIDs: videoIDs, in: context)
     }
 
     /// Runs the resolve → download → analyse → ready pipeline for one track, updating `prepState`

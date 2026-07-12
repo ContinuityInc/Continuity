@@ -2,10 +2,12 @@ import SwiftUI
 
 /// A playlist's track list. Tapping a track starts playback of the whole playlist from there.
 struct PlaylistDetailView: View {
-    let playlist: Playlist
+    @Bindable var playlist: Playlist
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
+
+    private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
 
     var body: some View {
         List {
@@ -67,6 +69,33 @@ struct PlaylistDetailView: View {
             }
             .buttonStyle(.glassProminent)
             .padding(.top, 4)
+
+            // Source-backed playlists mirror a remote list: manual sync + the auto-sync opt-out.
+            if playlist.isSourceBacked {
+                HStack(spacing: 16) {
+                    Button {
+                        Task { await prepQueue.syncPlaylist(playlist, in: modelContext) }
+                    } label: {
+                        Label(isSyncing ? "Syncing…" : "Sync", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSyncing)
+
+                    Toggle(isOn: $playlist.autoSyncEnabled) {
+                        Text("Auto-sync")
+                            .font(.subheadline)
+                    }
+                    .fixedSize()
+                }
+                .padding(.top, 2)
+
+                if let synced = playlist.lastSyncedAt {
+                    Text("Synced \(synced.formatted(.relative(presentation: .named)))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
