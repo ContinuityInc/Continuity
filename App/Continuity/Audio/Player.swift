@@ -74,6 +74,9 @@ final class Player {
     /// system says the coast is clear.
     private var resumeAfterInterruption = false
 
+    /// Publishes state to the lock screen / Control Center and routes remote commands back here.
+    private let nowPlayingBridge = NowPlayingBridge()
+
     init() {
         synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
@@ -81,7 +84,13 @@ final class Player {
         currentDeck = deckA
         configureSession()
         observeAudioEnvironment()
+        nowPlayingBridge.configure(player: self)
     }
+
+    /// Explicit play/pause for remote commands (lock screen, AirPods) — the system sends the
+    /// intended state, so these must not blindly toggle if we're already there.
+    func remotePlay() { if !isPlaying { togglePlayPause() } }
+    func remotePause() { if isPlaying { togglePlayPause() } }
 
     // MARK: Audio-environment resilience
 
@@ -151,6 +160,7 @@ final class Player {
         currentDeck.pause()  // engine-state-guarded; no-ops if the engine is already down
         isPlaying = false
         stopTimer()
+        persistState()       // lock screen should show paused immediately
     }
 
     /// Restarts the engine and reschedules the current track at the current position. `force`
@@ -176,6 +186,7 @@ final class Player {
             // Synth deck: the loop is position-agnostic; a fresh start is equivalent.
             startCurrentFresh()
         }
+        persistState()       // lock screen should show playing again after recovery
     }
 
     private func configureSession() {
@@ -203,8 +214,17 @@ final class Player {
         if historyIDs.count > 200 { historyIDs.removeFirst(historyIDs.count - 200) }
     }
 
-    /// Saves the full playback session (queue, position, skips, history) for the next launch.
+    /// Saves the full playback session (queue, position, skips, history) for the next launch,
+    /// and mirrors the same state to the lock screen / Control Center. Every playback
+    /// discontinuity funnels through here, which is exactly when both need updating.
     private func persistState() {
+        nowPlayingBridge.update(
+            track: currentTrack,
+            duration: duration,
+            position: position,
+            isPlaying: isPlaying,
+            skipsRemaining: skipsRemaining
+        )
         guard !queue.isEmpty else { return }
         PlaybackStateStore.save(PersistedPlaybackState(
             queueTrackIDs: queue.map(\.id),
@@ -384,6 +404,7 @@ final class Player {
             baselineSeconds = clamped - currentDeck.elapsed
             position = clamped
         }
+        persistState()   // saved position + lock-screen elapsed both move with the scrub
     }
 
     // MARK: Internals
