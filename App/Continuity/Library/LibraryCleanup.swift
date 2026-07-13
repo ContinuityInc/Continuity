@@ -27,8 +27,7 @@ enum LibraryCleanup {
                 }
             }
 
-            try? FileManager.default.removeItem(at: StemCache.vocalsURL(key: videoID))
-            try? FileManager.default.removeItem(at: StemCache.accompanimentURL(key: videoID))
+            StemCache.removeStems(key: videoID)
         }
     }
 

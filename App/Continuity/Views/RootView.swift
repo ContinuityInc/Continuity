@@ -18,6 +18,12 @@ struct RootView: View {
                 prepQueue.onTracksDeleted = { [weak player] ids in
                     player?.handleDeleted(trackIDs: ids)
                 }
+                // Stems are prepared just-in-time for the play-queue neighborhood, not eagerly
+                // for the whole library (CPU-hours + gigabytes). Wire before restore so the
+                // restored session's tracks get their stems going immediately.
+                player.onUpcomingTracks = { [weak prepQueue] tracks in
+                    prepQueue?.ensureStems(for: tracks, in: modelContext)
+                }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()

@@ -77,6 +77,23 @@ final class Player {
     /// Publishes state to the lock screen / Control Center and routes remote commands back here.
     private let nowPlayingBridge = NowPlayingBridge()
 
+    /// Called with the current track + the next few whenever the play position moves — the ingest
+    /// layer uses it to prepare stems just-in-time (separating a whole library eagerly is
+    /// CPU-hours and gigabytes; the blend only ever needs the neighborhood).
+    var onUpcomingTracks: (([Track]) -> Void)?
+
+    /// How far ahead stems are prepared. At ~2–4 min per separation and ~3.5 min per song, three
+    /// tracks of lead time keeps the next blend's stems ready even right after a skip.
+    private static let upcomingStemWindow = 3
+
+    /// Reports the play-position neighborhood to `onUpcomingTracks`.
+    private func notifyUpcoming() {
+        guard !queue.isEmpty, queue.indices.contains(currentIndex) else { return }
+        let count = min(Player.upcomingStemWindow, queue.count)
+        let tracks = (0..<count).map { queue[(currentIndex + $0) % queue.count] }
+        onUpcomingTracks?(tracks)
+    }
+
     init() {
         synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
@@ -261,6 +278,7 @@ final class Player {
         position = 0
         isPlaying = false
         persistState()
+        notifyUpcoming()
     }
 
     /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the
@@ -435,6 +453,7 @@ final class Player {
         currentDeck.play()
         isPlaying = true
         startTimer()
+        notifyUpcoming()
     }
 
     private func startTimer() {
@@ -638,6 +657,7 @@ final class Player {
         isTransitioning = false
         transitionProgress = 0
         persistState()
+        notifyUpcoming()
     }
 
     /// Cancels an in-flight transition, discarding the incoming deck. `currentDeck`/`currentIndex`

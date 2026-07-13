@@ -90,9 +90,9 @@ final class PreparationQueue {
                 if !hasAudio {
                     enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
                 } else {
-                    if !track.hasStems {
-                        separateStems(track, in: context) // audio is fine; finish the optional stems
-                    }
+                    // Stems are demand-driven from the play queue (`ensureStems`) — never
+                    // separated library-wide at launch. Just true-up links vs the disk.
+                    reconcileStemLinks(track, in: context)
                     backfillTrackDetails(track, in: context)
                 }
             case .pending, .preparing:
@@ -412,10 +412,12 @@ final class PreparationQueue {
         }
         try? context.save()
 
-        // Stems and display metadata are optional enhancements — start them in the background
-        // AFTER the track is playable. The track plays meanwhile.
+        // Display metadata is an optional enhancement — start it in the background AFTER the
+        // track is playable. Stems are NOT separated here: separation is demand-driven from the
+        // play queue (`ensureStems`) — eagerly separating whole imports burned CPU-hours and
+        // filled disks. Already-cached stems (re-adds) are linked instantly, though.
         if track.modelContext != nil, track.prepState == .ready {
-            separateStems(track, in: context)
+            reconcileStemLinks(track, in: context)
             backfillTrackDetails(track, in: context)
         }
     }
@@ -491,27 +493,74 @@ final class PreparationQueue {
         }
     }
 
+    // MARK: Stems (demand-driven)
+
+    /// Stem keys for the current play-queue neighborhood — protected from cache eviction.
+    private var protectedStemKeys: Set<String> = []
+    /// Tracks whose separation is currently running (dedup across repeated `ensureStems` calls).
+    private var stemsInFlight: Set<UUID> = []
+
+    /// Demand-driven stem preparation for the tracks around the play position (called on every
+    /// track change). Separation costs CPU-minutes and cache bytes per track, so the library is
+    /// **never** separated eagerly — only the neighborhood vocal-aware transitions need next.
+    /// Also refreshes the LRU clock and heals links whose files were evicted.
+    func ensureStems(for tracks: [Track], in context: ModelContext) {
+        protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
+        for track in tracks {
+            guard !track.isDemo, track.prepState == .ready,
+                  let key = track.youtubeVideoID, track.localRelativePath != nil else { continue }
+            reconcileStemLinks(track, in: context)
+            if track.hasStems {
+                StemCache.markUsed(key: key)   // actively played material stays cache-resident
+            } else {
+                separateStems(track, in: context)
+            }
+        }
+        // Budget pass on every queue move (not just post-separation): catches overage that
+        // accrued outside this code path — e.g. gigabytes of legacy float32 stems.
+        let protected = protectedStemKeys
+        Task.detached(priority: .utility) {
+            StemCache.enforceBudget(protecting: protected)
+        }
+    }
+
+    /// Brings a track's stem links in line with the disk: links cached stems that exist unlinked
+    /// (e.g. a re-added video), clears links whose files were evicted so `hasStems` tells the
+    /// truth and the track becomes eligible for re-separation.
+    private func reconcileStemLinks(_ track: Track, in context: ModelContext) {
+        guard let key = track.youtubeVideoID else { return }
+        if let v = track.vocalsRelativePath, let a = track.accompanimentRelativePath,
+           FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: v).path),
+           FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: a).path) {
+            return   // linked and present — nothing to do
+        }
+        if let v = StemCache.stemFile(key: key, kind: "vocals"),
+           let a = StemCache.stemFile(key: key, kind: "accompaniment") {
+            track.vocalsRelativePath = StemCache.relativePath(for: v)
+            track.accompanimentRelativePath = StemCache.relativePath(for: a)
+            try? context.save()
+        } else if track.hasStems {
+            track.vocalsRelativePath = nil
+            track.accompanimentRelativePath = nil
+            try? context.save()
+        }
+    }
+
     /// Separates the track into vocals + accompaniment stems (very slow, off the main actor),
     /// caching them and pointing the track at them. Best-effort: failure just means no vocal-aware
-    /// transition for this track. Serialised via `stemLimiter` so a playlist's tracks separate one
-    /// at a time rather than thrashing CPU/RAM.
+    /// transition for this track. Serialised via `stemLimiter`; after each separation the cache's
+    /// byte budget is enforced (LRU eviction, protecting the play-queue neighborhood).
     private func separateStems(_ track: Track, in context: ModelContext) {
-        guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath else { return }
-
-        // Already separated (e.g. a re-add) — just link the track to the cached stems.
-        if StemCache.hasStems(key: key) {
-            track.vocalsRelativePath = StemCache.relativePath(for: StemCache.vocalsURL(key: key))
-            track.accompanimentRelativePath = StemCache.relativePath(for: StemCache.accompanimentURL(key: key))
-            try? context.save()
-            return
-        }
+        guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath,
+              !stemsInFlight.contains(track.id) else { return }
+        stemsInFlight.insert(track.id)
 
         let inputURL = AudioCache.url(forRelativePath: relativePath)
         let vocalsOut = StemCache.vocalsURL(key: key)
         let accompanimentOut = StemCache.accompanimentURL(key: key)
         let limiter = stemLimiter
 
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .utility) { [weak self] in
             await limiter.acquire()
             do {
                 let modelURL = try await StemModelStore.ensureModel()
@@ -530,6 +579,12 @@ final class PreparationQueue {
                 Logger.stems.error("stem separation failed for \(key, privacy: .public): \(String(describing: error), privacy: .public)")
             }
             await limiter.release()
+
+            // Budget pass after every separation. Never evict the active neighborhood or the
+            // key we just wrote (it may not be in the protected set if the queue moved on).
+            let protected = await MainActor.run { self?.protectedStemKeys ?? [] }
+            StemCache.enforceBudget(protecting: protected.union([key]))
+            await MainActor.run { _ = self?.stemsInFlight.remove(track.id) }
         }
     }
 }
