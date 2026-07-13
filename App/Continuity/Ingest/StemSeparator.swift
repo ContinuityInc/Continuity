@@ -185,7 +185,16 @@ final class OnnxStemSeparator: StemSeparating {
             throw StemSeparationError.write("format")
         }
         do {
-            let file = try AVAudioFile(forWriting: url, settings: format.settings,
+            // AAC at 128 kbps, matched to the (~128 kbps) source's fidelity — a stem can't carry
+            // more information than the mix it was separated from. This keeps a 1000-song stem
+            // cache in single-digit GB; float32 PCM was ~140 MB per track (~140 GB per 1000).
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128_000,
+            ]
+            let file = try AVAudioFile(forWriting: url, settings: settings,
                                        commonFormat: .pcmFormatFloat32, interleaved: false)
             let frames = AVAudioFrameCount(left.count)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
