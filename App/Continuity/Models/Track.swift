@@ -44,6 +44,8 @@ final class Track {
     var camelotCode: String?
     /// Beat onset times (seconds) — the beat grid used for beat-aligned transitions.
     var beatTimes: [Double] = []
+    /// Integrated loudness (LUFS) of the downmixed track, for loudness leveling across blends.
+    var loudnessLUFS: Double?
     /// `TrackAnalyzer.analysisVersion` that produced the fields above; below-current (or nil)
     /// triggers a launch-time re-analysis so analyzer fixes reach existing tracks.
     var analysisVersion: Int?

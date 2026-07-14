@@ -397,6 +397,7 @@ final class PreparationQueue {
                     track.beatTimes = analysis.beatTimes
                     track.keyName = analysis.key?.displayName
                     track.camelotCode = analysis.camelot?.code
+                    track.loudnessLUFS = analysis.lufs
                     track.analysisVersion = TrackAnalyzer.analysisVersion
                 }
                 prepared = true
@@ -476,6 +477,7 @@ final class PreparationQueue {
                     track.beatTimes = analysis.beatTimes
                     track.keyName = analysis.key?.displayName
                     track.camelotCode = analysis.camelot?.code
+                    track.loudnessLUFS = analysis.lufs
                     track.analysisVersion = TrackAnalyzer.analysisVersion
                 }
             }

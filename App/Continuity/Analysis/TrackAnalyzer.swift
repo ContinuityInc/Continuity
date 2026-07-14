@@ -8,6 +8,8 @@ struct TrackAnalysis: Sendable {
     let beatTimes: [Double]
     let key: MusicalKey?
     let camelot: Camelot?
+    /// Integrated loudness (LUFS) for loudness leveling; nil for silence.
+    let lufs: Double?
 }
 
 /// Decodes a cached audio file to mono PCM and runs the (pure, unit-tested) ContinuityCore
@@ -19,8 +21,8 @@ enum TrackAnalyzer {
     /// Bump when analyzer improvements should retroactively re-analyze the library. Tracks
     /// stamped below this (or unstamped) re-analyze at launch — otherwise results computed by an
     /// old, buggier analyzer persist forever (e.g. keys detected before the tuning-correction fix).
-    /// v2 = tuning-corrected KeyDetector (PR #10).
-    static let analysisVersion = 2
+    /// v2 = tuning-corrected KeyDetector (PR #10). v3 = integrated loudness (LUFS).
+    static let analysisVersion = 3
 
     /// Only the first few minutes are analysed: tempo and key are stable over a track, and this
     /// bounds memory + time for long mixes/podcasts (no multi-GB whole-file decode).
@@ -72,12 +74,14 @@ enum TrackAnalyzer {
 
         let beat = BeatTracker.analyze(samples: mono, sampleRate: sampleRate)
         let key = KeyDetector.analyze(samples: mono, sampleRate: sampleRate)
+        let lufs = LoudnessMeter.integratedLUFS(samples: mono, sampleRate: sampleRate)
 
         return TrackAnalysis(
             bpm: beat.bpm,
             beatTimes: beat.beatTimes,
             key: key?.key,
-            camelot: key?.camelot
+            camelot: key?.camelot,
+            lufs: lufs
         )
     }
 

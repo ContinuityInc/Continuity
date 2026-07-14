@@ -89,6 +89,9 @@ struct TransitionSettingsView: View {
                     // Bass swap — fades the incoming low end in so basslines don't stack.
                     Toggle("Bass Swap", isOn: $player.transitionSettings.bassSwapEnabled)
 
+                    // Loudness leveling — every track meets the blend at a common loudness.
+                    Toggle("Loudness Leveling", isOn: $player.transitionSettings.loudnessLevelingEnabled)
+
                     // Harmonic mixing — nudges the incoming track into a Camelot-compatible key.
                     Toggle("Harmonic Mixing", isOn: $player.transitionSettings.harmonicMixingEnabled)
 

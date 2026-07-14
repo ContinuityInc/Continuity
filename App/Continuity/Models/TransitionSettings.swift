@@ -36,8 +36,50 @@ struct TransitionSettings: Codable, Equatable, Sendable {
     var harmonicMixingEnabled: Bool = true
     /// How to handle overlapping vocals.
     var vocalMode: VocalMode = .duck
+    /// Level tracks to a common loudness so blends don't lurch between quiet and loud masters.
+    var loudnessLevelingEnabled: Bool = true
 
     static let `default` = TransitionSettings()
+}
+
+extension TransitionSettings {
+    private enum CodingKeys: String, CodingKey {
+        case durationSeconds, curve, trimSilenceEnabled, beatmatchEnabled, bassSwapEnabled,
+             harmonicMixingEnabled, vocalMode, loudnessLevelingEnabled
+    }
+
+    /// Field-by-field decoding with defaults, so settings saved by an older build survive new
+    /// fields being added (a strict decode would throw and reset everything to defaults).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = TransitionSettings.default
+        durationSeconds = (try? c.decodeIfPresent(Double.self, forKey: .durationSeconds)) ?? nil ?? d.durationSeconds
+        curve = (try? c.decodeIfPresent(CrossfadeCurve.self, forKey: .curve)) ?? nil ?? d.curve
+        trimSilenceEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .trimSilenceEnabled)) ?? nil ?? d.trimSilenceEnabled
+        beatmatchEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .beatmatchEnabled)) ?? nil ?? d.beatmatchEnabled
+        bassSwapEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .bassSwapEnabled)) ?? nil ?? d.bassSwapEnabled
+        harmonicMixingEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .harmonicMixingEnabled)) ?? nil ?? d.harmonicMixingEnabled
+        vocalMode = (try? c.decodeIfPresent(VocalMode.self, forKey: .vocalMode)) ?? nil ?? d.vocalMode
+        loudnessLevelingEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .loudnessLevelingEnabled)) ?? nil ?? d.loudnessLevelingEnabled
+    }
+
+    private static let defaultsKey = "transitionSettings.v1"
+
+    /// The persisted settings from the last session, or defaults on first launch / decode failure
+    /// (e.g. after a schema change — defaults beat crashing or half-applied state).
+    static func loadPersisted() -> TransitionSettings {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let settings = try? JSONDecoder().decode(TransitionSettings.self, from: data) else {
+            return .default
+        }
+        return settings
+    }
+
+    /// Saves for the next launch. Cheap (a small JSON blob) — called on every edit.
+    func persist() {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+    }
 }
 
 /// A named bundle of transition settings for one-tap application in the settings UI.
