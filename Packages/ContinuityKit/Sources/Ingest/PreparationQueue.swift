@@ -24,7 +24,7 @@ extension Logger {
 /// `ModelContext`; the actual networking/DSP happens off-actor inside the awaited calls.
 @MainActor
 @Observable
-final class PreparationQueue {
+public final class PreparationQueue {
     /// Resolves a YouTube video ID to a downloadable audio stream.
     let resolver: AudioStreamResolving
     /// Resolves a YouTube playlist ID to its constituent videos.
@@ -42,6 +42,10 @@ final class PreparationQueue {
     private let ingestLimiter = ConcurrencyLimiter(limit: 3)
     /// Caps simultaneous stem separations to one — each is CPU/RAM-heavy, so they queue.
     private let stemLimiter = ConcurrencyLimiter(limit: 1)
+
+    /// Production wiring — the app constructs the queue with no arguments. The parameterized
+    /// initializer stays internal for dependency-injected tests within the module.
+    public convenience init() { self.init(resolver: YouTubeStreamResolver()) }
 
     init(
         resolver: AudioStreamResolving = YouTubeStreamResolver(),
@@ -63,7 +67,7 @@ final class PreparationQueue {
     ///
     /// Safe to call from the UI: it persists the pending state immediately so the row's
     /// badge updates, then detaches the resolve/download work into its own `Task`.
-    func enqueue(_ track: Track, in context: ModelContext) {
+    public func enqueue(_ track: Track, in context: ModelContext) {
         track.prepState = .pending
         try? context.save()
         Task { await process(track, in: context) }
@@ -73,7 +77,7 @@ final class PreparationQueue {
     /// interrupted mid-ingest (e.g. the app was killed partway through a large import) or whose
     /// downloaded audio went missing, and finishes stem separation for tracks that have audio but
     /// no stems yet. `.failed` tracks are left as-is for an explicit retry.
-    func resumePreparation(in context: ModelContext) {
+    public func resumePreparation(in context: ModelContext) {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
         for track in tracks {
             // Demo tracks have no source and play synthesized audio — there is nothing to ingest
@@ -111,7 +115,7 @@ final class PreparationQueue {
     /// Throws if the playlist can't be resolved (private/empty/unavailable or a YouTube change),
     /// so the caller can surface an inline error. Returns the created playlist on success.
     @discardableResult
-    func importPlaylist(playlistID: String, fallbackTitle: String? = nil, in context: ModelContext) async throws -> Playlist {
+    public func importPlaylist(playlistID: String, fallbackTitle: String? = nil, in context: ModelContext) async throws -> Playlist {
         let resolved = try await playlistResolver.resolvePlaylist(playlistID: playlistID)
 
         let title = resolved.title?.isEmpty == false ? resolved.title! : (fallbackTitle ?? "YouTube Playlist")
@@ -156,7 +160,7 @@ final class PreparationQueue {
     ///
     /// Throws if the playlist can't be resolved so the caller can surface an inline error.
     @discardableResult
-    func importSpotifyPlaylist(_ link: SpotifyLink, in context: ModelContext) async throws -> Playlist {
+    public func importSpotifyPlaylist(_ link: SpotifyLink, in context: ModelContext) async throws -> Playlist {
         let resolved = try await spotifyResolver.resolvePlaylist(link)
 
         let title = resolved.name?.isEmpty == false ? resolved.name! : "Spotify \(link.kind.rawValue.capitalized)"
@@ -196,11 +200,11 @@ final class PreparationQueue {
     // MARK: - Source sync
 
     /// Playlists currently syncing (drives spinners and disables sync buttons).
-    private(set) var syncingPlaylistIDs: Set<UUID> = []
+    public private(set) var syncingPlaylistIDs: Set<UUID> = []
 
     /// Coordination hook: sync deletes tracks removed remotely, and the live `Player` must drop
     /// them from its queue BEFORE the models die. Wired to `Player.handleDeleted` at startup.
-    var onTracksDeleted: ((Set<UUID>) -> Void)?
+    public var onTracksDeleted: ((Set<UUID>) -> Void)?
 
     /// How stale a playlist may get before launch-time auto-sync refreshes it. Sync is **polling**
     /// (at launch + manual): push would need server infrastructure neither YouTube nor Spotify
@@ -209,7 +213,7 @@ final class PreparationQueue {
 
     /// Launch-time polling pass: refreshes each source-backed playlist that has auto-sync on
     /// (the opt-out) and hasn't synced recently.
-    func autoSyncIfNeeded(in context: ModelContext) {
+    public func autoSyncIfNeeded(in context: ModelContext) {
         guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
         for playlist in playlists where playlist.isSourceBacked && playlist.autoSyncEnabled {
             let stale = playlist.lastSyncedAt.map {
@@ -222,7 +226,7 @@ final class PreparationQueue {
     }
 
     /// Manual "sync everything now" — ignores staleness but still skips in-flight playlists.
-    func syncAll(in context: ModelContext) {
+    public func syncAll(in context: ModelContext) {
         guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
         for playlist in playlists where playlist.isSourceBacked {
             Task { await syncPlaylist(playlist, in: context) }
@@ -233,7 +237,7 @@ final class PreparationQueue {
     /// ingested), tracks removed remotely are deleted locally (Player-coordinated, files cleaned
     /// share-aware), and local ordering follows the remote. Best-effort: a resolve failure leaves
     /// the local playlist untouched.
-    func syncPlaylist(_ playlist: Playlist, in context: ModelContext) async {
+    public func syncPlaylist(_ playlist: Playlist, in context: ModelContext) async {
         guard playlist.isSourceBacked, let sourceID = playlist.sourceID, let kind = playlist.sourceKind,
               !syncingPlaylistIDs.contains(playlist.id) else { return }
         syncingPlaylistIDs.insert(playlist.id)
@@ -507,7 +511,7 @@ final class PreparationQueue {
     /// track change). Separation costs CPU-minutes and cache bytes per track, so the library is
     /// **never** separated eagerly — only the neighborhood vocal-aware transitions need next.
     /// Also refreshes the LRU clock and heals links whose files were evicted.
-    func ensureStems(for tracks: [Track], in context: ModelContext) {
+    public func ensureStems(for tracks: [Track], in context: ModelContext) {
         protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,
