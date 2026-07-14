@@ -1,4 +1,5 @@
 import AVFoundation
+import Domain
 import Foundation
 import SwiftData
 import ContinuityCore

@@ -8,12 +8,12 @@ import ContinuityCore
 /// playing (paths are stored on the Track) and remain eviction candidates. The cache is
 /// **size-budgeted**: `enforceBudget` evicts least-recently-used keys past `budgetBytes`, never
 /// touching protected keys (the play-queue neighborhood). Evicted stems re-separate on demand.
-enum StemCache {
+public enum StemCache {
     /// ~8 GB. With ~3.4 GB of downloaded audio and the ~165 MB model, total app storage for a
     /// 1000-song library stays under the ~15 GB target even when the stem cache is full.
-    static let budgetBytes: Int64 = 8_000_000_000
+    public static let budgetBytes: Int64 = 8_000_000_000
 
-    static var directory: URL {
+    public static var directory: URL {
         // Under Application Support (not Caches) so stems persist across launches. Excluded from
         // iCloud backup — they're large and re-derivable from the cached audio.
         var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -25,20 +25,20 @@ enum StemCache {
         return dir
     }
 
-    static func vocalsURL(key: String) -> URL { directory.appendingPathComponent("\(key)-vocals.m4a") }
-    static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }
+    public static func vocalsURL(key: String) -> URL { directory.appendingPathComponent("\(key)-vocals.m4a") }
+    public static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }
 
-    static func relativePath(for url: URL) -> String { url.lastPathComponent }
-    static func url(forRelativePath path: String) -> URL { directory.appendingPathComponent(path) }
+    public static func relativePath(for url: URL) -> String { url.lastPathComponent }
+    public static func url(forRelativePath path: String) -> URL { directory.appendingPathComponent(path) }
 
     /// Whether both stems already exist on disk for this key (either format generation).
-    static func hasStems(key: String) -> Bool {
+    public static func hasStems(key: String) -> Bool {
         stemFile(key: key, kind: "vocals") != nil && stemFile(key: key, kind: "accompaniment") != nil
     }
 
     /// Existing on-disk stem file for a key/kind, preferring the current `.m4a` format and
     /// falling back to a legacy `.caf` from older builds.
-    static func stemFile(key: String, kind: String) -> URL? {
+    public static func stemFile(key: String, kind: String) -> URL? {
         for ext in ["m4a", "caf"] {
             let url = directory.appendingPathComponent("\(key)-\(kind).\(ext)")
             if FileManager.default.fileExists(atPath: url.path) { return url }
@@ -47,7 +47,7 @@ enum StemCache {
     }
 
     /// Deletes all stem files for a key, across format generations (m4a + legacy caf).
-    static func removeStems(key: String) {
+    public static func removeStems(key: String) {
         for kind in ["vocals", "accompaniment"] {
             for ext in ["m4a", "caf"] {
                 try? FileManager.default.removeItem(
@@ -57,7 +57,7 @@ enum StemCache {
     }
 
     /// Bumps the LRU clock for a key's stems (called for tracks near the play queue).
-    static func markUsed(key: String) {
+    public static func markUsed(key: String) {
         for kind in ["vocals", "accompaniment"] {
             guard let url = stemFile(key: key, kind: kind) else { continue }
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
@@ -67,7 +67,7 @@ enum StemCache {
     /// Evicts least-recently-used keys until the cache fits `budgetBytes`. `protected` keys
     /// (the play-queue neighborhood + separations in flight) are never evicted. Safe to call
     /// from any thread; file ops only.
-    static func enforceBudget(protecting protected: Set<String>) {
+    public static func enforceBudget(protecting protected: Set<String>) {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]
         ) else { return }

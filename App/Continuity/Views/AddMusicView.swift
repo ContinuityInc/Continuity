@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 import SwiftData
 import ContinuityCore
 

@@ -1,4 +1,5 @@
 import Foundation
+import Domain
 import SwiftData
 
 /// Removes cached files (downloaded audio + separated stems) for deleted tracks — but only when

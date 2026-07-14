@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 
 /// A playlist's track list. Tapping a track starts playback of the whole playlist from there.
 struct PlaylistDetailView: View {

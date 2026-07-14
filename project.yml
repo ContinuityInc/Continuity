@@ -9,6 +9,8 @@ options:
 packages:
   ContinuityCore:
     path: Packages/ContinuityCore
+  ContinuityKit:
+    path: Packages/ContinuityKit
   YouTubeKit:
     url: https://github.com/alexeichhorn/YouTubeKit
     branch: main   # TODO: pin to a tagged version once verified building
@@ -32,6 +34,8 @@ targets:
       - path: App/Continuity
     dependencies:
       - package: ContinuityCore
+      - package: ContinuityKit
+        product: Domain
       - package: YouTubeKit
       - package: onnxruntime
         product: onnxruntime

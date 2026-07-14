@@ -1,4 +1,5 @@
 import Foundation
+import Domain
 
 /// Downloads a resolved audio stream to the on-disk cache.
 ///
