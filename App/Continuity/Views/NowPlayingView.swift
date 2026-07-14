@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 
 /// Full-screen Now Playing UI (Apple Music / Spotify style): large artwork, scrubber, and a
 /// Liquid Glass transport. The "transition" chip near the top is a teaser for the flagship

@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 import SwiftData
 
 /// Top-level shell: the app always opens onto the minimal Now Playing screen, resuming the

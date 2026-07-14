@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 import SwiftData
 
 /// Minimal library: a grid of playlist/album cards. Tap a card to open its track list;

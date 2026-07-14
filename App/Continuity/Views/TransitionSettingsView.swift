@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 import ContinuityCore
 
 /// Settings screen for the transition engine. Presented as a sheet from the Now Playing

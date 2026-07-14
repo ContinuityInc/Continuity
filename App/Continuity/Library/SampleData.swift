@@ -1,4 +1,5 @@
 import Foundation
+import Domain
 import SwiftData
 
 /// Seeds an in-memory library for M0 so the UI has playlists/albums to browse and play
