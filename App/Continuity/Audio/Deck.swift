@@ -83,6 +83,12 @@ final class Deck {
         get { eq.bands[0].gain }
         set { eq.bands[0].gain = newValue }
     }
+    /// Loudness-leveling makeup gain (linear). Lives on the stem mixer so it stacks independently
+    /// of the crossfade (deck mixer) and vocal ducking (player nodes). 1 = no leveling.
+    var loudnessGain: Float {
+        get { stemMixer.outputVolume }
+        set { stemMixer.outputVolume = newValue }
+    }
 
     @discardableResult
     func load(_ track: Track) -> TimeInterval {
@@ -90,7 +96,7 @@ final class Deck {
         self.track = track
         timePitch.rate = 1
         timePitch.pitch = 0
-        volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0
+        volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0; loudnessGain = 1
 
         if track.hasStems,
            let vURL = stemURL(track.vocalsRelativePath), let aURL = stemURL(track.accompanimentRelativePath),

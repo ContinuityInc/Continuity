@@ -29,8 +29,18 @@ final class Player {
     private(set) var transitionProgress: Double = 0
     /// Seconds into the current track (drives the scrubber + clock).
     var position: TimeInterval = 0
-    /// User-configurable crossfade settings (edited by `TransitionSettingsView`).
-    var transitionSettings = TransitionSettings.default
+    /// User-configurable crossfade settings (edited by `TransitionSettingsView`). Persisted on
+    /// every edit and restored at launch, like the playback session itself.
+    var transitionSettings = TransitionSettings.loadPersisted() {
+        didSet {
+            transitionSettings.persist()
+            // Loudness leveling applies at deck-load time; retro-apply the toggle immediately.
+            if oldValue.loudnessLevelingEnabled != transitionSettings.loudnessLevelingEnabled {
+                applyLoudness(to: currentDeck)
+                if isTransitioning { applyLoudness(to: idleDeck) }
+            }
+        }
+    }
 
     var currentTrack: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
     /// The track being blended in during a transition (drives the Now Playing "blending into…").
@@ -108,6 +118,18 @@ final class Player {
     /// intended state, so these must not blindly toggle if we're already there.
     func remotePlay() { if !isPlaying { togglePlayPause() } }
     func remotePause() { if isPlaying { togglePlayPause() } }
+
+    /// Sets a deck's loudness-leveling makeup gain from its track's measured loudness: every
+    /// track meets the blend at a common level (−14 LUFS target) instead of lurching between
+    /// quiet and loud masters. No measurement (or leveling off) → unity gain.
+    private func applyLoudness(to deck: Deck) {
+        guard transitionSettings.loudnessLevelingEnabled, let lufs = deck.track?.loudnessLUFS else {
+            deck.loudnessGain = 1
+            return
+        }
+        let gainDB = LoudnessMeter.makeupGainDB(measuredLUFS: lufs)
+        deck.loudnessGain = Float(pow(10, gainDB / 20))
+    }
 
     // MARK: Audio-environment resilience
 
@@ -273,6 +295,7 @@ final class Player {
         idleDeck.stop()
         currentDeck.stop()
         currentDeck.load(track)
+        applyLoudness(to: currentDeck)
         currentPitchShiftSemitones = 0
         baselineSeconds = 0
         position = 0
@@ -447,6 +470,7 @@ final class Player {
         currentDeck.volume = 1
         guard ensureRunning() else { isPlaying = false; stopTimer(); return }
         currentDeck.load(track)   // load() resets rate/pitch, so the fresh track plays true
+        applyLoudness(to: currentDeck)
         currentPitchShiftSemitones = 0
         baselineSeconds = 0
         position = 0
@@ -534,6 +558,7 @@ final class Player {
         guard queue.indices.contains(index) else { return }
         let incoming = idleDeck
         incoming.load(queue[index])
+        applyLoudness(to: incoming)
         incoming.volume = 0
         incoming.rate = 1
         incomingStartOffset = 0
