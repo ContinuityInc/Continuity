@@ -20,19 +20,19 @@ extension Logger {
 /// file drains early. M3 will refine *when* and *how* (beat-aligned starts, tempo matching).
 @MainActor
 @Observable
-final class Player {
+public final class Player {
     // MARK: Observable state
     private(set) var queue: [Track] = []
     private(set) var currentIndex = 0
-    private(set) var isPlaying = false
-    private(set) var isTransitioning = false
+    public private(set) var isPlaying = false
+    public private(set) var isTransitioning = false
     /// 0→1 progress of the in-flight blend, for the Now Playing blend meter. 0 when idle.
-    private(set) var transitionProgress: Double = 0
+    public private(set) var transitionProgress: Double = 0
     /// Seconds into the current track (drives the scrubber + clock).
-    var position: TimeInterval = 0
+    public var position: TimeInterval = 0
     /// User-configurable crossfade settings (edited by `TransitionSettingsView`). Persisted on
     /// every edit and restored at launch, like the playback session itself.
-    var transitionSettings = TransitionSettings.loadPersisted() {
+    public var transitionSettings = TransitionSettings.loadPersisted() {
         didSet {
             transitionSettings.persist()
             // Loudness leveling applies at deck-load time; retro-apply the toggle immediately.
@@ -43,14 +43,14 @@ final class Player {
         }
     }
 
-    var currentTrack: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
+    public var currentTrack: Track? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
     /// The track being blended in during a transition (drives the Now Playing "blending into…").
-    var incomingTrack: Track? {
+    public var incomingTrack: Track? {
         isTransitioning && queue.indices.contains(transitionTargetIndex) ? queue[transitionTargetIndex] : nil
     }
     /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
     /// model only for the brief window before the first load.
-    var duration: TimeInterval {
+    public var duration: TimeInterval {
         currentDeck.loadedDuration > 0 ? currentDeck.loadedDuration : (currentTrack?.durationSeconds ?? 0)
     }
 
@@ -91,7 +91,7 @@ final class Player {
     /// Called with the current track + the next few whenever the play position moves — the ingest
     /// layer uses it to prepare stems just-in-time (separating a whole library eagerly is
     /// CPU-hours and gigabytes; the blend only ever needs the neighborhood).
-    var onUpcomingTracks: (([Track]) -> Void)?
+    public var onUpcomingTracks: (([Track]) -> Void)?
 
     /// How far ahead stems are prepared. At ~2–4 min per separation and ~3.5 min per song, three
     /// tracks of lead time keeps the next blend's stems ready even right after a skip.
@@ -105,7 +105,7 @@ final class Player {
         onUpcomingTracks?(tracks)
     }
 
-    init() {
+    public init() {
         synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
         deckB = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
@@ -240,7 +240,7 @@ final class Player {
     /// Radio-style forward-skip budget: `next()` spends one; finishing a track naturally earns
     /// one back (capped). Previous-skips are unlimited and walk the persistent play history.
     static let maxSkips = 3
-    private(set) var skipsRemaining = Player.maxSkips
+    public private(set) var skipsRemaining = Player.maxSkips
     /// IDs of previously played tracks, most recent last. Persisted, so "previous" works across
     /// launches.
     private var historyIDs: [UUID] = []
@@ -277,7 +277,7 @@ final class Player {
 
     // MARK: Transport
 
-    func play(tracks: [Track], startAt index: Int) {
+    public func play(tracks: [Track], startAt index: Int) {
         cancelTransition()
         pushHistory(currentTrack)
         queue = tracks
@@ -288,7 +288,7 @@ final class Player {
 
     /// Like `play(tracks:startAt:)` but left paused at the start — used to stage the session's
     /// first track on the Now Playing screen without blasting audio at launch.
-    func prepare(tracks: [Track], startAt index: Int) {
+    public func prepare(tracks: [Track], startAt index: Int) {
         cancelTransition()
         queue = tracks
         currentIndex = max(0, min(index, tracks.count - 1))
@@ -307,7 +307,7 @@ final class Player {
 
     /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the
     /// current track loaded and paused at its saved position.
-    func restore(_ state: PersistedPlaybackState, resolving tracksByID: [UUID: Track]) {
+    public func restore(_ state: PersistedPlaybackState, resolving tracksByID: [UUID: Track]) {
         let tracks = state.queueTrackIDs.compactMap { tracksByID[$0] }
         guard !tracks.isEmpty else { return }
         skipsRemaining = max(0, min(Player.maxSkips, state.skipsRemaining))
@@ -329,7 +329,7 @@ final class Player {
         persistState()
     }
 
-    func togglePlayPause() {
+    public func togglePlayPause() {
         guard currentTrack != nil else { return }
         if isPlaying {
             currentDeck.pause()
@@ -352,7 +352,7 @@ final class Player {
         persistState()
     }
 
-    func next() {
+    public func next() {
         guard !queue.isEmpty, skipsRemaining > 0 else { return }
         skipsRemaining -= 1
         cancelTransition()
@@ -362,7 +362,7 @@ final class Player {
         persistState()
     }
 
-    func previous() {
+    public func previous() {
         guard !queue.isEmpty else { return }
         cancelTransition()
         // Restart the current track if we're more than 3s in; otherwise step back through the
@@ -388,7 +388,7 @@ final class Player {
     /// a deck or queue reference to a deleted `@Model` would crash on next access. Handles every
     /// case: blend target deleted (cancel the blend), current track deleted (jump to the next
     /// surviving track, preserving play/pause state), and plain queue shrinkage (fix indices).
-    func handleDeleted(trackIDs: Set<UUID>) {
+    public func handleDeleted(trackIDs: Set<UUID>) {
         historyIDs.removeAll { trackIDs.contains($0) }
         defer { persistState() }
         guard queue.contains(where: { trackIDs.contains($0.id) }) else { return }
@@ -431,7 +431,7 @@ final class Player {
         }
     }
 
-    func seek(to seconds: TimeInterval) {
+    public func seek(to seconds: TimeInterval) {
         let clamped = max(0, min(seconds, duration))
         cancelTransition() // re-evaluate the transition window from the new position
         if currentDeck.seekRealFile(to: clamped) {

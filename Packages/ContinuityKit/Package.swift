@@ -12,6 +12,7 @@ let package = Package(
     products: [
         .library(name: "Domain", targets: ["Domain"]),
         .library(name: "Ingest", targets: ["Ingest"]),
+        .library(name: "Playback", targets: ["Playback"]),
     ],
     dependencies: [
         .package(path: "../ContinuityCore"),
@@ -37,6 +38,13 @@ let package = Package(
                 .product(name: "YouTubeKit", package: "YouTubeKit"),
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Playback: AVAudioEngine decks, player state machine, now-playing bridge.
+        // Sibling of Ingest — depends on Domain + ContinuityCore only, never on Ingest.
+        .target(
+            name: "Playback",
+            dependencies: ["Domain", .product(name: "ContinuityCore", package: "ContinuityCore")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

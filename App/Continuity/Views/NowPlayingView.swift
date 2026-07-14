@@ -1,4 +1,5 @@
 import SwiftUI
+import Playback
 import Domain
 
 /// Full-screen Now Playing UI (Apple Music / Spotify style): large artwork, scrubber, and a
