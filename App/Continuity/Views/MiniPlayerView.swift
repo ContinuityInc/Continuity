@@ -1,4 +1,5 @@
 import SwiftUI
+import Playback
 
 /// Compact Liquid Glass now-playing bar docked above the bottom safe area.
 struct MiniPlayerView: View {

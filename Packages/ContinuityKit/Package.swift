@@ -11,6 +11,7 @@ let package = Package(
     platforms: [.iOS("26.0")],
     products: [
         .library(name: "Domain", targets: ["Domain"]),
+        .library(name: "Playback", targets: ["Playback"]),
     ],
     dependencies: [
         .package(path: "../ContinuityCore"),
@@ -22,6 +23,13 @@ let package = Package(
         .target(
             name: "Domain",
             dependencies: [.product(name: "ContinuityCore", package: "ContinuityCore")],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Playback: AVAudioEngine decks, player state machine, now-playing bridge.
+        // Sibling of Ingest — depends on Domain + ContinuityCore only, never on Ingest.
+        .target(
+            name: "Playback",
+            dependencies: ["Domain", .product(name: "ContinuityCore", package: "ContinuityCore")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

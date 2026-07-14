@@ -36,6 +36,8 @@ targets:
       - package: ContinuityCore
       - package: ContinuityKit
         product: Domain
+      - package: ContinuityKit
+        product: Playback
       - package: YouTubeKit
       - package: onnxruntime
         product: onnxruntime
