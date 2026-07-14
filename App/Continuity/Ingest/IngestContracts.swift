@@ -24,6 +24,22 @@ enum IngestError: Error, Sendable {
     case resolveFailed(String)
     case downloadFailed(String)
     case decodeFailed(String)
+    /// Connectivity/timeout/5xx talking to the source — a retry may succeed.
+    case network(String)
+    /// HTTP 429 from the source — a retry after a short delay may succeed.
+    case rateLimited
+    /// The source was reached and understood, but has no usable content
+    /// (private, empty, region-locked, or deleted). Retrying won't help.
+    case sourceUnavailable
+
+    /// Whether retrying the same request with backoff could plausibly succeed. Distinguishes a
+    /// transient blip (worth retrying, and not the user's fault) from a definitively empty source.
+    var isRetryable: Bool {
+        switch self {
+        case .network, .rateLimited: return true
+        default: return false
+        }
+    }
 }
 
 /// A resolved YouTube playlist: its videos (in order) plus the playlist's own title.

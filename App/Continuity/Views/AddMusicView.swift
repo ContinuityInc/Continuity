@@ -128,27 +128,21 @@ struct AddMusicView: View {
 
     /// Imports a Spotify playlist/album — tracklist from Spotify, audio from YouTube.
     private func importSpotify(_ link: SpotifyLink) {
-        runImport {
+        runImport(noun: "Spotify \(link.kind.rawValue)") {
             try await preparationQueue.importSpotifyPlaylist(link, in: modelContext)
-        } failure: {
-            "Couldn't import that Spotify \(link.kind.rawValue). It may be private, empty, or unavailable."
         }
     }
 
     /// Imports a YouTube playlist as its own library playlist.
     private func importYouTubePlaylist(_ playlistID: String) {
-        runImport {
+        runImport(noun: "playlist") {
             try await preparationQueue.importPlaylist(playlistID: playlistID, in: modelContext)
-        } failure: {
-            "Couldn't import that playlist. It may be private, empty, or unavailable."
         }
     }
 
-    /// Shared async import runner: shows the spinner, dismisses on success, shows an error otherwise.
-    private func runImport(
-        _ work: @escaping () async throws -> Playlist,
-        failure message: @escaping () -> String
-    ) {
+    /// Shared async import runner: shows the spinner, dismisses on success, shows an accurate,
+    /// cause-specific error otherwise (so a transient network blip doesn't read as "private").
+    private func runImport(noun: String, _ work: @escaping () async throws -> Playlist) {
         isImporting = true
         errorMessage = nil
         Task {
@@ -157,8 +151,24 @@ struct AddMusicView: View {
                 _ = try await work()
                 dismiss()
             } catch {
-                errorMessage = message()
+                errorMessage = Self.importErrorMessage(error, noun: noun)
             }
+        }
+    }
+
+    /// Maps a resolve failure to a message that names the actual cause. Retryable failures
+    /// (network/rate-limit) already retried inside the resolver, so reaching here means they
+    /// persisted — the message tells the user to try again rather than blaming their playlist.
+    private static func importErrorMessage(_ error: Error, noun: String) -> String {
+        switch error as? IngestError {
+        case .network:
+            return "Couldn't reach the server. Check your connection and try again."
+        case .rateLimited:
+            return "Too many requests right now — please try again in a minute."
+        case .sourceUnavailable:
+            return "That \(noun) looks private or empty. Make sure it's public and try again."
+        default:
+            return "Couldn't import that \(noun). Please try again."
         }
     }
 

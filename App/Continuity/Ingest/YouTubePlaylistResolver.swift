@@ -33,34 +33,13 @@ final class YouTubePlaylistResolver: PlaylistResolving {
         ]
         guard let url = components.url else { throw IngestError.invalidURL }
 
-        var request = URLRequest(url: url)
-        // A desktop UA returns the full `ytInitialData` blob we parse; the consent cookie skips
-        // the EU interstitial that would otherwise replace the page with a consent form.
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        request.setValue("CONSENT=YES+1", forHTTPHeaderField: "Cookie")
-
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            throw IngestError.resolveFailed(String(describing: error))
-        }
-
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw IngestError.resolveFailed("playlist page HTTP \(http.statusCode)")
-        }
-        guard let html = String(data: data, encoding: .utf8) else {
-            throw IngestError.decodeFailed("playlist page was not valid UTF-8")
-        }
-
-        let contents = YouTubePlaylist.parse(html: html)
-        guard !contents.items.isEmpty else {
-            throw IngestError.resolveFailed("no videos found in playlist (private, empty, or unavailable)")
+        // Retry the first-page fetch+parse on transient failures; a 200-with-no-videos is treated
+        // as genuinely private/empty (not retried). Continuations below stay best-effort.
+        let (html, contents) = try await Retry.run { () -> (String, YouTubePlaylistContents) in
+            let html = try await self.fetchPlaylistHTML(url)
+            let contents = YouTubePlaylist.parse(html: html)
+            guard !contents.items.isEmpty else { throw IngestError.sourceUnavailable }
+            return (html, contents)
         }
 
         var items = contents.items
@@ -87,6 +66,39 @@ final class YouTubePlaylistResolver: PlaylistResolving {
             title: contents.title,
             items: Array(items.prefix(Self.maxTracks))
         )
+    }
+
+    /// GETs the playlist page, mapping the outcome to a retryability-aware `IngestError`.
+    private func fetchPlaylistHTML(_ url: URL) async throws -> String {
+        var request = URLRequest(url: url)
+        // A desktop UA returns the full `ytInitialData` blob we parse; the consent cookie skips
+        // the EU interstitial that would otherwise replace the page with a consent form.
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("CONSENT=YES+1", forHTTPHeaderField: "Cookie")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw IngestError.network(String(describing: error))
+        }
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300: break
+            case 429: throw IngestError.rateLimited
+            case 500..<600: throw IngestError.network("playlist page HTTP \(http.statusCode)")
+            default: throw IngestError.resolveFailed("playlist page HTTP \(http.statusCode)")
+            }
+        }
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw IngestError.decodeFailed("playlist page was not valid UTF-8")
+        }
+        return html
     }
 
     /// One `youtubei/v1/browse` continuation call, parsed by ContinuityCore.
