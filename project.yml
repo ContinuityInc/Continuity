@@ -32,6 +32,8 @@ targets:
         product: Domain
       - package: ContinuityKit
         product: Ingest
+      - package: ContinuityKit
+        product: Playback
     info:
       path: App/Continuity/Info.plist
       properties:
