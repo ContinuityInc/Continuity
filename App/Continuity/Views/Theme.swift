@@ -32,6 +32,56 @@ extension View {
     }
 }
 
+/// Immersive full-bleed backdrop built from the current track's album art: heavily blurred and
+/// darkened with a depth scrim (top/bottom gradient + centre-luminous vignette) so white content
+/// reads on any artwork. Shared by the minimal home and the full Now Playing surface so both
+/// feel like the same room. Falls back to the deterministic gradient (demo tracks / no art).
+struct AlbumBackdrop: View {
+    let url: URL?
+    let seed: Int
+
+    var body: some View {
+        GeometryReader { proxy in
+            artwork
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .blur(radius: 60, opaque: true)
+                .overlay(scrim)
+                .animation(.easeInOut(duration: 0.6), value: url)
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder private var artwork: some View {
+        if let url {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Theme.gradient(seed: seed)
+                }
+            }
+        } else {
+            Theme.gradient(seed: seed)
+        }
+    }
+
+    /// Keeps the luminous centre while darkening the edges — legibility without a muddy flat wash.
+    private var scrim: some View {
+        ZStack {
+            Color.black.opacity(0.26)
+            LinearGradient(
+                colors: [.black.opacity(0.4), .clear, .black.opacity(0.55)],
+                startPoint: .top, endPoint: .bottom
+            )
+            RadialGradient(
+                colors: [.clear, .black.opacity(0.38)],
+                center: .center, startRadius: 80, endRadius: 560
+            )
+        }
+    }
+}
+
 /// Reusable square artwork tile (gradient + SF Symbol) used by cards, rows and Now Playing.
 struct ArtworkView: View {
     let symbol: String

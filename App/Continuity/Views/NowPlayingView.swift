@@ -21,18 +21,25 @@ struct NowPlayingView: View {
 
             if let track = player.currentTrack {
                 RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28)
-                    .frame(maxWidth: 320)
+                    .frame(maxWidth: 300)
                     .aspectRatio(1, contentMode: .fit)
-                    .shadow(color: .black.opacity(0.25), radius: 24, y: 12)
+                    // Playing = full size with a lifted shadow; paused = drawn back, like a record
+                    // easing off the platter. The signature "is it playing?" glance cue.
+                    .scaleEffect(player.isPlaying ? 1 : 0.84)
+                    .shadow(color: .black.opacity(0.45),
+                            radius: player.isPlaying ? 32 : 16,
+                            y: player.isPlaying ? 18 : 8)
+                    .animation(.spring(response: 0.45, dampingFraction: 0.72), value: player.isPlaying)
                     .padding(.horizontal, 32)
+                    .padding(.vertical, 6)
 
                 VStack(spacing: 4) {
-                    Text(track.title).font(.title2.bold()).lineLimit(1)
-                    Text(track.artist).font(.title3).foregroundStyle(.secondary).lineLimit(1)
+                    Text(track.title).font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
+                    Text(track.artist).font(.title3).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
                     if let meta = analysisLabel(for: track) {
                         Text(meta)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.6))
                             .padding(.top, 2)
                     }
                 }
@@ -65,10 +72,10 @@ struct NowPlayingView: View {
         VStack(spacing: 6) {
             Label("Blending into \(next.title)", systemImage: "arrow.triangle.merge")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.85))
                 .lineLimit(1)
             ProgressView(value: min(max(player.transitionProgress, 0), 1))
-                .tint(.primary)
+                .tint(.white)
         }
         .padding(.horizontal, 40)
         .transition(.opacity)
@@ -95,6 +102,7 @@ struct NowPlayingView: View {
                 systemImage: "wand.and.stars"
             )
             .font(.footnote.weight(.medium))
+            .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .continuityGlass(cornerRadius: 20)
@@ -120,13 +128,14 @@ struct NowPlayingView: View {
                     }
                 }
             )
+            .tint(.white)
             HStack {
                 Text(Theme.time(isEditing ? scrubValue : player.position))
                 Spacer()
                 Text(Theme.time(player.duration))
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.65))
         }
         .padding(.horizontal, 32)
     }
@@ -136,13 +145,23 @@ struct NowPlayingView: View {
             Button { player.previous() } label: {
                 Image(systemName: "backward.fill").font(.title)
             }
+            // Accent play disc — same treatment as the minimal home so both surfaces share a look.
             Button { player.togglePlayPause() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 34))
-                    .frame(width: 76, height: 76)
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
+                            startPoint: .top, endPoint: .bottom))
+                        .frame(width: 78, height: 78)
+                        .shadow(color: Color.accentColor.opacity(0.5), radius: 16, y: 5)
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 32, weight: .medium))
+                        .foregroundStyle(.white)
+                        .contentTransition(.symbolEffect(.replace))
+                        .offset(x: player.isPlaying ? 0 : 2)
+                }
             }
-            .buttonStyle(.glassProminent)
-            .clipShape(Circle())
+            .buttonStyle(.plain)
             VStack(spacing: 4) {
                 Button { player.next() } label: {
                     Image(systemName: "forward.fill").font(.title)
@@ -151,18 +170,18 @@ struct NowPlayingView: View {
                 .opacity(player.skipsRemaining == 0 ? 0.35 : 1)
                 Text("\(player.skipsRemaining)")
                     .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
             }
         }
-        .tint(.primary)
+        .tint(.white)
     }
 
     private var backdrop: some View {
         Group {
             if let track = player.currentTrack {
-                Theme.gradient(seed: track.gradientSeed)
-                    .opacity(0.22)
-                    .ignoresSafeArea()
+                AlbumBackdrop(url: track.artworkURL, seed: track.gradientSeed)
+            } else {
+                Color.black.ignoresSafeArea()
             }
         }
     }
