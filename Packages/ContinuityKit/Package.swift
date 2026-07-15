@@ -11,9 +11,12 @@ let package = Package(
     platforms: [.iOS("26.0")],
     products: [
         .library(name: "Domain", targets: ["Domain"]),
+        .library(name: "Ingest", targets: ["Ingest"]),
     ],
     dependencies: [
         .package(path: "../ContinuityCore"),
+        .package(url: "https://github.com/alexeichhorn/YouTubeKit", branch: "main"),
+        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", exact: "1.20.0"),
     ],
     targets: [
         // Domain: SwiftData @Model types, transition settings, and the on-disk cache path layer.
@@ -22,6 +25,18 @@ let package = Package(
         .target(
             name: "Domain",
             dependencies: [.product(name: "ContinuityCore", package: "ContinuityCore")],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Ingest: downloading, resolving playlists/streams, stem separation, track analysis.
+        // Depends on Domain + ContinuityCore; owns the external YouTubeKit/onnxruntime deps.
+        .target(
+            name: "Ingest",
+            dependencies: [
+                "Domain",
+                .product(name: "ContinuityCore", package: "ContinuityCore"),
+                .product(name: "YouTubeKit", package: "YouTubeKit"),
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

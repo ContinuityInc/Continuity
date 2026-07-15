@@ -17,7 +17,7 @@ struct ResolvedAudio: Sendable, Equatable {
     let approxBitrate: Int
 }
 
-enum IngestError: Error, Sendable {
+public enum IngestError: Error, Sendable {
     case invalidURL
     case noVideoID
     case noPlayableStream

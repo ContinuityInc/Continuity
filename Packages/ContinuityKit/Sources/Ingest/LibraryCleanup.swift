@@ -8,10 +8,10 @@ import SwiftData
 ///
 /// Call AFTER the track models have been deleted and saved, so the reference check sees the
 /// post-deletion library.
-enum LibraryCleanup {
+public enum LibraryCleanup {
 
     @MainActor
-    static func removeOrphanedFiles(videoIDs: [String], in context: ModelContext) {
+    public static func removeOrphanedFiles(videoIDs: [String], in context: ModelContext) {
         for videoID in Set(videoIDs) {
             let descriptor = FetchDescriptor<Track>(
                 predicate: #Predicate { $0.youtubeVideoID == videoID }
@@ -36,7 +36,7 @@ enum LibraryCleanup {
     /// downloads/stems that were still in flight when their tracks were deleted and landed on
     /// disk after the delete-time cleanup had already run.
     @MainActor
-    static func sweepOrphanedFiles(in context: ModelContext) {
+    public static func sweepOrphanedFiles(in context: ModelContext) {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
         let referenced = Set(tracks.compactMap(\.youtubeVideoID))
 

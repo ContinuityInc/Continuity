@@ -1,4 +1,5 @@
 import SwiftUI
+import Ingest
 
 /// The app's home: a deliberately minimal Now Playing surface. Blurred album art fills the
 /// background; the only controls are previous / play-pause / next, with the remaining
