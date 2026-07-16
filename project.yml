@@ -34,6 +34,13 @@ targets:
         product: Ingest
       - package: ContinuityKit
         product: Playback
+      - target: ContinuityShare
+    # App group shared with the extension — the share-sheet → app handoff channel.
+    entitlements:
+      path: App/Continuity/Continuity.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.continuity.app
     info:
       path: App/Continuity/Info.plist
       properties:
@@ -44,6 +51,11 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # continuity://import?url=<encoded link> — deep-link entry into the import flow.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.continuity.app
+            CFBundleURLSchemes:
+              - continuity
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.continuity.app
@@ -52,4 +64,34 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+  # Share-sheet entry point: stashes the shared URL in the app group for the app to import.
+  ContinuityShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: App/ShareExtension
+    entitlements:
+      path: App/ShareExtension/ContinuityShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.continuity.app
+    info:
+      path: App/ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Continuity
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # Web URLs only — a bare TRUEPREDICATE would surface us for every share type.
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.continuity.app.share
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
