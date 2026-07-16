@@ -130,6 +130,7 @@ extension Player {
         pushHistory(currentTrack)
         audio.current = incoming
         currentIndex = transitionTargetIndex
+        queueRefillAttempted = false   // deck promotion changes the current track sans startCurrentFresh
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
         baselineSeconds = incomingStartOffset

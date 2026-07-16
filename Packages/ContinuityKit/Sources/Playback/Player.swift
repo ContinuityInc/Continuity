@@ -116,6 +116,16 @@ public final class Player {
     /// CPU-hours and gigabytes; the blend only ever needs the neighborhood).
     public var onUpcomingTracks: (([Track]) -> Void)?
 
+    /// Resolves history IDs (oldest first) to live tracks when the queue runs dry; the app
+    /// supplies storage lookup. Return order is preserved; missing tracks simply dropped.
+    /// Repeats collapse to first occurrence (replaceUpcoming dedupes), so the loop order tracks
+    /// the oldest surviving entries — the 200-cap trim may rotate the loop start over long sessions.
+    public var onQueueExhausted: (([UUID]) -> [Track])?
+
+    /// One refill attempt per current track — an empty/failed refill must not retry every tick.
+    /// Reset wherever the current track changes (startCurrentFresh, finishTransition, prepare).
+    var queueRefillAttempted = false
+
     /// How far ahead stems are prepared. At ~2–4 min per separation and ~3.5 min per song, three
     /// tracks of lead time keeps the next blend's stems ready even right after a skip.
     private static let upcomingStemWindow = 3
@@ -241,6 +251,7 @@ public final class Player {
         audio.current.load(track)   // load() resets rate/pitch, so the fresh track plays true
         applyLoudness(to: audio.current)
         currentPitchShiftSemitones = 0
+        queueRefillAttempted = false   // new current track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
         audio.current.play()
@@ -318,8 +329,20 @@ public final class Player {
                 // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
                 hardAdvance(toIndex: next)
             }
+        } else if !queueRefillAttempted {
+            // Queue about to run dry: refill upcoming from the listening history on the FIRST
+            // tick that sees it, not at the end — the transition plan needs a next track to
+            // schedule the blend, and replaceUpcoming's notifyUpcoming gives the stem pipeline
+            // lead time to prep the loop's first track. Once per track; if nothing comes back,
+            // later ticks fall through to the stop-at-end below.
+            queueRefillAttempted = true
+            // Empty history (fresh install, single demo) skips the provider entirely — its
+            // lookup shouldn't cost a library fetch just to resolve zero IDs.
+            if !historyIDs.isEmpty, let refill = onQueueExhausted?(historyIDs), !refill.isEmpty {
+                replaceUpcoming(with: refill)
+            }
         } else if dur > 0 && elapsed >= dur - 0.05 {
-            // Last track in the queue: stop at the end (resume will restart it).
+            // Last track and no history to loop into: stop at the end (resume will restart it).
             stopPlayback()
         }
     }

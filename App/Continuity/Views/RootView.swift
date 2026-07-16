@@ -37,6 +37,13 @@ struct RootView: View {
                 player.onUpcomingTracks = { [weak prepQueue] tracks in
                     prepQueue?.ensureStems(for: tracks, in: modelContext)
                 }
+                // Natural queue exhaustion loops playback into the listening history — resolve
+                // the persisted IDs to live tracks in order; deleted tracks simply drop out.
+                player.onQueueExhausted = { ids in
+                    let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
+                    let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+                    return ids.compactMap { byID[$0] }
+                }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()

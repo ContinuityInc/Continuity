@@ -32,6 +32,7 @@ extension Player {
             audio.current.stop()
         }
         currentPitchShiftSemitones = 0
+        queueRefillAttempted = false   // restaged track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
         pendingSeekSeconds = nil
