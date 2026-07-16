@@ -11,7 +11,10 @@ extension Player {
     /// output-device switches), and configuration resets. Untreated, the next deck call throws an
     /// ObjC exception — the classic "transient" crash. These observers turn those events into a
     /// clean pause + reschedule-and-resume instead.
-    func observeAudioEnvironment() {
+    ///
+    /// Registered by `ensureAudioStack()` — the handlers act on the engine, so pre-audio there is
+    /// nothing to observe (and nothing may fire).
+    func observeAudioEnvironment(engine: AVAudioEngine) {
         let center = NotificationCenter.default
 
         center.addObserver(
@@ -69,8 +72,8 @@ extension Player {
     private func pauseForEnvironment() {
         guard isPlaying else { return }
         resumeAfterInterruption = true
-        cancelTransition()   // blend state won't survive an engine stop; finish cleanly
-        currentDeck.pause()  // engine-state-guarded; no-ops if the engine is already down
+        cancelTransition()     // blend state won't survive an engine stop; finish cleanly
+        audio?.current.pause() // engine-state-guarded; no-ops if the engine is already down
         isPlaying = false
         stopTimer()
         persistState()       // lock screen should show paused immediately
@@ -82,7 +85,8 @@ extension Player {
     private func recoverPlayback(force: Bool = false) {
         guard force || resumeAfterInterruption else { return }
         resumeAfterInterruption = false
-        guard currentTrack != nil else { return }
+        // Observers only exist once the stack does, so `audio` is always live here.
+        guard currentTrack != nil, let audio else { return }
         guard ensureRunning() else {
             Logger.audio.error("engine restart failed during recovery")
             isPlaying = false
@@ -90,9 +94,9 @@ extension Player {
             return
         }
         // Engine stops invalidate node schedules — reschedule from where the clock stood.
-        if currentDeck.seekRealFile(to: position) {
+        if audio.current.seekRealFile(to: position) {
             baselineSeconds = position
-            currentDeck.play()
+            audio.current.play()
             isPlaying = true
             startTimer()
         } else {

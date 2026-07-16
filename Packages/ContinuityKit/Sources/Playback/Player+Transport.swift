@@ -18,25 +18,31 @@ extension Player {
 
     /// Like `play(tracks:startAt:)` but left paused at the start — used to stage the session's
     /// first track on the Now Playing screen without blasting audio at launch.
+    ///
+    /// Metadata-only: no deck load, no engine build (see `ensureAudioStack()`) — staging must
+    /// survive a wedged CoreAudio server. The track loads on the first real play.
     public func prepare(tracks: [Track], startAt index: Int) {
         cancelTransition()
         queue = tracks
         currentIndex = max(0, min(index, tracks.count - 1))
-        guard let track = currentTrack else { return }
-        idleDeck.stop()
-        currentDeck.stop()
-        currentDeck.load(track)
-        applyLoudness(to: currentDeck)
+        guard currentTrack != nil else { return }
+        // Re-prepare mid-session: silence + unload existing decks, but never build them for this.
+        if let audio {
+            audio.idle.stop()
+            audio.current.stop()
+        }
         currentPitchShiftSemitones = 0
         baselineSeconds = 0
         position = 0
+        pendingSeekSeconds = nil
         isPlaying = false
         persistState()
         notifyUpcoming()
     }
 
     /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the
-    /// current track loaded and paused at its saved position.
+    /// current track staged paused at its saved position (the seek itself is deferred until
+    /// audio first materializes).
     public func restore(_ state: PersistedPlaybackState, resolving tracksByID: [UUID: Track]) {
         let tracks = state.queueTrackIDs.compactMap { tracksByID[$0] }
         guard !tracks.isEmpty else { return }
@@ -50,11 +56,12 @@ extension Player {
 
         prepare(tracks: tracks, startAt: index)
 
-        // Seek to the saved spot (real files only; the synth loop is position-agnostic).
+        // Stage the saved spot; ensureCurrentLoaded() applies it when audio first materializes.
         let target = max(0, min(state.positionSeconds, duration > 0 ? duration : state.positionSeconds))
-        if target > 0, currentDeck.seekRealFile(to: target) {
+        if target > 0 {
             baselineSeconds = target
             position = target
+            pendingSeekSeconds = target
         }
         persistState()
     }
@@ -62,19 +69,23 @@ extension Player {
     public func togglePlayPause() {
         guard currentTrack != nil else { return }
         if isPlaying {
-            currentDeck.pause()
-            if isTransitioning { idleDeck.pause() }
+            // isPlaying implies the stack exists; guard-let keeps the pause structurally safe.
+            if let audio {
+                audio.current.pause()
+                if isTransitioning { audio.idle.pause() }
+            }
             isPlaying = false
             stopTimer()
         } else {
-            guard ensureRunning() else { isPlaying = false; return }
+            // First real audio need: build the stack, load the staged track, apply pending seek.
+            guard ensureCurrentLoaded(), let audio else { isPlaying = false; return }
             // If the queue had ended (the deck fully drained), replay from the start instead of
             // calling play() on an empty node, which would just be silent.
             if !isTransitioning, duration > 0, position >= duration - 0.05 {
                 startCurrentFresh()
             } else {
-                currentDeck.play()
-                if isTransitioning { idleDeck.play() }
+                audio.current.play()
+                if isTransitioning { audio.idle.play() }
                 isPlaying = true
                 startTimer()
             }
@@ -140,19 +151,29 @@ extension Player {
 
         if currentDeleted {
             if queue.isEmpty {
-                currentDeck.stop()
-                idleDeck.stop()
+                // Guard, don't build: deleting tracks must never construct the engine.
+                audio?.current.stop()
+                audio?.idle.stop()
                 currentIndex = 0
                 position = 0
+                pendingSeekSeconds = nil
                 isPlaying = false
                 stopTimer()
             } else {
                 currentIndex = min(survivorsBeforeCurrent, queue.count - 1)
-                startCurrentFresh()
-                if !wasPlaying {
-                    currentDeck.pause()
-                    isPlaying = false
-                    stopTimer()
+                if let audio {
+                    startCurrentFresh()
+                    if !wasPlaying {
+                        audio.current.pause()
+                        isPlaying = false
+                        stopTimer()
+                    }
+                } else {
+                    // Pre-audio: restage the survivor metadata-only; it loads on first play.
+                    baselineSeconds = 0
+                    position = 0
+                    pendingSeekSeconds = nil
+                    notifyUpcoming()   // startCurrentFresh would have; stems prep needs the new neighborhood
                 }
             }
         } else {
@@ -167,16 +188,26 @@ extension Player {
     public func seek(to seconds: TimeInterval) {
         let clamped = max(0, min(seconds, duration))
         cancelTransition() // re-evaluate the transition window from the new position
-        if currentDeck.seekRealFile(to: clamped) {
+        // Paused pre-audio scrub: metadata-only — move the clock and stage the seek for when
+        // audio first materializes. (isPlaying is impossible without a loaded deck.)
+        guard let audio, audio.current.track?.id == currentTrack?.id, currentTrack != nil else {
+            baselineSeconds = clamped
+            position = clamped
+            pendingSeekSeconds = clamped
+            persistState()
+            return
+        }
+        pendingSeekSeconds = nil   // a live deck seek supersedes any staged one
+        if audio.current.seekRealFile(to: clamped) {
             baselineSeconds = clamped
             position = clamped
             if isPlaying {
                 guard ensureRunning() else { isPlaying = false; return }
-                currentDeck.play()
+                audio.current.play()
             }
         } else {
             // Synth deck: looped audio is identical at any offset, so just move the clock.
-            baselineSeconds = clamped - currentDeck.elapsed
+            baselineSeconds = clamped - audio.current.elapsed
             position = clamped
         }
         persistState()   // saved position + lock-screen elapsed both move with the scrub
@@ -193,7 +224,7 @@ extension Player {
     }
 
     func stopPlayback() {
-        currentDeck.pause()
+        audio?.current.pause()   // only called mid-play, but never worth building a stack to pause
         isPlaying = false
         stopTimer()
         persistState()
