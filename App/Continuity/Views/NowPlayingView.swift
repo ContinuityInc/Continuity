@@ -25,7 +25,7 @@ struct NowPlayingView: View {
             }
 
             if let track = player.currentTrack {
-                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28)
+                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28, cropsLetterbox: true)
                     .frame(maxWidth: 300)
                     .aspectRatio(1, contentMode: .fit)
                     // Playing = full size with a lifted shadow; paused = drawn back, like a record
