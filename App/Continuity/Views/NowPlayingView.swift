@@ -12,12 +12,17 @@ struct NowPlayingView: View {
     @State private var isEditing = false
     @State private var scrubValue: Double = 0
     @State private var showingTransitionSettings = false
+    @State private var showingUpNext = false
 
     var body: some View {
         VStack(spacing: 24) {
             grabberSpacer
 
-            transitionChip
+            // Transition settings + queue, side by side: both shape what plays next.
+            HStack(spacing: 10) {
+                transitionChip
+                upNextButton
+            }
 
             if let track = player.currentTrack {
                 RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28)
@@ -60,6 +65,10 @@ struct NowPlayingView: View {
         // Tapping the transition chip opens the live transition settings.
         .sheet(isPresented: $showingTransitionSettings) {
             TransitionSettingsView()
+        }
+        .sheet(isPresented: $showingUpNext) {
+            UpNextView()
+                .presentationDetents([.medium, .large])
         }
     }
 
@@ -108,6 +117,22 @@ struct NowPlayingView: View {
             .continuityGlass(cornerRadius: 20)
         }
         .buttonStyle(.plain)
+    }
+
+    /// Glass sibling of the transition chip, opening the Up Next queue sheet.
+    private var upNextButton: some View {
+        Button {
+            showingUpNext = true
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .continuityGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Up Next")
     }
 
     private var scrubber: some View {

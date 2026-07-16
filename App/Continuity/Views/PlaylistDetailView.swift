@@ -32,6 +32,13 @@ struct PlaylistDetailView: View {
                             player.play(tracks: playlist.orderedTracks, startAt: index)
                         }
                     }
+                    .contextMenu {
+                        Button {
+                            player.playNext(track)
+                        } label: {
+                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                    }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
                             delete(track)

@@ -140,6 +140,13 @@ private struct SearchResultsView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button {
+                                player.playNext(track)
+                            } label: {
+                                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                            }
+                        }
                     }
                 }
             }
