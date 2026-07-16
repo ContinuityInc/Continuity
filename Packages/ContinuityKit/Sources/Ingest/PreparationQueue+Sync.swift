@@ -67,15 +67,27 @@ extension PreparationQueue {
         }
 
         let remoteKeys = Set(remote.map(\.videoID))
-        removeTracks(playlist.tracks.filter { track in
+        let removed = playlist.tracks.filter { track in
             guard let id = track.youtubeVideoID else { return false }
             return !remoteKeys.contains(id)
-        }, in: context)
+        }
+        removeTracks(removed, in: context)
 
+        // Bump `updatedAt` only when the sync actually changed content — a no-op auto-sync
+        // must not float untouched playlists to the top of the library.
+        var changed = !removed.isEmpty
+        // Duplicate remote entries share one local track; settle on the last occurrence's index
+        // up front so an unchanged remote reaches a steady state instead of touching every sync.
+        var targetIndexByKey: [String: Int] = [:]
+        for (index, item) in remote.enumerated() { targetIndexByKey[item.videoID] = index }
         let seed = playlist.gradientSeed
         for (index, item) in remote.enumerated() {
             if let existing = localByKey[item.videoID] {
-                existing.sortIndex = index      // follow remote ordering
+                let target = targetIndexByKey[item.videoID] ?? index
+                if existing.sortIndex != target {
+                    existing.sortIndex = target  // follow remote ordering
+                    changed = true
+                }
             } else {
                 let track = Track(
                     title: item.title ?? "YouTube Video (\(item.videoID.prefix(6)))",
@@ -91,9 +103,11 @@ extension PreparationQueue {
                 playlist.tracks.append(track)
                 context.insert(track)
                 enqueue(track, in: context)
+                changed = true
             }
         }
         playlist.subtitle = "From YouTube · \(remote.count) tracks"
+        if changed { playlist.touch() }
     }
 
     /// Applies a fresh remote Spotify tracklist: key = the YouTube search query (title + artist),
@@ -105,15 +119,25 @@ extension PreparationQueue {
         }
 
         let remoteKeys = Set(remote.map(\.youtubeSearchQuery))
-        removeTracks(playlist.tracks.filter { track in
+        let removed = playlist.tracks.filter { track in
             guard let query = track.searchQuery else { return false }
             return !remoteKeys.contains(query)
-        }, in: context)
+        }
+        removeTracks(removed, in: context)
 
+        // Same rule as the YouTube path: only a real content change bumps `updatedAt`.
+        var changed = !removed.isEmpty
+        // As above: duplicate keys settle on one index so unchanged remotes stop touching.
+        var targetIndexByKey: [String: Int] = [:]
+        for (index, item) in remote.enumerated() { targetIndexByKey[item.youtubeSearchQuery] = index }
         let seed = playlist.gradientSeed
         for (index, item) in remote.enumerated() {
             if let existing = localByKey[item.youtubeSearchQuery] {
-                existing.sortIndex = index
+                let target = targetIndexByKey[item.youtubeSearchQuery] ?? index
+                if existing.sortIndex != target {
+                    existing.sortIndex = target
+                    changed = true
+                }
             } else {
                 let track = Track(
                     title: item.title,
@@ -128,9 +152,11 @@ extension PreparationQueue {
                 playlist.tracks.append(track)
                 context.insert(track)
                 enqueue(track, in: context)
+                changed = true
             }
         }
         playlist.subtitle = "From Spotify · \(remote.count) tracks"
+        if changed { playlist.touch() }
     }
 
     /// Deletes tracks the same way the UI does: Player first (so the live queue never holds a

@@ -18,6 +18,12 @@ struct LibraryView: View {
         searchText.trimmingCharacters(in: .whitespaces)
     }
 
+    /// Most-recently-edited first; pre-`updatedAt` rows fall back to creation date. Sorted
+    /// in-view (grid-sized collections) to sidestep optional-key sort quirks in the query layer.
+    private var sortedPlaylists: [Playlist] {
+        playlists.sorted { ($0.updatedAt ?? $0.createdAt) > ($1.updatedAt ?? $1.createdAt) }
+    }
+
     var body: some View {
         Group {
             if trimmedSearch.isEmpty {
@@ -33,7 +39,7 @@ struct LibraryView: View {
     private var grid: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(playlists) { playlist in
+                ForEach(sortedPlaylists) { playlist in
                     NavigationLink {
                         PlaylistDetailView(playlist: playlist)
                     } label: {

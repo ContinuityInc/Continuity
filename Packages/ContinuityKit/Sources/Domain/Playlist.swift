@@ -18,6 +18,8 @@ public final class Playlist {
     public var artworkSymbol: String
     public var gradientSeed: Int
     public var createdAt: Date
+    /// When the playlist's contents last changed; nil for rows created before this field existed.
+    public var updatedAt: Date?
 
     // MARK: Source sync (playlists imported from YouTube/Spotify)
     /// The remote service this playlist mirrors; nil for local/demo playlists.
@@ -57,6 +59,9 @@ public final class Playlist {
         self.createdAt = createdAt
         self.tracks = tracks
     }
+
+    /// Stamps a content change (tracks added/removed/reordered) so the library can sort by recency.
+    public func touch() { updatedAt = Date() }
 
     /// Tracks in playback order.
     public var orderedTracks: [Track] {

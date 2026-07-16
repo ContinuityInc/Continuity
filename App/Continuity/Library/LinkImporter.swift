@@ -114,6 +114,7 @@ enum LinkImporter {
 
         playlist.tracks.append(track)
         modelContext.insert(track)
+        playlist.touch()    // membership changed → resort the library
 
         queue.enqueue(track, in: modelContext)
     }
