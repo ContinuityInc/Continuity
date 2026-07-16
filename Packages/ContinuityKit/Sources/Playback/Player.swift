@@ -10,11 +10,34 @@ extension Logger {
     static let audio = Logger(subsystem: "com.continuity.app", category: "audio")
 }
 
+/// The CoreAudio-touching half of the player: engine + both decks, wired as one graph. Built
+/// lazily by `Player.ensureAudioStack()` — never at init — because the first `mainMixerNode`
+/// access is the app's first CoreAudio RPC, and on a wedged audio server that RPC times out and
+/// aborts in-process (AURemoteIO `_ReportRPCTimeout` → SIGABRT, uncatchable). Deferral shrinks
+/// that blast radius from "app won't launch" to "pressing play fails".
+@MainActor
+final class AudioStack {
+    let engine = AVAudioEngine()
+    let deckA: Deck
+    let deckB: Deck
+    /// The deck playing the current track. The other (`idle`) hosts the incoming track during a blend.
+    var current: Deck
+    var idle: Deck { current === deckA ? deckB : deckA }
+
+    init() {
+        let synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
+        deckB = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
+        current = deckA
+    }
+}
+
 /// Dual-deck playback engine with configurable equal-power crossfades between tracks (M2).
 ///
-/// Owns one `AVAudioEngine` with two `Deck`s. As the current track nears its end, the next track
-/// is started on the idle deck and the two are crossfaded using gains from the unit-tested
-/// `TransitionPlan` / `CrossfadeCurve`. That overlap is what makes track changes "smooth".
+/// Owns one `AVAudioEngine` with two `Deck`s (via the lazily-built `AudioStack`). As the current
+/// track nears its end, the next track is started on the idle deck and the two are crossfaded
+/// using gains from the unit-tested `TransitionPlan` / `CrossfadeCurve`. That overlap is what
+/// makes track changes "smooth".
 ///
 /// The blend is driven by the **incoming** deck's clock so it can never get stuck if the outgoing
 /// file drains early. M3 will refine *when* and *how* (beat-aligned starts, tempo matching).
@@ -36,9 +59,10 @@ public final class Player {
         didSet {
             transitionSettings.persist()
             // Loudness leveling applies at deck-load time; retro-apply the toggle immediately.
-            if oldValue.loudnessLevelingEnabled != transitionSettings.loudnessLevelingEnabled {
-                applyLoudness(to: currentDeck)
-                if isTransitioning { applyLoudness(to: idleDeck) }
+            if oldValue.loudnessLevelingEnabled != transitionSettings.loudnessLevelingEnabled,
+               let audio {
+                applyLoudness(to: audio.current)
+                if isTransitioning { applyLoudness(to: audio.idle) }
             }
         }
     }
@@ -49,19 +73,18 @@ public final class Player {
         isTransitioning && queue.indices.contains(transitionTargetIndex) ? queue[transitionTargetIndex] : nil
     }
     /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
-    /// model only for the brief window before the first load.
+    /// model whenever no deck is loaded (pre-audio staging, or before the first load).
     public var duration: TimeInterval {
-        currentDeck.loadedDuration > 0 ? currentDeck.loadedDuration : (currentTrack?.durationSeconds ?? 0)
+        if let deck = audio?.current, deck.loadedDuration > 0 { return deck.loadedDuration }
+        return currentTrack?.durationSeconds ?? 0
     }
 
     // MARK: Engine / decks
-    let engine = AVAudioEngine()
-    private let synthFormat: AVAudioFormat
-    private let deckA: Deck
-    private let deckB: Deck
-    /// The deck playing the current track. The other (`idleDeck`) hosts the incoming track during a blend.
-    var currentDeck: Deck
-    var idleDeck: Deck { currentDeck === deckA ? deckB : deckA }
+    /// All CoreAudio state, or nil until the first real audio need (see `ensureAudioStack()`).
+    var audio: AudioStack?
+    /// Seek staged before the audio stack exists (session restore, paused pre-audio scrubs).
+    /// Applied — exactly once — when the staged track first loads onto a deck.
+    var pendingSeekSeconds: TimeInterval?
 
     private var displayTimer: Timer?
     /// Clock baseline, so `position` can be offset for synth seeks.
@@ -105,14 +128,61 @@ public final class Player {
         onUpcomingTracks?(tracks)
     }
 
+    /// Deliberately RPC-free: no AVFAudio objects, no AVAudioSession calls. A wedged CoreAudio
+    /// server must not be able to stop the app from launching (see `AudioStack`).
     public init() {
-        synthFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
-        deckA = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
-        deckB = Deck(engine: engine, mainMixer: engine.mainMixerNode, synthFormat: synthFormat)
-        currentDeck = deckA
-        configureSession()
-        observeAudioEnvironment()
         nowPlayingBridge.configure(player: self)
+    }
+
+    /// Single funnel that materializes the audio stack: constructs engine + decks (wiring the
+    /// graph), activates the session, and registers the interruption/route-change observers
+    /// (their handlers reference the engine, so they can't exist before it).
+    ///
+    /// Every deck/engine operation is reachable only through one of these builders — nothing may
+    /// touch a deck first, because scheduling on an unattached node throws an ObjC exception:
+    ///   - play(tracks:) / next() / previous() / hardAdvance() → startCurrentFresh()
+    ///   - togglePlayPause() play direction (incl. remotePlay / lock screen) → ensureCurrentLoaded()
+    ///   - seek() with a live deck → ensureRunning() (paused pre-audio scrubs stay metadata-only)
+    ///   - beginTransition() → called here directly (tick() only runs while playing, post-build)
+    ///   - recoverPlayback() / pauseForEnvironment() → observers are only registered here, so
+    ///     they cannot fire pre-build
+    ///   - handleDeleted() / prepare() / restore() / persistState() never build — they guard on
+    ///     `audio` existing instead.
+    @discardableResult
+    func ensureAudioStack() -> AudioStack {
+        if let audio { return audio }
+        let stack = AudioStack()
+        audio = stack
+        configureSession()
+        observeAudioEnvironment(engine: stack.engine)
+        Logger.audio.info("audio graph wired")
+        return stack
+    }
+
+    /// First-playback funnel: builds the stack, starts the engine, loads the staged current track
+    /// onto the current deck if it isn't already there, and applies any pending staged seek
+    /// exactly once. Returns false when there's nothing to play or the engine won't start.
+    @discardableResult
+    func ensureCurrentLoaded() -> Bool {
+        guard let track = currentTrack else { return false }
+        let audio = ensureAudioStack()
+        guard ensureRunning() else { return false }
+        if audio.current.track?.id != track.id {
+            audio.current.load(track)
+            applyLoudness(to: audio.current)
+            currentPitchShiftSemitones = 0
+        }
+        if let pending = pendingSeekSeconds {
+            pendingSeekSeconds = nil
+            if pending > 0, audio.current.seekRealFile(to: pending) {
+                baselineSeconds = pending
+            } else {
+                // Synth deck: looped audio is identical at any offset, so just move the clock.
+                baselineSeconds = pending - audio.current.elapsed
+            }
+            position = pending
+        }
+        return true
     }
 
     /// Explicit play/pause for remote commands (lock screen, AirPods) — the system sends the
@@ -153,24 +223,27 @@ public final class Player {
     }
 
     func ensureRunning() -> Bool {
-        if engine.isRunning { return true }
+        let audio = ensureAudioStack()
+        if audio.engine.isRunning { return true }
         try? AVAudioSession.sharedInstance().setActive(true)
-        do { try engine.start(); return true } catch { return false }
+        do { try audio.engine.start(); return true } catch { return false }
     }
 
-    /// Starts the current track from scratch on `currentDeck` (play / next / previous / restart).
+    /// Starts the current track from scratch on the current deck (play / next / previous / restart).
     func startCurrentFresh() {
         guard let track = currentTrack else { return }
-        idleDeck.stop()
-        currentDeck.stop()
-        currentDeck.volume = 1
+        let audio = ensureAudioStack()
+        audio.idle.stop()
+        audio.current.stop()
+        audio.current.volume = 1
+        pendingSeekSeconds = nil   // a fresh start supersedes any staged restore-seek
         guard ensureRunning() else { isPlaying = false; stopTimer(); return }
-        currentDeck.load(track)   // load() resets rate/pitch, so the fresh track plays true
-        applyLoudness(to: currentDeck)
+        audio.current.load(track)   // load() resets rate/pitch, so the fresh track plays true
+        applyLoudness(to: audio.current)
         currentPitchShiftSemitones = 0
         baselineSeconds = 0
         position = 0
-        currentDeck.play()
+        audio.current.play()
         isPlaying = true
         startTimer()
         notifyUpcoming()
@@ -196,15 +269,17 @@ public final class Player {
     /// silence reads as a gap. Falls back to the full duration when unscanned or disabled.
     private var effectiveEndSeconds: TimeInterval {
         let full = duration
+        // Pre-audio the staged track carries the same trim metadata as the loaded deck would.
+        let track = audio?.current.track ?? currentTrack
         guard transitionSettings.trimSilenceEnabled,
-              let audibleEnd = currentDeck.track?.audibleEndSeconds,
+              let audibleEnd = track?.audibleEndSeconds,
               audibleEnd > 1, audibleEnd < full else { return full }
         return audibleEnd
     }
 
     private func tick() {
-        guard isPlaying else { return }
-        let elapsed = baselineSeconds + currentDeck.elapsed
+        guard isPlaying, let audio else { return }
+        let elapsed = baselineSeconds + audio.current.elapsed
         position = elapsed
         // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
         ticksSincePersist += 1
@@ -218,10 +293,10 @@ public final class Player {
         if isTransitioning {
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
             // outgoing file drains, so the transition can never get stuck half-faded.
-            let incomingElapsed = idleDeck.elapsed
+            let incomingElapsed = audio.idle.elapsed
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
-            currentDeck.volume = Float(gains.outgoing)
-            idleDeck.volume = Float(gains.incoming)
+            audio.current.volume = Float(gains.outgoing)
+            audio.idle.volume = Float(gains.incoming)
             let progress = plan.progress(position: incomingElapsed, startPosition: 0)
             transitionProgress = progress
             // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
@@ -230,7 +305,7 @@ public final class Player {
             }
             // When both decks have stems, shape the per-stem gains so the outgoing vocals duck out
             // under the incoming track — the M4 flagship "vocal-aware" blend.
-            if currentDeck.hasStems && idleDeck.hasStems {
+            if audio.current.hasStems && audio.idle.hasStems {
                 applyVocalHandling(progress: progress)
             }
             if plan.isComplete(position: incomingElapsed, startPosition: 0) {

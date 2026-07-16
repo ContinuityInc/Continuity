@@ -8,7 +8,9 @@ extension Player {
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
     func beginTransition(toIndex index: Int, outgoingPosition: Double) {
         guard queue.indices.contains(index) else { return }
-        let incoming = idleDeck
+        // Only reachable from tick() while playing, so the stack exists; funnel anyway.
+        let audio = ensureAudioStack()
+        let incoming = audio.idle
         incoming.load(queue[index])
         applyLoudness(to: incoming)
         incoming.volume = 0
@@ -21,7 +23,7 @@ extension Player {
         // the plain equal-power crossfade.
         var rate = 1.0
         if transitionSettings.beatmatchEnabled,
-           let outBPM = currentDeck.track?.bpm,
+           let outBPM = audio.current.track?.bpm,
            let inBPM = queue[index].bpm,
            let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
             rate = matched
@@ -33,7 +35,7 @@ extension Player {
         // grid on both tracks; declines gracefully — and only when the seek lands — leaving the
         // incoming at its start otherwise.
         if transitionSettings.beatmatchEnabled,
-           let outBeats = currentDeck.track?.beatTimes, !outBeats.isEmpty,
+           let outBeats = audio.current.track?.beatTimes, !outBeats.isEmpty,
            let offset = BeatMath.incomingStartOffset(
                outgoingPosition: outgoingPosition,
                outgoingBeats: outBeats,
@@ -58,7 +60,7 @@ extension Player {
         // against the outgoing track's EFFECTIVE key: it may itself be playing shifted.
         incomingPitchShiftSemitones = 0
         if transitionSettings.harmonicMixingEnabled,
-           let outKey = currentDeck.track?.camelotCode.flatMap(Camelot.parse),
+           let outKey = audio.current.track?.camelotCode.flatMap(Camelot.parse),
            let inKey = queue[index].camelotCode.flatMap(Camelot.parse),
            let shift = HarmonicMix.pitchShiftSemitones(
                incoming: inKey,
@@ -89,30 +91,32 @@ extension Player {
     /// Shapes the per-stem vocal gains during a blend per the chosen vocal mode. Only called when
     /// both decks have stems.
     func applyVocalHandling(progress: Double) {
+        guard let audio else { return }
         switch transitionSettings.vocalMode {
         case .duck:
             // Outgoing vocals fade out over the first ~70% of the blend; incoming vocals ride in.
-            currentDeck.vocalsGain = Float(max(0, 1 - progress / 0.7))
+            audio.current.vocalsGain = Float(max(0, 1 - progress / 0.7))
         case .instrumentalOverlap:
             // Outgoing vocals out fast; incoming vocals only enter in the second half.
-            currentDeck.vocalsGain = Float(max(0, 1 - progress / 0.5))
-            idleDeck.vocalsGain = Float(min(1, max(0, (progress - 0.5) / 0.5)))
+            audio.current.vocalsGain = Float(max(0, 1 - progress / 0.5))
+            audio.idle.vocalsGain = Float(min(1, max(0, (progress - 0.5) / 0.5)))
         case .hardSwap:
-            currentDeck.vocalsGain = progress < 0.5 ? 1 : 0
-            idleDeck.vocalsGain = progress < 0.5 ? 0 : 1
+            audio.current.vocalsGain = progress < 0.5 ? 1 : 0
+            audio.idle.vocalsGain = progress < 0.5 ? 0 : 1
         }
     }
 
     /// Fades the incoming deck's low end in over the first ~60% of the blend, so the two basslines
     /// don't stack into low-end mud. Only called while `bassSwapEnabled`.
     func applyBassSwap(progress: Double) {
-        idleDeck.bassGainDB = bassSwapCutDB * Float(max(0, 1 - progress / 0.6))
+        audio?.idle.bassGainDB = bassSwapCutDB * Float(max(0, 1 - progress / 0.6))
     }
 
     /// Completes the crossfade: stop the outgoing deck, promote the incoming deck to current.
     func finishTransition() {
-        let outgoing = currentDeck
-        let incoming = idleDeck
+        guard let audio else { return }   // blends only exist post-build
+        let outgoing = audio.current
+        let incoming = audio.idle
         outgoing.stop()
         outgoing.volume = 1
         outgoing.vocalsGain = 1
@@ -124,12 +128,12 @@ extension Player {
         // and remember it in the history for unlimited previous-skips.
         skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
         pushHistory(currentTrack)
-        currentDeck = incoming
+        audio.current = incoming
         currentIndex = transitionTargetIndex
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
         baselineSeconds = incomingStartOffset
-        position = baselineSeconds + currentDeck.elapsed
+        position = baselineSeconds + incoming.elapsed
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         isTransitioning = false
         transitionProgress = 0
@@ -137,17 +141,19 @@ extension Player {
         notifyUpcoming()
     }
 
-    /// Cancels an in-flight transition, discarding the incoming deck. `currentDeck`/`currentIndex`
-    /// remain the outgoing track; callers then restart on a chosen index.
+    /// Cancels an in-flight transition, discarding the incoming deck. The current deck and
+    /// `currentIndex` remain the outgoing track; callers then restart on a chosen index.
     func cancelTransition() {
         guard isTransitioning else { return }
-        idleDeck.stop()
-        idleDeck.volume = 1
-        idleDeck.vocalsGain = 1
-        idleDeck.bassGainDB = 0
-        currentDeck.volume = 1
-        currentDeck.vocalsGain = 1
-        currentDeck.bassGainDB = 0
+        if let audio {
+            audio.idle.stop()
+            audio.idle.volume = 1
+            audio.idle.vocalsGain = 1
+            audio.idle.bassGainDB = 0
+            audio.current.volume = 1
+            audio.current.vocalsGain = 1
+            audio.current.bassGainDB = 0
+        }
         isTransitioning = false
         transitionProgress = 0
     }
