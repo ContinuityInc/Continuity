@@ -110,6 +110,9 @@ extension Player {
             }
         }
         currentIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
+        // Stepping back a track refunds a forward skip (capped) — undoing a skip shouldn't
+        // leave the budget spent. Restart-current (above) deliberately doesn't refund.
+        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
         startCurrentFresh()
         persistState()
     }
