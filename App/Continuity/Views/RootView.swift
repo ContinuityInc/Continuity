@@ -23,7 +23,7 @@ struct RootView: View {
     @AppStorage("lastCheckedPasteboardChange") private var lastCheckedPasteboardChange = -1
 
     var body: some View {
-        MinimalNowPlayingView()
+        NowPlayingView(mode: .home)
             // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
             // then bring back the previous playback session (or stage the first-run track).
             .task {

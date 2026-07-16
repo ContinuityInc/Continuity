@@ -59,6 +59,7 @@ struct PlaylistDetailView: View {
         let videoID = track.youtubeVideoID
         player.handleDeleted(trackIDs: [track.id])
         modelContext.delete(track)
+        playlist.touch()    // membership changed → resort the library
         try? modelContext.save()
         if let videoID {
             LibraryCleanup.removeOrphanedFiles(videoIDs: [videoID], in: modelContext)

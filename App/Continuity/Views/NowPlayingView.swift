@@ -2,53 +2,85 @@ import SwiftUI
 import Playback
 import Domain
 
-/// Full-screen Now Playing UI (Apple Music / Spotify style): large artwork, scrubber, and a
-/// Liquid Glass transport. The "transition" chip near the top is a teaser for the flagship
-/// feature; it becomes interactive once the engine lands in M2+.
+/// The one Now Playing surface, in two modes so both feel like the same room:
+/// `.home` is the app's deliberately minimal root — title/artist over the blurred-art backdrop,
+/// a progress-ring play disc, and corner glass buttons for the library and queue.
+/// `.sheet` is the full detail view — large artwork, transition + queue chips, scrubber, and a
+/// live blend meter while a transition is in flight.
 struct NowPlayingView: View {
-    @Environment(Player.self) private var player
-    @Environment(\.dismiss) private var dismiss
+    enum Mode { case home, sheet }
+    let mode: Mode
 
+    @Environment(Player.self) private var player
+
+    // Sheet-mode scrubber state.
     @State private var isEditing = false
     @State private var scrubValue: Double = 0
     @State private var showingTransitionSettings = false
+    // Home-mode corner library sheet.
+    @State private var showingLibrary = false
+    // Both modes open the queue: corner button at home, glass chip in the sheet.
     @State private var showingUpNext = false
 
     var body: some View {
+        layout
+            .sheet(isPresented: $showingUpNext) {
+                UpNextView()
+                    .presentationDetents([.medium, .large])
+            }
+    }
+
+    @ViewBuilder private var layout: some View {
+        switch mode {
+        case .home: homeLayout
+        case .sheet: sheetLayout
+        }
+    }
+
+    // MARK: Home layout (minimal root)
+
+    private var homeLayout: some View {
+        ZStack {
+            backdrop
+
+            // Title/artist + transport, as one vertically-centred column.
+            VStack(spacing: 34) {
+                trackLabel
+                transport
+            }
+            .padding(.horizontal, 24)
+        }
+        .overlay(alignment: .topTrailing) {
+            libraryButton
+                .padding(.top, 8)
+                .padding(.trailing, 20)
+        }
+        .overlay(alignment: .topLeading) {
+            homeUpNextButton
+                .padding(.top, 8)
+                .padding(.leading, 20)
+        }
+        .sheet(isPresented: $showingLibrary) {
+            LibrarySheetView()
+        }
+    }
+
+    // MARK: Sheet layout (full detail)
+
+    private var sheetLayout: some View {
         VStack(spacing: 24) {
             grabberSpacer
 
             // Transition settings + queue, side by side: both shape what plays next.
             HStack(spacing: 10) {
                 transitionChip
-                upNextButton
+                sheetUpNextButton
             }
 
             if let track = player.currentTrack {
-                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28, cropsLetterbox: true)
-                    .frame(maxWidth: 300)
-                    .aspectRatio(1, contentMode: .fit)
-                    // Playing = full size with a lifted shadow; paused = drawn back, like a record
-                    // easing off the platter. The signature "is it playing?" glance cue.
-                    .scaleEffect(player.isPlaying ? 1 : 0.84)
-                    .shadow(color: .black.opacity(0.45),
-                            radius: player.isPlaying ? 32 : 16,
-                            y: player.isPlaying ? 18 : 8)
-                    .animation(.spring(response: 0.45, dampingFraction: 0.72), value: player.isPlaying)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 6)
-
-                VStack(spacing: 4) {
-                    Text(track.title).font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
-                    Text(track.artist).font(.title3).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
-                    if let meta = analysisLabel(for: track) {
-                        Text(meta)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.6))
-                            .padding(.top, 2)
-                    }
-                }
+                artworkTile(for: track)
             }
+            trackLabel
 
             if player.isTransitioning, let next = player.incomingTrack {
                 blendIndicator(next: next)
@@ -66,28 +98,75 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showingTransitionSettings) {
             TransitionSettingsView()
         }
-        .sheet(isPresented: $showingUpNext) {
-            UpNextView()
-                .presentationDetents([.medium, .large])
-        }
     }
 
     private var grabberSpacer: some View {
         Color.clear.frame(height: 8)
     }
 
-    /// Live blend meter shown while a transition is in flight — the flagship feature made visible.
-    private func blendIndicator(next: Track) -> some View {
-        VStack(spacing: 6) {
-            Label("Blending into \(next.title)", systemImage: "arrow.triangle.merge")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1)
-            ProgressView(value: min(max(player.transitionProgress, 0), 1))
-                .tint(.white)
+    // MARK: Backdrop
+
+    /// The current track's album art, blurred edge-to-edge behind a depth scrim (black when idle).
+    private var backdrop: some View {
+        Group {
+            if let track = player.currentTrack {
+                AlbumBackdrop(url: track.artworkURL, seed: track.gradientSeed)
+            } else {
+                Color.black.ignoresSafeArea()
+            }
         }
-        .padding(.horizontal, 40)
-        .transition(.opacity)
+    }
+
+    // MARK: Artwork (sheet only)
+
+    private func artworkTile(for track: Track) -> some View {
+        RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28, cropsLetterbox: true)
+            .frame(maxWidth: 300)
+            .aspectRatio(1, contentMode: .fit)
+            // Playing = full size with a lifted shadow; paused = drawn back, like a record
+            // easing off the platter. The signature "is it playing?" glance cue.
+            .scaleEffect(player.isPlaying ? 1 : 0.84)
+            .shadow(color: .black.opacity(0.45),
+                    radius: player.isPlaying ? 32 : 16,
+                    y: player.isPlaying ? 18 : 8)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: player.isPlaying)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 6)
+    }
+
+    // MARK: Now-playing label
+
+    /// One label, two voices: home keeps it quiet so the controls stay the focus; the sheet
+    /// goes bigger and adds the analysis meta line (and hides entirely when nothing's staged).
+    @ViewBuilder private var trackLabel: some View {
+        switch mode {
+        case .home:
+            VStack(spacing: 5) {
+                Text(player.currentTrack?.title ?? "Not Playing")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(player.currentTrack?.artist ?? " ")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .lineLimit(1)
+            .multilineTextAlignment(.center)
+            .shadow(color: .black.opacity(0.4), radius: 10, y: 3)
+            .animation(.easeInOut(duration: 0.3), value: player.currentTrack?.id)
+        case .sheet:
+            if let track = player.currentTrack {
+                VStack(spacing: 4) {
+                    Text(track.title).font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
+                    Text(track.artist).font(.title3).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
+                    if let meta = analysisLabel(for: track) {
+                        Text(meta)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(.top, 2)
+                    }
+                }
+            }
+        }
     }
 
     /// "124 BPM · 8A" once tempo/key analysis is available — or a "Demo tone" note for the
@@ -100,6 +179,172 @@ struct NowPlayingView: View {
         if track.hasStems { parts.append("stems") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+
+    // MARK: Transport
+
+    /// How far through the track we are (0…1), drives the home ring around Play.
+    private var progress: Double {
+        guard player.duration > 0 else { return 0 }
+        return min(max(player.position / player.duration, 0), 1)
+    }
+
+    /// One transport, two densities: home = bare 60pt glyphs around the big ring disc, skip
+    /// budget as a pill under Next; sheet = title glyphs around the compact disc, skip budget
+    /// as a count below. The accent disc and skip-budget wiring are shared.
+    @ViewBuilder private var transport: some View {
+        switch mode {
+        case .home:
+            HStack(spacing: 48) {
+                // Previous — unlimited, so no counter.
+                controlGlyph("backward.fill") { player.previous() }
+
+                homePlayButton
+
+                // Next — spends one of the limited forward skips; the remaining count rides below it.
+                skipGated(controlGlyph("forward.fill") { player.next() }, disabledOpacity: 0.3)
+                    .overlay(alignment: .bottom) { skipBadge.offset(y: 30) }
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+        case .sheet:
+            HStack(spacing: 28) {
+                Button { player.previous() } label: {
+                    Image(systemName: "backward.fill").font(.title)
+                }
+                sheetPlayButton
+                VStack(spacing: 4) {
+                    skipGated(
+                        Button { player.next() } label: {
+                            Image(systemName: "forward.fill").font(.title)
+                        },
+                        disabledOpacity: 0.35
+                    )
+                    Text("\(player.skipsRemaining)")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .tint(.white)
+        }
+    }
+
+    /// Shared forward-skip budget wiring: Next greys out and locks once the budget is spent.
+    private func skipGated<V: View>(_ next: V, disabledOpacity: Double) -> some View {
+        next
+            .disabled(player.skipsRemaining == 0)
+            .opacity(player.skipsRemaining == 0 ? disabledOpacity : 1)
+    }
+
+    /// The accent gradient both play discs share, so the two surfaces read as one control.
+    private var discGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
+            startPoint: .top, endPoint: .bottom)
+    }
+
+    private func playPauseGlyph(size: CGFloat) -> some View {
+        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+            .font(.system(size: size, weight: .medium))
+            .foregroundStyle(.white)
+            .contentTransition(.symbolEffect(.replace))
+            .offset(x: player.isPlaying ? 0 : 2)   // optically centre the play triangle
+    }
+
+    /// Home play/pause: accent disc with a soft glow, wrapped by a thin track-progress ring.
+    private var homePlayButton: some View {
+        Button {
+            player.togglePlayPause()
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(.white.opacity(0.16), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.25), value: progress)
+                Circle()
+                    .fill(discGradient)
+                    .padding(9)
+                    .shadow(color: Color.accentColor.opacity(0.55), radius: 18, y: 6)
+                playPauseGlyph(size: 34)
+            }
+            .frame(width: 108, height: 108)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+    }
+
+    /// Sheet play/pause: the same accent disc, compact and ringless.
+    private var sheetPlayButton: some View {
+        Button { player.togglePlayPause() } label: {
+            ZStack {
+                Circle()
+                    .fill(discGradient)
+                    .frame(width: 78, height: 78)
+                    .shadow(color: Color.accentColor.opacity(0.5), radius: 16, y: 5)
+                playPauseGlyph(size: 32)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A plain white transport glyph with a comfortable tap target (home).
+    private func controlGlyph(_ system: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 30, weight: .medium))
+                .frame(width: 60, height: 60)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Remaining forward skips, as a subtle glass pill under Next (home).
+    private var skipBadge: some View {
+        Text("\(player.skipsRemaining)")
+            .font(.caption.weight(.bold).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.9))
+            .padding(.vertical, 3)
+            .padding(.horizontal, 9)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15)))
+            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+            .accessibilityLabel("\(player.skipsRemaining) skips remaining")
+    }
+
+    // MARK: Corner buttons (home only)
+
+    private var libraryButton: some View {
+        Button {
+            showingLibrary = true
+        } label: {
+            Image(systemName: "music.note.list")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 40, height: 40)
+                .continuityGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Library")
+    }
+
+    /// Mirrors the library button in the opposite corner: the queue is browsing's counterpart.
+    private var homeUpNextButton: some View {
+        Button {
+            showingUpNext = true
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 40, height: 40)
+                .continuityGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Up Next")
+    }
+
+    // MARK: Chips (sheet only)
 
     private var transitionChip: some View {
         // Reads live from the Player so the chip reflects edits made in the settings sheet.
@@ -120,7 +365,7 @@ struct NowPlayingView: View {
     }
 
     /// Glass sibling of the transition chip, opening the Up Next queue sheet.
-    private var upNextButton: some View {
+    private var sheetUpNextButton: some View {
         Button {
             showingUpNext = true
         } label: {
@@ -134,6 +379,24 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Up Next")
     }
+
+    // MARK: Blend indicator (sheet only)
+
+    /// Live blend meter shown while a transition is in flight — the flagship feature made visible.
+    private func blendIndicator(next: Track) -> some View {
+        VStack(spacing: 6) {
+            Label("Blending into \(next.title)", systemImage: "arrow.triangle.merge")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
+            ProgressView(value: min(max(player.transitionProgress, 0), 1))
+                .tint(.white)
+        }
+        .padding(.horizontal, 40)
+        .transition(.opacity)
+    }
+
+    // MARK: Scrubber (sheet only)
 
     private var scrubber: some View {
         VStack(spacing: 4) {
@@ -163,51 +426,5 @@ struct NowPlayingView: View {
             .foregroundStyle(.white.opacity(0.65))
         }
         .padding(.horizontal, 32)
-    }
-
-    private var transport: some View {
-        HStack(spacing: 28) {
-            Button { player.previous() } label: {
-                Image(systemName: "backward.fill").font(.title)
-            }
-            // Accent play disc — same treatment as the minimal home so both surfaces share a look.
-            Button { player.togglePlayPause() } label: {
-                ZStack {
-                    Circle()
-                        .fill(LinearGradient(
-                            colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
-                            startPoint: .top, endPoint: .bottom))
-                        .frame(width: 78, height: 78)
-                        .shadow(color: Color.accentColor.opacity(0.5), radius: 16, y: 5)
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
-                        .offset(x: player.isPlaying ? 0 : 2)
-                }
-            }
-            .buttonStyle(.plain)
-            VStack(spacing: 4) {
-                Button { player.next() } label: {
-                    Image(systemName: "forward.fill").font(.title)
-                }
-                .disabled(player.skipsRemaining == 0)
-                .opacity(player.skipsRemaining == 0 ? 0.35 : 1)
-                Text("\(player.skipsRemaining)")
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-        }
-        .tint(.white)
-    }
-
-    private var backdrop: some View {
-        Group {
-            if let track = player.currentTrack {
-                AlbumBackdrop(url: track.artworkURL, seed: track.gradientSeed)
-            } else {
-                Color.black.ignoresSafeArea()
-            }
-        }
     }
 }
