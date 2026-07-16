@@ -107,13 +107,21 @@ struct RemoteArtworkView: View {
     let symbol: String
     let seed: Int
     var cornerRadius: CGFloat = 16
+    /// YouTube hqdefault thumbs are 4:3 frames with the 16:9 video letterboxed inside
+    /// (baked black bars, 12.5% top + bottom). Small square tiles crop them away naturally,
+    /// but large tiles show them — opt in to zoom the image by 4/3 so the bars fall outside
+    /// the clip. Aspect ratio is preserved (uniform scale, not a stretch).
+    var cropsLetterbox: Bool = false
 
     var body: some View {
         if let url {
             AsyncImage(url: url) { phase in
                 if let image = phase.image {
                     // YouTube thumbs are 4:3 with letterboxing; fill the square tile.
-                    Color.clear.overlay(image.resizable().scaledToFill())
+                    Color.clear.overlay(
+                        image.resizable().scaledToFill()
+                            .scaleEffect(cropsLetterbox ? 4.0 / 3.0 : 1)
+                    )
                         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 } else {
                     ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)

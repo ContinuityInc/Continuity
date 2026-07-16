@@ -21,6 +21,9 @@ sourced from YouTube (see [Caveats](#caveats)).
 - **Vocal-aware blends** — tracks are split into vocals + accompaniment stems on-device
   (HT-Demucs via ONNX Runtime; CoreML/Neural Engine on hardware), so the outgoing vocal can
   duck under the incoming instrumental: duck / instrumental-overlap / hard-swap modes
+- **Loudness leveling** — integrated loudness is measured per track (BS.1770 K-weighting +
+  gating) and per-deck makeup gain brings every track to −14 LUFS, so a quiet master never
+  lurches into a loud one mid-blend
 - **Gapless** — leading/trailing silence is detected per track and trimmed from transition
   timing (opt-out), so blends never run in dead air
 
@@ -28,11 +31,18 @@ sourced from YouTube (see [Caveats](#caveats)).
 and musical key (tuning-corrected chroma → Krumhansl profiles → Camelot code), computed once
 per track and cached; results are versioned so analyzer improvements re-analyze old libraries.
 
-**The player** — the app opens onto a minimal Now Playing screen (blurred art, three controls),
-resuming the previous session's song at its saved position. Forward skips are budgeted
-(3, earned back by finishing tracks); previous-skips are unlimited and walk a persistent play
-history. The full library (playlists, mini player, detailed Now Playing with live transition
-settings and presets) lives in a sheet.
+**The player** — the home screen is deliberately minimal: the app opens *playing* — a Now
+Playing screen (blurred art, three controls) that resumes the previous session's song at its
+saved position. Forward skips are budgeted, radio-style: 3, earned back by finishing tracks
+and refunded when you step back (undoing a skip shouldn't leave it spent); previous-skips are
+unlimited and walk a persistent play history. The full library (playlists, mini player,
+detailed Now Playing with live transition settings and presets) lives in a sheet.
+
+**Up Next** — a queue sheet shows what plays next: drag to reorder, swipe to remove, and
+"Play Next" context menus throughout the library. A **Flow** toggle reorders the upcoming
+tracks by key and tempo, like a DJ set — Camelot-wheel compatibility plus BPM proximity
+(half/double-time pairs count as equal tempo), anchored on the current track. Pure logic in
+`ContinuityCore/FlowOrdering`.
 
 **Ingestion** — paste a YouTube video/playlist link or a Spotify playlist/album link.
 Playlists paginate (~500-track cap); Spotify contributes the tracklist and each song's audio
@@ -40,28 +50,40 @@ is matched from YouTube. Tracks download (ranged, throttle-resistant), analyze, 
 stem-separate in the background with bounded concurrency. Source-backed playlists **sync**
 with their remote (opt-out auto-sync at launch, manual per-playlist and library-wide sync).
 
+**Link redirection** — three ways links reach the app besides pasting: a `continuity://`
+URL scheme (`continuity://import?url=…`); a share extension, so "share → Continuity" works
+from Spotify or YouTube; and clipboard detection at launch — an importable link on the
+clipboard triggers an import offer. Clipboard reads are privacy-conscious: pattern detection
+(banner-free) runs *before* any read, each clipboard generation is inspected once, and every
+path confirms with the user before importing.
+
 ## Project layout
 
 ```
-project.yml                  XcodeGen spec — the project is generated, not committed
-App/Continuity/              the iOS app target
-  Models/                    SwiftData models (Playlist, Track) + TransitionSettings
-  Audio/                     dual-deck engine (Player, Deck), playback-state persistence
-  Ingest/                    resolvers (YouTube/Spotify/oEmbed), downloader, caches,
-                             preparation queue, stem separation (ONNX), playlist sync
-  Analysis/                  TrackAnalyzer bridge (decode → ContinuityCore DSP)
-  Library/                   sample data seeding, orphaned-file cleanup
-  Views/                     SwiftUI screens (minimal Now Playing, Library, Playlist,
-                             Now Playing, Mini Player, Transition settings)
-Packages/ContinuityCore/     pure-Swift, unit-tested core: crossfade curves, transition
-                             plan, beat/tempo math, BPM tracker, key detector, Camelot +
-                             harmonic mixing, silence trimming, and all YouTube/Spotify
-                             link/page parsing
+project.yml                      XcodeGen spec — the project is generated, not committed
+App/Continuity/                  thin app target: SwiftUI screens + wiring
+  Views/                         minimal Now Playing, Library, Playlist, Up Next,
+                                 Now Playing, Mini Player, Transition settings
+  Library/                       link → import routing, sample data, orphaned-file cleanup
+App/ShareExtension/              ContinuityShare target ("share → Continuity")
+Packages/ContinuityCore/         pure-Swift, dependency-free core: crossfade curves,
+                                 transition plan, beat/tempo math, BPM tracker, key
+                                 detector, Camelot + flow ordering, loudness meter, silence
+                                 trimming, and all YouTube/Spotify link/page parsing
+Packages/ContinuityKit/Sources/
+  Domain/                        SwiftData models (Playlist, Track), TransitionSettings,
+                                 audio/stem caches
+  Ingest/                        resolvers (YouTube/Spotify/oEmbed), downloader,
+                                 preparation queue, analysis, stem separation (ONNX),
+                                 playlist sync
+  Playback/                      dual-deck engine (Player, Deck), Now Playing bridge,
+                                 playback-state persistence
 ```
 
-The split is deliberate: everything fragile (page scraping) or mathematical (DSP, transition
-logic) lives in `ContinuityCore` with no UIKit/AVFoundation dependency, pinned by ~100 unit
-tests. The app layer does networking, audio I/O, and UI.
+The layering is deliberate: modules depend only downward (Playback and Ingest are siblings
+that meet through Domain), and everything fragile (page scraping) or mathematical (DSP,
+transition logic) lives in `ContinuityCore` with no UIKit/AVFoundation dependency, pinned by
+~114 unit tests. The upper layers do networking, audio I/O, and UI.
 
 ## Build & run
 
