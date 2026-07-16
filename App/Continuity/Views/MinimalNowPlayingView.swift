@@ -9,6 +9,7 @@ import Playback
 struct MinimalNowPlayingView: View {
     @Environment(Player.self) private var player
     @State private var showingLibrary = false
+    @State private var showingUpNext = false
 
     var body: some View {
         ZStack {
@@ -26,8 +27,17 @@ struct MinimalNowPlayingView: View {
                 .padding(.top, 8)
                 .padding(.trailing, 20)
         }
+        .overlay(alignment: .topLeading) {
+            upNextButton
+                .padding(.top, 8)
+                .padding(.leading, 20)
+        }
         .sheet(isPresented: $showingLibrary) {
             LibrarySheetView()
+        }
+        .sheet(isPresented: $showingUpNext) {
+            UpNextView()
+                .presentationDetents([.medium, .large])
         }
     }
 
@@ -154,6 +164,21 @@ struct MinimalNowPlayingView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Library")
+    }
+
+    /// Mirrors the library button in the opposite corner: the queue is browsing's counterpart.
+    private var upNextButton: some View {
+        Button {
+            showingUpNext = true
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 40, height: 40)
+                .continuityGlass(cornerRadius: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Up Next")
     }
 }
 
