@@ -107,3 +107,27 @@ or commit it. Bundle id `com.continuity.app`.
   one in `Playback/` or `Views/`. The former hotspots (`Player`, `PreparationQueue`) are now
   split into by-concern extension files — edit the relevant `+Concern.swift`, not the core file.
 - Keep PR descriptions and commit messages tight: what changed and why, in a couple of sentences.
+
+## Cursor Cloud specific instructions
+
+**This is an iOS/macOS-only project and CANNOT be built, tested, or run on the Cursor Cloud
+VM.** Cloud Agent VMs run Linux (Ubuntu x86_64); Apple's toolchain and frameworks are not
+available and cannot be installed there:
+
+- No Xcode / `xcodebuild` / `xcodegen` / iOS Simulator (`simctl`) — Apple ships these for macOS
+  only. Every command in the *Build & test* section above requires macOS + Xcode 26+.
+- The app modules (`Domain`, `Ingest`, `Playback`, app target) need SwiftData, AVFoundation,
+  SwiftUI, UIKit, CoreML, the iOS 26 SDK, plus iOS-only SwiftPM deps (`YouTubeKit`,
+  `onnxruntime`) — none exist on Linux.
+- Even `ContinuityCore`, described as "pure, platform-agnostic … unit-tests on any platform",
+  does **not** build on Linux: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate`
+  (Apple's vDSP/FFT), which is macOS/iOS-only. `swift test` there fails with
+  `no such module 'Accelerate'`. "Any platform" in that doc means *macOS without full Xcode*
+  (Command Line Tools ship Accelerate), not Linux. So do not attempt `swift build`/`swift test`
+  on the Cloud VM even for Core.
+
+**Practical guidance for Cloud agents:** Non-trivial code changes here cannot be verified in the
+Cloud VM — there is no runtime, compiler-with-Apple-SDKs, or simulator. Make edits respecting the
+module boundaries above, but flag that build/test verification must be done by a human (or a
+macOS runner) using the *Build & test* commands. Do not add a Swift toolchain or Apple-framework
+shims to the environment expecting Core tests to pass; they will not.
