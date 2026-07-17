@@ -108,7 +108,7 @@ struct RootView: View {
     private func consumePendingSharedURL() {
         guard pendingImport == nil else { return }
         // Nil suite (missing app-group entitlement) degrades to a no-op rather than crashing.
-        guard let defaults = UserDefaults(suiteName: "group.com.continuity.app") else { return }
+        guard let defaults = UserDefaults(suiteName: "group.com.sanylax.continuity") else { return }
         guard let payload = defaults.dictionary(forKey: "pendingSharedURL.v1"),
               let raw = payload["url"] as? String else { return }
         defaults.removeObject(forKey: "pendingSharedURL.v1")

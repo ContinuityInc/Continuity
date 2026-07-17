@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 final class ShareViewController: UIViewController {
 
     /// Handoff channel — must match the app-side reader (RootView) and both entitlements files.
-    private static let appGroupID = "group.com.continuity.app"
+    private static let appGroupID = "group.com.sanylax.continuity"
     private static let pendingURLKey = "pendingSharedURL.v1"
 
     override func viewDidLoad() {
@@ -72,7 +72,7 @@ final class ShareViewController: UIViewController {
 
     private func cancel() {
         extensionContext?.cancelRequest(
-            withError: NSError(domain: "com.continuity.app.share", code: 1)
+            withError: NSError(domain: "com.sanylax.continuity.share", code: 1)
         )
     }
 }
