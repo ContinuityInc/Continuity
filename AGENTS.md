@@ -111,24 +111,26 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 ## Cursor Cloud specific instructions
 
-**This is an iOS/macOS-only project and CANNOT be built, tested, or run on the Cursor Cloud
-VM.** Cloud Agent VMs run Linux (Ubuntu x86_64); Apple's toolchain and frameworks are not
-available and cannot be installed there:
+Cloud agents run on **Linux (Ubuntu 24.04)**, not macOS — so **most of this project cannot be
+built or run here**. Plan work accordingly:
 
-- No Xcode / `xcodebuild` / `xcodegen` / iOS Simulator (`simctl`) — Apple ships these for macOS
-  only. Every command in the *Build & test* section above requires macOS + Xcode 26+.
-- The app modules (`Domain`, `Ingest`, `Playback`, app target) need SwiftData, AVFoundation,
-  SwiftUI, UIKit, CoreML, the iOS 26 SDK, plus iOS-only SwiftPM deps (`YouTubeKit`,
-  `onnxruntime`) — none exist on Linux.
-- Even `ContinuityCore`, described as "pure, platform-agnostic … unit-tests on any platform",
-  does **not** build on Linux: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate`
-  (Apple's vDSP/FFT), which is macOS/iOS-only. `swift test` there fails with
-  `no such module 'Accelerate'`. "Any platform" in that doc means *macOS without full Xcode*
-  (Command Line Tools ship Accelerate), not Linux. So do not attempt `swift build`/`swift test`
-  on the Cloud VM even for Core.
-
-**Practical guidance for Cloud agents:** Non-trivial code changes here cannot be verified in the
-Cloud VM — there is no runtime, compiler-with-Apple-SDKs, or simulator. Make edits respecting the
-module boundaries above, but flag that build/test verification must be done by a human (or a
-macOS runner) using the *Build & test* commands. Do not add a Swift toolchain or Apple-framework
-shims to the environment expecting Core tests to pass; they will not.
+- **iOS app target, `ContinuityShare`, and all of `ContinuityKit` (Domain/Ingest/Playback) are
+  Linux-unbuildable.** They need macOS + Xcode 26, and pull in SwiftData / AVFoundation / CoreML
+  plus the iOS-only `ContinuityKit` platform pin (`platforms: [.iOS("26.0")]`). `xcodebuild`,
+  the iOS Simulator, and `xcodegen` do not exist here. Validate changes to those modules by
+  code review + the ContinuityCore unit tests they rely on; real build/run must happen on a Mac.
+- **A Linux Swift toolchain is preinstalled** via `swiftly` (added to `~/.profile`, so `swift` is
+  on `PATH` in login shells). Use `swift`, not `DEVELOPER_DIR`/`xcodebuild`, on this VM.
+- **`swift test` in `Packages/ContinuityCore` FAILS to compile on Linux**, even though the README
+  implies it's portable: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate` (Apple's
+  vDSP — no Linux module). Since SwiftPM compiles the target as a unit, those two files break the
+  whole build/test, including the 15 pure-Foundation files.
+- **To run the platform-agnostic tests on Linux**, build a throwaway SwiftPM package that includes
+  only the non-`Accelerate` sources + tests (exclude `BeatTracker.swift`, `KeyDetector.swift`,
+  `BeatTrackerTests.swift`, `KeyDetectorTests.swift`, `KeyDetectorAccuracyTests.swift`). That runs
+  **111 of ~114** real `XCTest` cases (Camelot/flow ordering, crossfade curves, transition plan,
+  loudness, silence trimming, YouTube/Spotify URL + page parsing). The BPM/beat-grid and
+  musical-key suites (Accelerate) can only be exercised on a Mac. Test fixtures are inline string
+  literals — no external resource files needed.
+- **The core package has zero external SwiftPM dependencies**, so there is nothing to fetch on
+  startup; the update script only warms the build graph.
