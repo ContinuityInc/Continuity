@@ -11,6 +11,8 @@ struct LibraryView: View {
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
     @State private var searchText = ""
+    /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
+    @State private var playlistPendingDelete: Playlist?
 
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
@@ -34,6 +36,26 @@ struct LibraryView: View {
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic),
                     prompt: "Songs, artists, playlists")
+        .confirmationDialog(
+            "Delete Playlist?",
+            isPresented: Binding(
+                get: { playlistPendingDelete != nil },
+                set: { if !$0 { playlistPendingDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: playlistPendingDelete
+        ) { playlist in
+            Button("Delete \"\(playlist.title)\"", role: .destructive) {
+                delete(playlist)
+                playlistPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                playlistPendingDelete = nil
+            }
+        } message: { playlist in
+            let count = playlist.tracks.count
+            Text("Removes \(count) track\(count == 1 ? "" : "s") and their cached audio. This can’t be undone.")
+        }
     }
 
     private var grid: some View {
@@ -48,7 +70,7 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button(role: .destructive) {
-                            delete(playlist)
+                            playlistPendingDelete = playlist
                         } label: {
                             Label("Delete Playlist", systemImage: "trash")
                         }
