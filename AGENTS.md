@@ -107,3 +107,29 @@ or commit it. Bundle id `com.continuity.app`.
   one in `Playback/` or `Views/`. The former hotspots (`Player`, `PreparationQueue`) are now
   split into by-concern extension files — edit the relevant `+Concern.swift`, not the core file.
 - Keep PR descriptions and commit messages tight: what changed and why, in a couple of sentences.
+
+## Cursor Cloud specific instructions
+
+Cloud agents run on **Linux (Ubuntu 24.04)**, not macOS — so **most of this project cannot be
+built or run here**. Plan work accordingly:
+
+- **iOS app target, `ContinuityShare`, and all of `ContinuityKit` (Domain/Ingest/Playback) are
+  Linux-unbuildable.** They need macOS + Xcode 26, and pull in SwiftData / AVFoundation / CoreML
+  plus the iOS-only `ContinuityKit` platform pin (`platforms: [.iOS("26.0")]`). `xcodebuild`,
+  the iOS Simulator, and `xcodegen` do not exist here. Validate changes to those modules by
+  code review + the ContinuityCore unit tests they rely on; real build/run must happen on a Mac.
+- **A Linux Swift toolchain is preinstalled** via `swiftly` (added to `~/.profile`, so `swift` is
+  on `PATH` in login shells). Use `swift`, not `DEVELOPER_DIR`/`xcodebuild`, on this VM.
+- **`swift test` in `Packages/ContinuityCore` FAILS to compile on Linux**, even though the README
+  implies it's portable: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate` (Apple's
+  vDSP — no Linux module). Since SwiftPM compiles the target as a unit, those two files break the
+  whole build/test, including the 15 pure-Foundation files.
+- **To run the platform-agnostic tests on Linux**, build a throwaway SwiftPM package that includes
+  only the non-`Accelerate` sources + tests (exclude `BeatTracker.swift`, `KeyDetector.swift`,
+  `BeatTrackerTests.swift`, `KeyDetectorTests.swift`, `KeyDetectorAccuracyTests.swift`). That runs
+  **111 of ~114** real `XCTest` cases (Camelot/flow ordering, crossfade curves, transition plan,
+  loudness, silence trimming, YouTube/Spotify URL + page parsing). The BPM/beat-grid and
+  musical-key suites (Accelerate) can only be exercised on a Mac. Test fixtures are inline string
+  literals — no external resource files needed.
+- **The core package has zero external SwiftPM dependencies**, so there is nothing to fetch on
+  startup; the update script only warms the build graph.
