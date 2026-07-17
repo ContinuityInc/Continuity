@@ -46,6 +46,10 @@ targets:
       path: App/Continuity/Info.plist
       properties:
         CFBundleDisplayName: Continuity
+        # Keep in sync with settings.base MARKETING_VERSION / CURRENT_PROJECT_VERSION —
+        # hard-coded 1.0 here drifted from project.yml's 0.1.0.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
@@ -86,6 +90,8 @@ targets:
       path: App/ShareExtension/Info.plist
       properties:
         CFBundleDisplayName: Continuity
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
