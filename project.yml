@@ -74,6 +74,9 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: App/ShareExtension
+    dependencies:
+      # Same YouTube/Spotify classifiers the app uses — keeps "Added to Continuity" honest.
+      - package: ContinuityCore
     entitlements:
       path: App/ShareExtension/ContinuityShare.entitlements
       properties:
@@ -87,9 +90,10 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
-            # Web URLs only — a bare TRUEPREDICATE would surface us for every share type.
-            NSExtensionActivationRule:
-              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+            # Activate when any attachment is a URL — dictionary rules that only declare
+            # WebURL miss Spotify/YouTube shares that also attach image/text. Runtime still
+            # rejects non-music links via ContinuityCore before showing success.
+            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity.share
