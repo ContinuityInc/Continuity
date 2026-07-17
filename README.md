@@ -1,5 +1,7 @@
 # Continuity
 
+Anyone who merges a PR gets a free copy of the premium version of Continuity
+
 A minimal native iOS music app whose one differentiating feature is **transitions so smooth
 you don't notice a song changed** — a configurable, higher-quality take on Apple Music's
 Automix: stem-separated, beatmatched, harmonically-mixed DJ blends.
