@@ -16,7 +16,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
 
@@ -51,6 +51,8 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
+        # audio only — "processing"/"fetch" need BGTaskSchedulerPermittedIdentifiers and we
+        # don't schedule BGTasks. Enabling them in Xcode Capabilities breaks TestFlight upload.
         UIBackgroundModes:
           - audio
         ITSAppUsesNonExemptEncryption: false
@@ -70,6 +72,22 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+    # onnxruntime SPM xcframework omits MinimumOSVersion → ITMS-90530/90360 on upload.
+    # Patch after Embed Frameworks (postBuildScripts runs last). See microsoft/onnxruntime#27396.
+    postBuildScripts:
+      - name: Patch onnxruntime MinimumOSVersion
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          FRAMEWORKS_PATH="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          for framework in onnxruntime onnxruntime_extensions; do
+            PLIST="${FRAMEWORKS_PATH}/${framework}.framework/Info.plist"
+            if [ -f "$PLIST" ]; then
+              /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$PLIST" 2>/dev/null || true
+              /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IPHONEOS_DEPLOYMENT_TARGET}" "$PLIST"
+              echo "Patched MinimumOSVersion=${IPHONEOS_DEPLOYMENT_TARGET} in ${framework}.framework"
+            fi
+          done
 
   # Share-sheet entry point: stashes the shared URL in the app group for the app to import.
   ContinuityShare:
