@@ -209,12 +209,14 @@ public final class PreparationQueue {
 
     /// Best-effort, fire-and-forget healing of a ready track's display details:
     /// - `durationSeconds` from the local audio file when the model still says 0 ("0:00" rows),
-    /// - real title/channel via oEmbed when the bare-ID placeholder is still showing.
+    /// - audible bounds for gapless transitions,
+    /// - real title/channel via oEmbed when the bare-ID placeholder is still showing,
+    /// - re-analysis when `TrackAnalyzer.analysisVersion` has moved.
     ///
     /// Runs post-`.ready` (never blocks playability) from both the ingest pipeline and
-    /// `resumePreparation`. The network lookup is gated by `ingestLimiter` so a large library's
-    /// launch backfill can't burst dozens of simultaneous oEmbed requests (which would get
-    /// throttled and silently fail).
+    /// `resumePreparation`. Every heavy step is gated by `ingestLimiter` so a large library's
+    /// launch backfill can't fan out into dozens of simultaneous file opens / PCM decodes /
+    /// oEmbed requests (which hitch launch and thrash memory).
     private func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsTitle = Self.hasPlaceholderMetadata(track)
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
@@ -225,21 +227,25 @@ public final class PreparationQueue {
 
         Task {
             guard track.modelContext != nil else { return }
-            if needsDuration, let relativePath = track.localRelativePath,
-               let file = try? AVAudioFile(forReading: AudioCache.url(forRelativePath: relativePath)) {
-                track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
-            }
-            // Audible bounds for gapless transitions (targeted head/tail decode, off the main
-            // actor — it reads ~20 MB of PCM).
-            if needsSilenceScan, let relativePath = track.localRelativePath {
+            // Duration header + silence scan used to run ungated — one Task per ready track at
+            // every launch. SilenceScan alone decodes ~20 MB of PCM per track.
+            if needsDuration || needsSilenceScan, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
-                let bounds = await Task.detached(priority: .utility) {
-                    SilenceScan.audibleBounds(fileURL: url)
-                }.value
-                if let bounds, track.modelContext != nil {
-                    track.audibleStartSeconds = bounds.audibleStart
-                    track.audibleEndSeconds = bounds.audibleEnd
+                await ingestLimiter.acquire()
+                if needsDuration, track.modelContext != nil,
+                   let file = try? AVAudioFile(forReading: url) {
+                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
                 }
+                if needsSilenceScan, track.modelContext != nil {
+                    let bounds = await Task.detached(priority: .utility) {
+                        SilenceScan.audibleBounds(fileURL: url)
+                    }.value
+                    if let bounds, track.modelContext != nil {
+                        track.audibleStartSeconds = bounds.audibleStart
+                        track.audibleEndSeconds = bounds.audibleEnd
+                    }
+                }
+                await ingestLimiter.release()
             }
             // Stale analysis: results computed by an older analyzer (e.g. pre-fix key detection)
             // are refreshed so fixes reach the existing library. CPU-heavy → limiter-gated,
