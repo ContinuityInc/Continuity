@@ -70,6 +70,7 @@ struct PlaylistDetailView: View {
         VStack(spacing: 12) {
             RemoteArtworkView(url: playlist.artworkURL, symbol: playlist.artworkSymbol, seed: playlist.gradientSeed, cornerRadius: 20)
                 .frame(width: 180, height: 180)
+                .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
             Text(playlist.title).font(.title2.bold())
             Text(playlist.subtitle).font(.subheadline).foregroundStyle(.secondary)
             Button {
