@@ -6,6 +6,8 @@ import ContinuityCore
 import os
 
 extension Logger {
+    /// Resolve → download → analyse failures (the path that lands tracks in `.failed`).
+    static let ingest = Logger(subsystem: "com.continuity.app", category: "ingest")
     /// Stem-separation pipeline logging (subsystem matches the bundle id for easy filtering).
     static let stems = Logger(subsystem: "com.continuity.app", category: "stems")
     /// Playlist source-sync logging.
@@ -182,6 +184,12 @@ public final class PreparationQueue {
                 prepared = true
             }
         } catch {
+            // Keep the Error — stems/sync already log failures; ingest was silent and left
+            // `.failed` badges with nothing to diagnose in Console.
+            let label = track.youtubeVideoID ?? track.searchQuery ?? track.title
+            Logger.ingest.error(
+                "prep failed for \(label, privacy: .public): \(String(describing: error), privacy: .public)"
+            )
             prepared = false
         }
         await ingestLimiter.release()
