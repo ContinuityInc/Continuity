@@ -24,8 +24,8 @@ protocol StemSeparating: Sendable {
     func separate(inputURL: URL, vocalsOut: URL, accompanimentOut: URL) throws -> StemPaths
 }
 
-/// HT-Demucs FT "vocals specialist" run via ONNX Runtime (CoreML execution provider when present,
-/// else CPU). Mirrors the model's reference pipeline: decode → 44.1 kHz stereo → 7.8 s windows with
+/// HT-Demucs FT "vocals specialist" run via ONNX Runtime (CPU execution provider — see the
+/// session comment for why CoreML is banned on device). Mirrors the model's reference pipeline: decode → 44.1 kHz stereo → 7.8 s windows with
 /// 25% overlap → take the vocals source (index 3) → overlap-add → accompaniment = mix − vocals.
 final class OnnxStemSeparator: StemSeparating {
     private let modelURL: URL
@@ -40,6 +40,25 @@ final class OnnxStemSeparator: StemSeparating {
         self.modelURL = modelURL
     }
 
+    /// One process-wide session: rebuilding it per track re-pays model load for zero benefit.
+    private static let sessionLock = NSLock()
+    nonisolated(unsafe) private static var cachedSession: (path: String, session: ORTSession)?
+
+    private static func sharedSession(modelURL: URL) throws -> ORTSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let cached = cachedSession, cached.path == modelURL.path { return cached.session }
+        do {
+            let env = try ORTEnv(loggingLevel: .warning)
+            let options = try ORTSessionOptions()
+            let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
+            cachedSession = (modelURL.path, session)
+            return session
+        } catch {
+            throw StemSeparationError.inference("session: \(error)")
+        }
+    }
+
     func separate(inputURL: URL, vocalsOut: URL, accompanimentOut: URL) throws -> StemPaths {
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
             throw StemSeparationError.modelMissing
@@ -48,23 +67,14 @@ final class OnnxStemSeparator: StemSeparating {
         let (left, right, frames) = try decodePlanar(inputURL)
         guard frames > 0 else { throw StemSeparationError.decode("no audio frames") }
 
-        // ONNX Runtime session — prefer the CoreML EP (Neural Engine) on a real device, else CPU.
-        let session: ORTSession
-        do {
-            let env = try ORTEnv(loggingLevel: .warning)
-            let options = try ORTSessionOptions()
-            // On the Simulator CoreML has no ANE/GPU and routes the whole model through a serial
-            // CPU-fallback queue — orders of magnitude slower than ORT's own CPU EP. Only use
-            // CoreML on hardware.
-            #if !targetEnvironment(simulator)
-            if ORTIsCoreMLExecutionProviderAvailable() {
-                try? options.appendCoreMLExecutionProvider(with: ORTCoreMLExecutionProviderOptions())
-            }
-            #endif
-            session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
-        } catch {
-            throw StemSeparationError.inference("session: \(error)")
-        }
+        // ONNX Runtime session, CPU EP everywhere. The CoreML EP jetsammed real devices:
+        // converting/compiling the 85M-param HT-Demucs transformer at session creation ballooned
+        // the app past the per-process limit (~3.4 GB observed on iPhone 17 Pro — JetsamEvent
+        // reason=per-process-limit) before a single window ran. CPU EP peaks a few hundred MB;
+        // separation is an offline cache-once job, so slower-but-alive wins. Revisit via a real
+        // Core ML (mlpackage) conversion if on-device speed ever matters more.
+        // The session is cached: model load + graph init is expensive and identical per track.
+        let session = try Self.sharedSession(modelURL: modelURL)
 
         var vocL = [Float](repeating: 0, count: frames)
         var vocR = [Float](repeating: 0, count: frames)
