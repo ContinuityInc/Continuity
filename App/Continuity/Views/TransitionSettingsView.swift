@@ -58,14 +58,19 @@ struct TransitionSettingsView: View {
                             Text("\(Int(player.transitionSettings.durationSeconds))s")
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
+                                .accessibilityHidden(true)
                         }
+                        .accessibilityHidden(true)
                         Slider(
                             value: $player.transitionSettings.durationSeconds,
                             in: 0...16,
                             step: 1
                         )
+                        // Keep the Slider its own accessibility element — `.combine` on the
+                        // VStack collapsed the adjustable trait and blocked VoiceOver swipe-to-change.
+                        .accessibilityLabel("Crossfade")
+                        .accessibilityValue("\(Int(player.transitionSettings.durationSeconds)) seconds")
                     }
-                    .accessibilityElement(children: .combine)
 
                     // Curve picker, mapping the verified ContinuityCore enum to friendly labels.
                     Picker("Curve", selection: $player.transitionSettings.curve) {
