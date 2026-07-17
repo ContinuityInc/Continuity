@@ -107,11 +107,12 @@ struct RemoteArtworkView: View {
     let symbol: String
     let seed: Int
     var cornerRadius: CGFloat = 16
-    /// YouTube hqdefault thumbs are 4:3 frames with the 16:9 video letterboxed inside
-    /// (baked black bars, 12.5% top + bottom). Small square tiles crop them away naturally,
-    /// but large tiles show them — opt in to zoom the image by 4/3 so the bars fall outside
-    /// the clip. Aspect ratio is preserved (uniform scale, not a stretch).
-    var cropsLetterbox: Bool = false
+    /// Every remote thumbnail we use is YouTube's hqdefault: a 4:3 frame with the 16:9 video
+    /// letterboxed inside (baked black bars, 12.5% top + bottom). Zooming the image by 4/3 pushes
+    /// those bars outside the clip so tiles show only the picture — on by default because it's true
+    /// of all our art. Aspect ratio is preserved (uniform scale). The gradient/symbol fallback
+    /// (no URL / still loading) is a real square and is unaffected.
+    var cropsLetterbox: Bool = true
 
     var body: some View {
         if let url {

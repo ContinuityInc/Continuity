@@ -180,6 +180,7 @@ private struct PlaylistCard: View {
         VStack(alignment: .leading, spacing: 8) {
             RemoteArtworkView(url: playlist.artworkURL, symbol: playlist.artworkSymbol, seed: playlist.gradientSeed)
                 .aspectRatio(1, contentMode: .fit)
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
                 .overlay(alignment: .topLeading) {
                     if playlist.isDemo {
                         Text("DEMO")
