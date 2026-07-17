@@ -20,12 +20,22 @@ final class YouTubeStreamResolver: AudioStreamResolving {
     public init() {}
 
     func resolveAudio(videoID: String) async throws -> ResolvedAudio {
+        // Extraction blips (timeouts, player-response churn) are the most common ingest failure;
+        // playlist resolvers already retry — keep the per-track path consistent.
+        try await Retry.run {
+            try await self.resolveOnce(videoID: videoID)
+        }
+    }
+
+    private func resolveOnce(videoID: String) async throws -> ResolvedAudio {
         let streams: [YouTubeKit.Stream]
         do {
             streams = try await YouTube(videoID: videoID).streams
         } catch {
-            // Wrap any library/network error so callers only ever see IngestError.
-            throw IngestError.resolveFailed(String(describing: error))
+            // YouTubeKit doesn't surface typed network vs. permanent failures. Treat library
+            // throws as transient so Retry.run can absorb blips; a truly empty candidate list
+            // still becomes `.noPlayableStream` below (non-retryable).
+            throw IngestError.network(String(describing: error))
         }
 
         let candidates: [AudioStreamCandidate] = streams.enumerated().map { index, stream in

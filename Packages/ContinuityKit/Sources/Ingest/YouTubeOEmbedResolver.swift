@@ -22,15 +22,29 @@ final class YouTubeOEmbedResolver: VideoMetadataResolving {
         ]
         guard let url = components.url else { throw IngestError.invalidURL }
 
+        // Title backfill is best-effort, but launch/import can burst many oEmbeds — retry
+        // transient failures so a blip doesn't leave the "YouTube Video (…)" placeholder stuck.
+        return try await Retry.run {
+            try await self.fetchMetadata(from: url)
+        }
+    }
+
+    private func fetchMetadata(from url: URL) async throws -> VideoMetadata {
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await URLSession.shared.data(from: url)
         } catch {
-            throw IngestError.resolveFailed(String(describing: error))
+            throw IngestError.network(String(describing: error))
         }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw IngestError.resolveFailed("oEmbed HTTP \(http.statusCode)")
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300: break
+            case 429: throw IngestError.rateLimited
+            case 500..<600: throw IngestError.network("oEmbed HTTP \(http.statusCode)")
+            // 401/404 usually mean private/deleted — retrying won't help.
+            default: throw IngestError.resolveFailed("oEmbed HTTP \(http.statusCode)")
+            }
         }
 
         do {
