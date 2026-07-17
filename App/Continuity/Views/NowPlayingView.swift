@@ -358,7 +358,9 @@ struct NowPlayingView: View {
             .font(.footnote.weight(.medium))
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            // Fixed height keeps the chip and its icon-only sibling identical — text and glyph
+            // have different intrinsic heights, so padding alone misaligns the pair.
+            .frame(height: 34)
             .continuityGlass(cornerRadius: 20)
         }
         .buttonStyle(.plain)
@@ -373,7 +375,7 @@ struct NowPlayingView: View {
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .frame(height: 34)
                 .continuityGlass(cornerRadius: 20)
         }
         .buttonStyle(.plain)

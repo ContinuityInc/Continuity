@@ -123,6 +123,10 @@ struct RemoteArtworkView: View {
                             .scaleEffect(cropsLetterbox ? 4.0 / 3.0 : 1)
                     )
                         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                        // clipShape trims pixels but NOT hit-testing: the scaledToFill (and
+                        // letterbox-zoom) overflow would otherwise extend the enclosing
+                        // button/row's tap area far past the visible tile.
+                        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 } else {
                     ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
                 }
