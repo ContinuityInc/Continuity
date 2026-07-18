@@ -58,4 +58,10 @@ extension CrossfadeCurve {
         case .equalPower, .smooth: return true
         }
     }
+
+    /// Evenly-spaced gain pairs across `t` in `0...1` for drawing the crossfade.
+    public func samples(count: Int) -> [CrossfadeGains] {
+        guard count > 1 else { return [gains(at: 0)] }
+        return (0..<count).map { gains(at: Double($0) / Double(count - 1)) }
+    }
 }
