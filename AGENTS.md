@@ -94,6 +94,13 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `startCurrentFresh`). Keep the stem limiter at 1; never separate the whole library
   eagerly. Use CPU EP only (never CoreML EP on device — session creation alone has hit
   the per-process limit). Cap ORT `intraOpNumThreads` to 1.
+- **Stem separation streams — don't reintroduce whole-file buffers.** The pipeline (chunked
+  decode → windowed inference → overlap-add → incremental AAC encode) keeps peak memory
+  O(segment) regardless of track length; the old whole-file implementation held ~7 full-length
+  float buffers (>1 GB on an hour-long track) and jetsammed devices. The overlap-add math is
+  `StreamingOverlapAdd` in ContinuityCore (unit-tested); simulator tests for the pipeline live
+  in `ContinuityKit/Tests/IngestTests` (fake-inference seam, no model download; run via
+  `xcodebuild test -scheme ContinuityKit-Package` with a simulator destination).
 - **Stem separation on the Simulator** is also CPU-only (and slow). Do not "fix" perceived
   hangs by enabling CoreML on sim — sim CoreML has no ANE/GPU and routes through a ~100×
   slower serial CPU queue.

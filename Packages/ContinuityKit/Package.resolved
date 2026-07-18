@@ -1,0 +1,24 @@
+{
+  "originHash" : "7274ab7883ed66e6373fa5e86d553a5f47b1b676558d15005aefa58cdd4c9260",
+  "pins" : [
+    {
+      "identity" : "onnxruntime-swift-package-manager",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/onnxruntime-swift-package-manager",
+      "state" : {
+        "revision" : "12ce7374c86944e1f68f3a866d10105d8357f074",
+        "version" : "1.20.0"
+      }
+    },
+    {
+      "identity" : "youtubekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/alexeichhorn/YouTubeKit",
+      "state" : {
+        "branch" : "main",
+        "revision" : "7cc81901f9bbf2f9d2766bd8a54e128b974e4c94"
+      }
+    }
+  ],
+  "version" : 3
+}
