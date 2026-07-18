@@ -108,9 +108,9 @@ cd Packages/ContinuityCore && swift test
 
 ## Caveats
 
-- **This branch (`release/external-testflight`) disables YouTube / Spotify→YouTube audio
-  download** for External TestFlight. Import, share, clipboard, and sync are gated off;
-  the seeded demo library plays via synthesized audio. Re-enable only on `main`.
+- **This branch disables YouTube / Spotify→YouTube audio download** for App Store /
+  External TestFlight distribution. Use **Add Music → Choose Audio Files** to import
+  local M4A/MP3/WAV/AIFF into an "Imported" playlist. Demo tracks still play via ToneSynth.
 - **YouTube sourcing violates YouTube's ToS** on `main`. Acceptable only as a private
   prototype; it is not shippable as-is. The engine is source-agnostic — local files would
   drop in with no engine changes.

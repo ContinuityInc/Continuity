@@ -41,7 +41,7 @@ public final class PreparationQueue {
     let downloader: AudioFileDownloading
 
     /// Caps simultaneous resolve+download+analyse work (network-bound).
-    private let ingestLimiter = ConcurrencyLimiter(limit: 3)
+    let ingestLimiter = ConcurrencyLimiter(limit: 3)
     /// Caps simultaneous stem separations to one — each is CPU/RAM-heavy, so they queue.
     let stemLimiter = ConcurrencyLimiter(limit: 1)
 
