@@ -291,6 +291,16 @@ public final class Player {
         return audibleEnd
     }
 
+    /// Seconds until the next automatic transition begins, or nil if none is scheduled
+    /// (already transitioning, no next track, or the current track/settings can't blend).
+    public var secondsUntilTransition: TimeInterval? {
+        guard !isTransitioning, nextIndex != nil else { return nil }
+        let dur = effectiveEndSeconds
+        let fade = transitionSettings.durationSeconds
+        guard dur > 0, fade > 0, dur > fade else { return nil }
+        return max(0, (dur - fade) - position)
+    }
+
     private func tick() {
         guard isPlaying, let audio else { return }
         let elapsed = baselineSeconds + audio.current.elapsed

@@ -82,9 +82,7 @@ struct NowPlayingView: View {
             }
             trackLabel
 
-            if player.isTransitioning, let next = player.incomingTrack {
-                blendIndicator(next: next)
-            }
+            transitionSection
 
             scrubber
             transport
@@ -382,20 +380,34 @@ struct NowPlayingView: View {
         .accessibilityLabel("Up Next")
     }
 
-    // MARK: Blend indicator (sheet only)
+    // MARK: Transition visualization (sheet only)
 
-    /// Live blend meter shown while a transition is in flight — the flagship feature made visible.
-    private func blendIndicator(next: Track) -> some View {
-        VStack(spacing: 6) {
-            Label("Blending into \(next.title)", systemImage: "arrow.triangle.merge")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1)
-            ProgressView(value: min(max(player.transitionProgress, 0), 1))
-                .tint(.white)
+    /// The flagship transition made visible: a live blend graph while a transition is in flight,
+    /// or a preview of the next scheduled blend (with a countdown) when one is coming up.
+    @ViewBuilder private var transitionSection: some View {
+        if player.isTransitioning, let next = player.incomingTrack, let current = player.currentTrack {
+            TransitionVisualizationView(
+                settings: player.transitionSettings,
+                outgoing: current,
+                incoming: next,
+                isLive: true,
+                liveProgress: min(max(player.transitionProgress, 0), 1),
+                secondsUntil: nil
+            )
+            .padding(.horizontal, 24)
+            .transition(.opacity)
+        } else if let current = player.currentTrack, let next = player.upcomingTracks.first {
+            TransitionVisualizationView(
+                settings: player.transitionSettings,
+                outgoing: current,
+                incoming: next,
+                isLive: false,
+                liveProgress: 0,
+                secondsUntil: player.secondsUntilTransition
+            )
+            .padding(.horizontal, 24)
+            .transition(.opacity)
         }
-        .padding(.horizontal, 40)
-        .transition(.opacity)
     }
 
     // MARK: Scrubber (sheet only)

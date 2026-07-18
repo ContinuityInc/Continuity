@@ -44,4 +44,28 @@ final class CrossfadeCurvesTests: XCTestCase {
         XCTAssertTrue(CrossfadeCurve.equalPower.isConstantPower)
         XCTAssertTrue(CrossfadeCurve.smooth.isConstantPower)
     }
+
+    func testSamplesEndpointsAndCount() {
+        let samples = CrossfadeCurve.equalPower.samples(count: 60)
+        XCTAssertEqual(samples.count, 60)
+        // First sample is t=0 (fully outgoing), last is t=1 (fully incoming).
+        XCTAssertEqual(samples.first!.outgoing, 1, accuracy: 1e-9)
+        XCTAssertEqual(samples.first!.incoming, 0, accuracy: 1e-9)
+        XCTAssertEqual(samples.last!.outgoing, 0, accuracy: 1e-9)
+        XCTAssertEqual(samples.last!.incoming, 1, accuracy: 1e-9)
+    }
+
+    func testSamplesHoldEqualPowerInvariant() {
+        for sample in CrossfadeCurve.equalPower.samples(count: 40) {
+            let power = sample.outgoing * sample.outgoing + sample.incoming * sample.incoming
+            XCTAssertEqual(power, 1, accuracy: 1e-9)
+        }
+    }
+
+    func testSamplesDegenerateCounts() {
+        // count <= 1 returns a single starting sample rather than dividing by zero.
+        XCTAssertEqual(CrossfadeCurve.equalPower.samples(count: 1).count, 1)
+        XCTAssertEqual(CrossfadeCurve.equalPower.samples(count: 0).count, 1)
+        XCTAssertEqual(CrossfadeCurve.equalPower.samples(count: 1).first!.outgoing, 1, accuracy: 1e-9)
+    }
 }
