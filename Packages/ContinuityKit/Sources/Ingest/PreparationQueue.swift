@@ -305,8 +305,10 @@ public final class PreparationQueue {
 
     /// Stem keys for the current play-queue neighborhood — protected from cache eviction.
     var protectedStemKeys: Set<String> = []
-    /// Tracks whose separation is currently running (dedup across repeated `ensureStems` calls).
-    var stemsInFlight: Set<UUID> = []
+    /// Stem keys (YouTube video IDs) whose separation is currently running. Keyed like the
+    /// cache — by video, not Track row — so the same video in two playlists can't run two
+    /// concurrent separations that rewrite the same output files.
+    var stemsInFlight: Set<String> = []
 
 
 }
