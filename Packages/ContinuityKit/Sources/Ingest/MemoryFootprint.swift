@@ -7,8 +7,11 @@ import os
 enum MemoryFootprint {
     private static let logger = Logger(subsystem: "com.continuity.app", category: "mem")
 
+    /// Remaining allowance in MB. Used both for breadcrumbs and to GATE heavy work — heavy
+    /// stages must check this and defer instead of trusting that the budget will stretch.
+    static var headroomMB: Int { Int(os_proc_available_memory() / 1_048_576) }
+
     static func breadcrumb(_ label: String) {
-        let remainingMB = Int(os_proc_available_memory() / 1_048_576)
-        logger.info("mem[\(label, privacy: .public)] \(remainingMB, privacy: .public) MB headroom")
+        logger.info("mem[\(label, privacy: .public)] \(headroomMB, privacy: .public) MB headroom")
     }
 }

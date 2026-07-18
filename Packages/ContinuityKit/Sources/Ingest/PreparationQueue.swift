@@ -311,6 +311,13 @@ public final class PreparationQueue {
     /// cache — by video, not Track row — so the same video in two playlists can't run two
     /// concurrent separations that rewrite the same output files.
     var stemsInFlight: Set<String> = []
+    /// Separation is held until this moment — armed on the session's FIRST stem demand
+    /// (i.e. when playback starts). Pressing play spins up the audio engine, UI, artwork, and
+    /// (first run) the model download all at once; the ORT session-load + first-window peak is
+    /// the app's largest allocation and must not stack on that ramp.
+    var separationAllowedAt: Date?
+    /// At most one pending post-hold retry (ensureStems also re-fires on every track change).
+    var stemsRetryScheduled = false
 
 
 }
