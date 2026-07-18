@@ -49,14 +49,19 @@ final class YouTubePlaylistResolver: PlaylistResolving {
         // ends pagination with what we have.
         if var token = contents.continuationToken,
            let config = YouTubePlaylist.innerTubeConfig(html: html) {
+            var seenTokens: Set<String> = [token]
             while items.count < Self.maxTracks {
                 guard let page = try? await fetchContinuation(token: token, config: config),
                       !page.items.isEmpty else { break }
+                let before = items.count
                 for item in page.items where !seen.contains(item.videoID) {
                     seen.insert(item.videoID)
                     items.append(item)
                 }
-                guard let next = page.continuationToken else { break }
+                // No-progress / token-cycle guard: a page of all-duplicates with a repeating
+                // token would otherwise loop forever (items.count is the loop's only bound).
+                guard items.count > before,
+                      let next = page.continuationToken, seenTokens.insert(next).inserted else { break }
                 token = next
             }
         }
