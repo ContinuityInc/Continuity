@@ -73,19 +73,28 @@ targets:
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
     # onnxruntime SPM xcframework omits MinimumOSVersion → ITMS-90530/90360 on upload.
-    # Patch after Embed Frameworks (postBuildScripts runs last). See microsoft/onnxruntime#27396.
+    # Patch Info.plist then re-sign — editing the plist after Embed Frameworks invalidates the
+    # vendor signature (device install fails with 0xe8008001). See microsoft/onnxruntime#27396.
     postBuildScripts:
       - name: Patch onnxruntime MinimumOSVersion
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
           FRAMEWORKS_PATH="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          # Prefer the expanded identity Xcode used for this build; fall back to ad-hoc for
+          # unsigned CI builds (CODE_SIGNING_ALLOWED=NO).
+          SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+          if [ -z "$SIGN_IDENTITY" ] || [ "$SIGN_IDENTITY" = "-" ]; then
+            SIGN_IDENTITY="-"
+          fi
           for framework in onnxruntime onnxruntime_extensions; do
-            PLIST="${FRAMEWORKS_PATH}/${framework}.framework/Info.plist"
+            FRAMEWORK="${FRAMEWORKS_PATH}/${framework}.framework"
+            PLIST="${FRAMEWORK}/Info.plist"
             if [ -f "$PLIST" ]; then
               /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$PLIST" 2>/dev/null || true
               /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IPHONEOS_DEPLOYMENT_TARGET}" "$PLIST"
-              echo "Patched MinimumOSVersion=${IPHONEOS_DEPLOYMENT_TARGET} in ${framework}.framework"
+              /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --timestamp=none --preserve-metadata=identifier,entitlements,flags --generate-entitlement-der "$FRAMEWORK"
+              echo "Patched+resigned MinimumOSVersion=${IPHONEOS_DEPLOYMENT_TARGET} in ${framework}.framework"
             fi
           done
 
