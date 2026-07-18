@@ -58,8 +58,8 @@ extension PreparationQueue {
     /// byte budget is enforced (LRU eviction, protecting the play-queue neighborhood).
     private func separateStems(_ track: Track, in context: ModelContext) {
         guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath,
-              !stemsInFlight.contains(track.id) else { return }
-        stemsInFlight.insert(track.id)
+              !stemsInFlight.contains(key) else { return }
+        stemsInFlight.insert(key)
 
         let inputURL = AudioCache.url(forRelativePath: relativePath)
         let vocalsOut = StemCache.vocalsURL(key: key)
@@ -68,6 +68,14 @@ extension PreparationQueue {
 
         Task.detached(priority: .utility) { [weak self] in
             await limiter.acquire()
+            // Re-check after the (possibly long) wait for the slot: another queued separation
+            // of the same video, or a re-added track, may have written the stems meanwhile —
+            // don't spend CPU-minutes redoing them (reconcileStemLinks links them up next pass).
+            if StemCache.hasStems(key: key) {
+                await limiter.release()
+                await MainActor.run { _ = self?.stemsInFlight.remove(key) }
+                return
+            }
             do {
                 let modelURL = try await StemModelStore.ensureModel()
                 let separator = OnnxStemSeparator(modelURL: modelURL)
@@ -90,7 +98,7 @@ extension PreparationQueue {
             // key we just wrote (it may not be in the protected set if the queue moved on).
             let protected = await MainActor.run { self?.protectedStemKeys ?? [] }
             StemCache.enforceBudget(protecting: protected.union([key]))
-            await MainActor.run { _ = self?.stemsInFlight.remove(track.id) }
+            await MainActor.run { _ = self?.stemsInFlight.remove(key) }
         }
     }
 }
