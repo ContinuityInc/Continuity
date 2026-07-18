@@ -6,9 +6,15 @@ import os
 
 extension Player {
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
-    func beginTransition(toIndex index: Int, outgoingPosition: Double) {
-        guard queue.indices.contains(index) else { return }
-        // Only reachable from tick() while playing, so the stack exists; funnel anyway.
+    func beginTransition(
+        toIndex index: Int,
+        outgoingPosition: Double,
+        duration: TimeInterval,
+        isUserInitiatedSkip: Bool
+    ) {
+        guard queue.indices.contains(index), duration > 0 else { return }
+        // Automatic blends arrive from tick(); skip blends may materialize a staged session first.
+        // Funnel both through the same lazy stack accessor.
         let audio = ensureAudioStack()
         let incoming = audio.idle
         incoming.load(queue[index])
@@ -91,6 +97,8 @@ extension Player {
 
         incoming.play()
         transitionTargetIndex = index
+        activeTransitionDurationSeconds = duration
+        isUserInitiatedSkipTransition = isUserInitiatedSkip
         isTransitioning = true
     }
 
@@ -130,10 +138,12 @@ extension Player {
         incoming.volume = 1
         incoming.vocalsGain = 1
         incoming.bassGainDB = 0
-        // The outgoing track played to its natural end — earn one forward skip back (capped),
-        // and remember it in the history for unlimited previous-skips.
-        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
-        pushHistory(currentTrack)
+        if !isUserInitiatedSkipTransition {
+            // A scheduled blend means the outgoing track played naturally. Skip blends already
+            // spent their budget and recorded history when the button was pressed.
+            skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+            pushHistory(currentTrack)
+        }
         audio.current = incoming
         currentIndex = transitionTargetIndex
         queueRefillAttempted = false   // deck promotion changes the current track sans startCurrentFresh
@@ -144,6 +154,8 @@ extension Player {
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         currentRate = incomingRate
         isTransitioning = false
+        activeTransitionDurationSeconds = 0
+        isUserInitiatedSkipTransition = false
         transitionProgress = 0
         persistState()
         notifyUpcoming()
@@ -163,6 +175,8 @@ extension Player {
             audio.current.bassGainDB = 0
         }
         isTransitioning = false
+        activeTransitionDurationSeconds = 0
+        isUserInitiatedSkipTransition = false
         transitionProgress = 0
     }
 }

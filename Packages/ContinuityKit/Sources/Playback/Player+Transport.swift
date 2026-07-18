@@ -105,11 +105,36 @@ extension Player {
 
     public func next() {
         guard !queue.isEmpty, skipsRemaining > 0 else { return }
-        skipsRemaining -= 1
+        // A second press during an explicit skip would only restart the same incoming track,
+        // spending another skip without advancing farther.
+        guard !isUserInitiatedSkipTransition else { return }
+        // If an automatic blend is already underway, restart it as a five-second user skip.
         cancelTransition()
+        skipsRemaining -= 1
         pushHistory(currentTrack)
-        currentIndex = (currentIndex + 1) % queue.count
-        startCurrentFresh()
+        let targetIndex = (currentIndex + 1) % queue.count
+
+        // Skipping from a paused/staged session still needs the outgoing deck materialized so
+        // there is audio to fade away. If CoreAudio cannot start, preserve the old hard-advance
+        // behavior rather than leaving the transport on the track the user skipped.
+        guard ensureCurrentLoaded(), let audio else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !isPlaying {
+            audio.current.play()
+            isPlaying = true
+            startTimer()
+        }
+        resumeAfterInterruption = false
+        beginTransition(
+            toIndex: targetIndex,
+            outgoingPosition: position,
+            duration: Player.skipTransitionDurationSeconds,
+            isUserInitiatedSkip: true
+        )
         persistState()
     }
 
