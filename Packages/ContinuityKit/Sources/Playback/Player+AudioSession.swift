@@ -16,8 +16,11 @@ extension Player {
     /// nothing to observe (and nothing may fire).
     func observeAudioEnvironment(engine: AVAudioEngine) {
         let center = NotificationCenter.default
+        // A rebuild (media-services reset) must not stack a second set of session-level handlers.
+        audioEnvironmentObservers.forEach { center.removeObserver($0) }
+        audioEnvironmentObservers.removeAll()
 
-        center.addObserver(
+        audioEnvironmentObservers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -37,9 +40,9 @@ extension Player {
                     break
                 }
             }
-        }
+        })
 
-        center.addObserver(
+        audioEnvironmentObservers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
@@ -52,9 +55,9 @@ extension Player {
                     self?.pauseForEnvironment()
                 }
             }
-        }
+        })
 
-        center.addObserver(
+        audioEnvironmentObservers.append(center.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -64,7 +67,43 @@ extension Player {
                 Logger.audio.info("engine configuration change — recovering playback")
                 self.recoverPlayback(force: true)
             }
+        })
+
+        audioEnvironmentObservers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleMediaServicesReset()
+            }
+        })
+    }
+
+    /// The media server crashed and restarted: every live AVAudio object (engine, nodes, the
+    /// session's state) is now invalid, and no amount of engine.start() retries can revive them.
+    /// Discard the stack so the next audio need rebuilds it from scratch (fresh session
+    /// activation + observers), and resume in place if we were playing.
+    private func handleMediaServicesReset() {
+        Logger.audio.error("media services were reset — discarding audio stack")
+        let wasPlaying = isPlaying
+        let resumePosition = position
+        // Don't touch the dead engine/decks — even stop() can throw on orphaned nodes.
+        isTransitioning = false
+        transitionProgress = 0
+        isPlaying = false
+        stopTimer()
+        audio = nil
+        resumeAfterInterruption = false
+        if resumePosition > 0 { pendingSeekSeconds = resumePosition }
+        if wasPlaying {
+            // ensureCurrentLoaded() builds the fresh stack, reloads the current track, and
+            // applies the staged seek — the same funnel as first play after launch.
+            if ensureCurrentLoaded(), let audio {
+                audio.current.play()
+                isPlaying = true
+                startTimer()
+            }
         }
+        persistState()
     }
 
     /// Clean pause in response to the environment (vs. the user's pause button): remembers that
