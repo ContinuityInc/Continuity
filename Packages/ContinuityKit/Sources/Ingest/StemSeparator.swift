@@ -132,6 +132,14 @@ final class OnnxStemSeparator: StemSeparating {
             // for an 85M-param transformer that's hundreds of MB of duplicated RSS for a
             // marginal speedup on an offline cache-once job. Keeping the originals only.
             try options.addConfigEntry(withKey: "session.disable_prepacking", value: "1")
+            // NO graph optimization. Measured on device (mem breadcrumbs): session creation
+            // alone blew through >3.3 GB of headroom and jetsammed the app before "ort session
+            // ready". Mechanism: this model stores fp16 weights behind per-weight Cast nodes,
+            // and load-time constant folding materializes an fp32 copy of EVERY weight while
+            // the protobuf and the fp16 originals are still resident — several full copies of
+            // an 85M-param model at once. Skipping optimization trades some per-window CPU
+            // (fine for an offline cache-once job) for a load peak that actually fits.
+            try options.setGraphOptimizationLevel(ORTGraphOptimizationLevel.none)
             let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
             cachedSession = (modelURL.path, session)
             MemoryFootprint.breadcrumb("ort session ready")
