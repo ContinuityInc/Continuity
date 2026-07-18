@@ -120,12 +120,14 @@ extension Player {
             startCurrentFresh()
             return
         }
+        // Walk back to the most recent history entry still in the queue, consuming ONLY that
+        // entry. Non-matching entries (older playlists/queues) must survive the walk — popping
+        // them would let one previous() press after a playlist switch destroy the entire
+        // persistent history, which also feeds the queue-exhausted refill loop.
         var backIndex: Int?
-        while let lastID = historyIDs.popLast() {
-            if let found = queue.firstIndex(where: { $0.id == lastID }) {
-                backIndex = found
-                break
-            }
+        if let historyIdx = historyIDs.lastIndex(where: { id in queue.contains { $0.id == id } }) {
+            backIndex = queue.firstIndex { $0.id == historyIDs[historyIdx] }
+            historyIDs.remove(at: historyIdx)
         }
         currentIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
         // Stepping back a track refunds a forward skip (capped) — undoing a skip shouldn't
