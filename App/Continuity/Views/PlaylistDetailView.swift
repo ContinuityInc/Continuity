@@ -8,6 +8,7 @@ struct PlaylistDetailView: View {
     @Bindable var playlist: Playlist
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
 
     private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
@@ -30,6 +31,7 @@ struct PlaylistDetailView: View {
                             prepQueue.enqueue(track, in: modelContext)
                         } else {
                             player.play(tracks: playlist.orderedTracks, startAt: index)
+                            pagerState.goToNowPlaying()
                         }
                     }
                     .contextMenu {
@@ -75,6 +77,7 @@ struct PlaylistDetailView: View {
             Text(playlist.subtitle).font(.subheadline).foregroundStyle(.secondary)
             Button {
                 player.play(tracks: playlist.orderedTracks, startAt: 0)
+                pagerState.goToNowPlaying()
             } label: {
                 Label("Play", systemImage: "play.fill")
                     .frame(maxWidth: 200)

@@ -6,9 +6,9 @@ import Playback
 import Domain
 import SwiftData
 
-/// Top-level shell: the app always opens onto the minimal Now Playing screen, resuming the
-/// previous session's song (or staging COMË N GO on first launch). The library lives in a
-/// sheet behind its corner button.
+/// Top-level shell: the app always opens onto the minimal Now Playing page, resuming the
+/// previous session's song (or staging COMË N GO on first launch). Library and Up Next are
+/// sticky vertical neighbors (scroll up / down from home).
 struct RootView: View {
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
@@ -28,7 +28,7 @@ struct RootView: View {
     @State private var syncTick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        NowPlayingView(mode: .home)
+        MainPagerView()
             // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
             // then bring back the previous playback session (or stage the first-run track).
             .task {

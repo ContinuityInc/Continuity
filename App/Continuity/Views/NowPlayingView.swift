@@ -3,8 +3,9 @@ import Playback
 import Domain
 
 /// The one Now Playing surface, in two modes so both feel like the same room:
-/// `.home` is the app's deliberately minimal root — title/artist over the blurred-art backdrop,
-/// a progress-ring play disc, and corner glass buttons for the library and queue.
+/// `.home` is the app's deliberately minimal root — title/artist over the blurred-art backdrop
+/// and a progress-ring play disc. Library and Up Next are sticky vertical neighbors in
+/// `MainPagerView` (scroll up / down), with chevron affordances for discoverability.
 /// `.sheet` is the full detail view — large artwork, transition + queue chips, scrubber, and a
 /// live blend meter while a transition is in flight.
 struct NowPlayingView: View {
@@ -12,14 +13,13 @@ struct NowPlayingView: View {
     let mode: Mode
 
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
 
     // Sheet-mode scrubber state.
     @State private var isEditing = false
     @State private var scrubValue: Double = 0
     @State private var showingTransitionSettings = false
-    // Home-mode corner library sheet.
-    @State private var showingLibrary = false
-    // Both modes open the queue: corner button at home, glass chip in the sheet.
+    // Sheet mode opens the queue as a sheet; home uses the vertical pager instead.
     @State private var showingUpNext = false
 
     var body: some View {
@@ -50,18 +50,26 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 24)
         }
-        .overlay(alignment: .topTrailing) {
-            libraryButton
-                .padding(.top, 8)
-                .padding(.trailing, 20)
+        .overlay(alignment: .top) {
+            pageChevron(
+                system: "chevron.compact.up",
+                label: "Library",
+                accessibility: "Library"
+            ) {
+                pagerState.go(to: .library)
+            }
+            .padding(.top, 8)
         }
-        .overlay(alignment: .topLeading) {
-            homeUpNextButton
-                .padding(.top, 8)
-                .padding(.leading, 20)
-        }
-        .sheet(isPresented: $showingLibrary) {
-            LibrarySheetView()
+        .overlay(alignment: .bottom) {
+            pageChevron(
+                system: "chevron.compact.down",
+                label: "Up Next",
+                accessibility: "Up Next",
+                labelAboveIcon: true
+            ) {
+                pagerState.go(to: .upNext)
+            }
+            .padding(.bottom, 12)
         }
     }
 
@@ -313,35 +321,36 @@ struct NowPlayingView: View {
             .accessibilityLabel("\(player.skipsRemaining) skips remaining")
     }
 
-    // MARK: Corner buttons (home only)
+    // MARK: Page chevrons (home only)
 
-    private var libraryButton: some View {
-        Button {
-            showingLibrary = true
-        } label: {
-            Image(systemName: "music.note.list")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 40, height: 40)
-                .continuityGlass(cornerRadius: 20)
+    /// Subtle scroll affordances — replace the old corner sheet buttons, and stay tappable for
+    /// VoiceOver / discoverability when the swipe gesture isn't obvious.
+    private func pageChevron(
+        system: String,
+        label: String,
+        accessibility: String,
+        labelAboveIcon: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            let icon = Image(systemName: system)
+                .font(.title2.weight(.semibold))
+            let text = Text(label)
+                .font(.caption2.weight(.semibold))
+            Group {
+                if labelAboveIcon {
+                    VStack(spacing: 2) { text; icon }
+                } else {
+                    VStack(spacing: 2) { icon; text }
+                }
+            }
+            .foregroundStyle(.white.opacity(0.7))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Library")
-    }
-
-    /// Mirrors the library button in the opposite corner: the queue is browsing's counterpart.
-    private var homeUpNextButton: some View {
-        Button {
-            showingUpNext = true
-        } label: {
-            Image(systemName: "list.bullet")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 40, height: 40)
-                .continuityGlass(cornerRadius: 20)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Up Next")
+        .accessibilityLabel(accessibility)
     }
 
     // MARK: Chips (sheet only)

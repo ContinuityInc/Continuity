@@ -3,10 +3,12 @@ import Playback
 import Domain
 import ContinuityCore
 
-/// The queue sheet: what plays next, with drag-to-reorder and swipe-to-remove, plus the Flow
-/// toggle that reorders the upcoming tracks into a key/tempo-compatible DJ sequence.
+/// The queue page (below Now Playing): what plays next, with drag-to-reorder and
+/// swipe-to-remove, plus the Flow toggle that reorders the upcoming tracks into a
+/// key/tempo-compatible DJ sequence.
 struct UpNextView: View {
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
     // Persisted as a mode label; toggling ON reorders once, toggling OFF is not an undo.
     @AppStorage("flowMode.v1") private var flowMode = false
 
@@ -22,6 +24,16 @@ struct UpNextView: View {
             .navigationTitle("Up Next")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if pagerState.page == .upNext {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            pagerState.goToNowPlaying()
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .accessibilityLabel("Now Playing")
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Toggle("Flow", systemImage: "wand.and.stars", isOn: $flowMode)
                 }

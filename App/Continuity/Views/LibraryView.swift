@@ -101,6 +101,7 @@ private struct SearchResultsView: View {
     let playlists: [Playlist]
     let query: String
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
 
     private var matchingPlaylists: [Playlist] {
         playlists.filter { $0.title.localizedCaseInsensitiveContains(query) }
@@ -192,6 +193,7 @@ private struct SearchResultsView: View {
         let queue = playlist.orderedTracks
         guard let index = queue.firstIndex(where: { $0.id == track.id }) else { return }
         player.play(tracks: queue, startAt: index)
+        pagerState.goToNowPlaying()
     }
 }
 
