@@ -73,7 +73,12 @@ extension PreparationQueue {
             // don't spend CPU-minutes redoing them (reconcileStemLinks links them up next pass).
             if StemCache.hasStems(key: key) {
                 await limiter.release()
-                await MainActor.run { _ = self?.stemsInFlight.remove(key) }
+                let queueDrained = await MainActor.run { () -> Bool in
+                    guard let self else { return true }
+                    self.stemsInFlight.remove(key)
+                    return self.stemsInFlight.isEmpty
+                }
+                if queueDrained { OnnxStemSeparator.releaseSession() }
                 return
             }
             do {
@@ -98,7 +103,15 @@ extension PreparationQueue {
             // key we just wrote (it may not be in the protected set if the queue moved on).
             let protected = await MainActor.run { self?.protectedStemKeys ?? [] }
             StemCache.enforceBudget(protecting: protected.union([key]))
-            await MainActor.run { _ = self?.stemsInFlight.remove(key) }
+            let queueDrained = await MainActor.run { () -> Bool in
+                guard let self else { return true }
+                self.stemsInFlight.remove(key)
+                return self.stemsInFlight.isEmpty
+            }
+            // Last separation done: free the ORT session's weights instead of holding them
+            // under live playback for the rest of the process (jetsam margin on device).
+            // The next batch re-pays one model load — an offline job can afford that.
+            if queueDrained { OnnxStemSeparator.releaseSession() }
         }
     }
 }
