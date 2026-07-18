@@ -47,6 +47,10 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 24)
         }
+        // Greedy on purpose: the backdrop used to be the layer that stretched this page to
+        // full height; without it the ZStack hugs its content and the page collapses to a
+        // centered band (with the chevron overlays piling onto the transport).
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .top) {
             pageChevron(
                 system: "chevron.compact.up",
