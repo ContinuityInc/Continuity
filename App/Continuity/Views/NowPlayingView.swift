@@ -37,9 +37,9 @@ struct NowPlayingView: View {
     // MARK: Home layout (minimal root)
 
     private var homeLayout: some View {
+        // No backdrop here: in home mode MainPagerView supplies AlbumBackdrop as the page
+        // BACKGROUND (behind the safe-area padding) so the blur fills the physical screen.
         ZStack {
-            backdrop
-
             // Title/artist + transport, as one vertically-centred column.
             VStack(spacing: 34) {
                 trackLabel
