@@ -354,6 +354,10 @@ public final class Player {
             }
         } else if dur > 0 && elapsed >= dur - 0.05 {
             // Last track and no history to loop into: stop at the end (resume will restart it).
+            // A natural completion like finishTransition/hardAdvance — earn a skip back (capped)
+            // and record the history step, so the session's final track pays out too.
+            skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+            pushHistory(currentTrack)
             stopPlayback()
         }
     }
