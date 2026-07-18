@@ -131,8 +131,16 @@ final class Deck {
         // engine was stopped out from under us — interruptions, route changes, config resets.
         // No-op instead; the Player's audio-environment recovery reschedules and replays.
         guard engine.isRunning else { return }
-        accompPlayer.play()
-        if hasStems { vocalsPlayer.play() }
+        if hasStems {
+            // Two bare play() calls can land on different render quanta, starting the stems
+            // several ms apart — and nothing ever re-aligns them. Anchor both to one shared
+            // host-clock start just far enough out to cover the second call.
+            let start = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.03))
+            accompPlayer.play(at: start)
+            vocalsPlayer.play(at: start)
+        } else {
+            accompPlayer.play()
+        }
     }
 
     func pause() {
