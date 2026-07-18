@@ -23,9 +23,13 @@ struct MainPagerView: View {
                 // (chevrons/labels respect it) and its backdrop must escape to full bleed via
                 // ignoresSafeArea, which hard padding would block.
                 VStack(spacing: 0) {
+                    // background AFTER the padding: it fills the whole page frame, so the
+                    // status-bar / home-indicator bands show the page's own surface color
+                    // instead of the pager's black.
                     LibrarySheetView()
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
+                        .background(Color(uiColor: .systemGroupedBackground))
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.library)
                     NowPlayingView(mode: .home)
@@ -35,6 +39,7 @@ struct MainPagerView: View {
                     UpNextView()
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
+                        .background(Color(uiColor: .systemGroupedBackground))
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.upNext)
                 }
