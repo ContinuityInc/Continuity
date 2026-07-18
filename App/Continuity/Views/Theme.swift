@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Lightweight visual helpers: deterministic artwork gradients from a seed, time formatting,
 /// and a centralised Liquid Glass modifier so the iOS 26 API lives in exactly one place.
@@ -40,29 +41,32 @@ struct AlbumBackdrop: View {
     let url: URL?
     let seed: Int
 
-    var body: some View {
-        GeometryReader { proxy in
-            artwork
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
-                .blur(radius: 60, opaque: true)
-                .overlay(scrim)
-                .animation(.easeInOut(duration: 0.6), value: url)
-        }
-        .ignoresSafeArea()
-    }
+    /// Pre-blurred backdrop bitmap for the current URL (nil while loading → gradient shows).
+    @State private var backdrop: UIImage?
 
-    @ViewBuilder private var artwork: some View {
-        if let url {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Theme.gradient(seed: seed)
-                }
-            }
-        } else {
+    var body: some View {
+        // A pre-rendered tiny bitmap upscaled by the compositor, NOT a live `.blur(radius: 60,
+        // opaque: true)`. The live blur forced a full-screen (~14 MB) offscreen rasterization
+        // that re-rendered whenever this subtree invalidated — under a playing 20 Hz position
+        // timer that render churn ramped memory until jetsam (see the OOM RCA). Upscaling a
+        // ~40 px image is visually equivalent to a radius-60 blur and costs nothing per frame.
+        ZStack {
             Theme.gradient(seed: seed)
+            if let backdrop {
+                Image(uiImage: backdrop)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.6), value: backdrop)
+        .overlay(scrim)
+        .clipped()
+        .ignoresSafeArea()
+        .task(id: url) {
+            guard let url else { backdrop = nil; return }
+            backdrop = await BackdropRenderer.image(for: url)
         }
     }
 
@@ -79,6 +83,34 @@ struct AlbumBackdrop: View {
                 center: .center, startRadius: 80, endRadius: 560
             )
         }
+    }
+}
+
+/// Renders and caches the tiny pre-blurred backdrop bitmaps for `AlbumBackdrop`. Downscaling
+/// artwork to ~40 px and letting the compositor upscale it full-screen looks identical to a
+/// heavy gaussian blur while eliminating the per-frame offscreen render entirely.
+@MainActor
+enum BackdropRenderer {
+    private static let cache = NSCache<NSURL, UIImage>()
+
+    static func image(for url: URL) async -> UIImage? {
+        if let hit = cache.object(forKey: url as NSURL) { return hit }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let source = UIImage(data: data) else { return nil }
+        let rendered = await Task.detached(priority: .userInitiated) { () -> UIImage in
+            let side: CGFloat = 40
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+                // scaledToFill into the square; the extreme downscale is the "blur".
+                let s = source.size
+                let scale = max(side / s.width, side / s.height)
+                let w = s.width * scale, h = s.height * scale
+                source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
+            }
+        }.value
+        cache.setObject(rendered, forKey: url as NSURL)
+        return rendered
     }
 }
 

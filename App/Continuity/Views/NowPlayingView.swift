@@ -15,9 +15,6 @@ struct NowPlayingView: View {
     @Environment(Player.self) private var player
     @Environment(MainPagerState.self) private var pagerState
 
-    // Sheet-mode scrubber state.
-    @State private var isEditing = false
-    @State private var scrubValue: Double = 0
     @State private var showingTransitionSettings = false
     // Sheet mode opens the queue as a sheet; home uses the vertical pager instead.
     @State private var showingUpNext = false
@@ -188,12 +185,6 @@ struct NowPlayingView: View {
 
     // MARK: Transport
 
-    /// How far through the track we are (0…1), drives the home ring around Play.
-    private var progress: Double {
-        guard player.duration > 0 else { return 0 }
-        return min(max(player.position / player.duration, 0), 1)
-    }
-
     /// One transport, two densities: home = bare 60pt glyphs around the big ring disc, skip
     /// budget as a pill under Next; sheet = title glyphs around the compact disc, skip budget
     /// as a count below. The accent disc and skip-budget wiring are shared.
@@ -264,11 +255,7 @@ struct NowPlayingView: View {
             ZStack {
                 Circle()
                     .stroke(.white.opacity(0.16), lineWidth: 3)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 0.25), value: progress)
+                TrackProgressRing()
                 Circle()
                     .fill(discGradient)
                     .padding(9)
@@ -422,6 +409,35 @@ struct NowPlayingView: View {
     // MARK: Scrubber (sheet only)
 
     private var scrubber: some View {
+        ScrubberBar()
+    }
+}
+
+// MARK: - 20 Hz leaf views
+
+/// These leaves are the ONLY readers of `player.position` on this screen. @Observable tracks
+/// dependencies per view body, so confining the 20 Hz playback ticks to these tiny bodies keeps
+/// the rest of the page — including the full-screen backdrop — from re-evaluating twenty times
+/// a second (the render churn identified in the playback jetsam RCA).
+private struct TrackProgressRing: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let progress = player.duration > 0 ? min(max(player.position / player.duration, 0), 1) : 0
+        Circle()
+            .trim(from: 0, to: progress)
+            .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            .rotationEffect(.degrees(-90))
+            .animation(.linear(duration: 0.25), value: progress)
+    }
+}
+
+private struct ScrubberBar: View {
+    @Environment(Player.self) private var player
+    @State private var isEditing = false
+    @State private var scrubValue: Double = 0
+
+    var body: some View {
         VStack(spacing: 4) {
             Slider(
                 value: Binding(
