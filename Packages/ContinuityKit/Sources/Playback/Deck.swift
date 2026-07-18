@@ -136,13 +136,23 @@ final class Deck {
             // several ms apart — and nothing ever re-aligns them. Anchor both to one shared
             // host-clock start just far enough out to cover the second call.
             //
-            // Only when the node already has a render clock: play(at:) on a node that hasn't
-            // seen an IO cycle yet (first start after engine build) throws the AVFAudio
-            // start-time exception and crashes on the play button. On that first start the
-            // two play() calls run back-to-back on a freshly started engine, which in practice
-            // lands them on the same quantum; every later start (pause/resume, seek) syncs.
-            if let render = accompPlayer.lastRenderTime, render.isHostTimeValid {
-                let start = AVAudioTime(hostTime: render.hostTime + AVAudioTime.hostTime(forSeconds: 0.03))
+            // Only when the render clock is FRESH, not merely host-time-valid. Two traps here:
+            // - A node that hasn't seen an IO cycle yet (first start after engine build) has no
+            //   render time → play(at:) throws the AVFAudio start-time exception.
+            // - After a stop → engine-restart (Siri/interruption recovery, route or config
+            //   changes), lastRenderTime can be *valid but stale* — a host timestamp from the
+            //   pre-interruption timeline. Anchoring to it puts the start time in the PAST,
+            //   which raises the same uncatchable exception → SIGABRT mid-song whenever the
+            //   system pokes the audio environment.
+            // So: require a render cycle within the last second (proof the engine is actively
+            // rendering) and anchor to NOW, not to the render timestamp. Otherwise fall back to
+            // two bare play() calls — on a freshly (re)started engine they land on the same
+            // quantum in practice.
+            let now = mach_absolute_time()
+            if let render = accompPlayer.lastRenderTime, render.isHostTimeValid,
+               render.hostTime <= now,
+               now - render.hostTime < AVAudioTime.hostTime(forSeconds: 1.0) {
+                let start = AVAudioTime(hostTime: now + AVAudioTime.hostTime(forSeconds: 0.03))
                 accompPlayer.play(at: start)
                 vocalsPlayer.play(at: start)
             } else {
