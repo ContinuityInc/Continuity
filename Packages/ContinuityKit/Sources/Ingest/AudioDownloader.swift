@@ -57,9 +57,16 @@ final class AudioDownloader: AudioFileDownloading {
             var totalSize: Int?
             repeat {
                 let upperBound = offset + chunkSize - 1
-                let (data, reportedTotal) = try await fetchChunk(url: url, from: offset, to: upperBound)
+                let (data, reportedTotal, isWholeFile) = try await fetchChunk(url: url, from: offset, to: upperBound)
                 if let reportedTotal { totalSize = reportedTotal }
                 if data.isEmpty { break } // nothing more to read
+                if isWholeFile && offset > 0 {
+                    // The server ignored Range mid-download and sent the entire file — appending
+                    // it would duplicate every byte already written. Restart the file with this
+                    // complete body instead.
+                    try handle.truncate(atOffset: 0)
+                    offset = 0
+                }
                 try handle.write(contentsOf: data)
                 offset += data.count
             } while totalSize == nil || offset < totalSize!
@@ -78,9 +85,11 @@ final class AudioDownloader: AudioFileDownloading {
         }
     }
 
-    /// Fetches one byte range. Returns the chunk plus the total file size when the server reports it
-    /// (via `Content-Range` on a 206, or the body length on a 200 where the server ignored `Range`).
-    private func fetchChunk(url: URL, from: Int, to: Int) async throws -> (Data, Int?) {
+    /// Fetches one byte range. Returns the chunk, the total file size when the server reports it
+    /// (via `Content-Range` on a 206, or the body length on a 200 where the server ignored `Range`),
+    /// and whether the body is the WHOLE file (a 200) rather than the requested range — the caller
+    /// must not append a whole-file body at a non-zero offset.
+    private func fetchChunk(url: URL, from: Int, to: Int) async throws -> (Data, Int?, Bool) {
         var lastError: Error?
         for attempt in 0..<maxRetriesPerChunk {
             do {
@@ -89,19 +98,19 @@ final class AudioDownloader: AudioFileDownloading {
                 let (data, response) = try await URLSession.shared.data(for: request)
 
                 guard let http = response as? HTTPURLResponse else {
-                    return (data, nil)
+                    return (data, nil, false)
                 }
                 switch http.statusCode {
                 case 206:
                     // Partial content — the normal ranged path.
                     let total = Self.totalSize(fromContentRange: http.value(forHTTPHeaderField: "Content-Range"))
-                    return (data, total)
+                    return (data, total, false)
                 case 200:
                     // Server ignored Range and sent the whole file in one shot.
-                    return (data, data.count)
+                    return (data, data.count, true)
                 case 416:
                     // Requested range not satisfiable — we've already read past the end.
-                    return (Data(), nil)
+                    return (Data(), nil, false)
                 default:
                     throw IngestError.downloadFailed("HTTP \(http.statusCode)")
                 }
