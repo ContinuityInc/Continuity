@@ -237,6 +237,8 @@ public final class Player {
     var historyIDs: [UUID] = []
     /// Ticks since the last periodic state save (persist every ~5 s while playing).
     private var ticksSincePersist = 0
+    /// Tick counter for the ~10 s playback memory heartbeat.
+    private var memTicks = 0
 
     // MARK: Internals
 
@@ -320,6 +322,15 @@ public final class Player {
         guard isPlaying, let audio else { return }
         let elapsed = baselineSeconds + audio.current.elapsed
         position = elapsed
+        // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
+        // that ramps during PLAIN playback (no ingest/stems activity, so no other breadcrumb
+        // fires). The decay slope across these lines names the leak rate; the value at the
+        // last line before a kill names the floor. Cheap enough to leave in release.
+        memTicks += 1
+        if memTicks >= 200 {
+            memTicks = 0
+            Logger.audio.info("mem[playback] \(os_proc_available_memory() / 1_048_576, privacy: .public) MB headroom")
+        }
         // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
         ticksSincePersist += 1
         if ticksSincePersist >= 100 {
