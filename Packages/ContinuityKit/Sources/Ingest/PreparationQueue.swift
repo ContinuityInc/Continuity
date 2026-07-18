@@ -115,14 +115,27 @@ public final class PreparationQueue {
     /// Playlists currently syncing (drives spinners and disables sync buttons).
     public internal(set) var syncingPlaylistIDs: Set<UUID> = []
 
+    /// In-memory failure backoff per playlist: `lastSyncedAt` only advances on success, so
+    /// without this a persistently-failing source (deleted remotely, sustained rate limit)
+    /// would re-fetch on every minute tick forever. Exponential, capped; cleared by the next
+    /// success. Manual sync deliberately bypasses it.
+    var syncBackoff: [UUID: (notBefore: Date, failures: Int)] = [:]
+
     /// Coordination hook: sync deletes tracks removed remotely, and the live `Player` must drop
     /// them from its queue BEFORE the models die. Wired to `Player.handleDeleted` at startup.
     public var onTracksDeleted: ((Set<UUID>) -> Void)?
 
-    /// How stale a playlist may get before launch-time auto-sync refreshes it. Sync is **polling**
-    /// (at launch + manual): push would need server infrastructure neither YouTube nor Spotify
-    /// offers a client-only app.
-    static let autoSyncStaleness: TimeInterval = 6 * 60 * 60
+    /// Coordination hook: fires after a sync actually changed a playlist's membership/order,
+    /// with the playlist's id and its fresh play order — the app mirrors it into the live
+    /// queue. Never fires for no-op syncs. Wired in RootView at startup.
+    public var onPlaylistSynced: ((UUID, [Track]) -> Void)?
+
+    /// How stale a playlist may get before an auto-sync pass refreshes it. Sync is **polling**
+    /// (a foreground minute tick + manual): push would need server infrastructure neither
+    /// YouTube nor Spotify offers a client-only app. Near-live mirroring, so one tick period —
+    /// minus fetch latency: `lastSyncedAt` stamps at fetch *completion*, and a full 60s
+    /// threshold would make every other tick read "fresh" (120s effective cadence).
+    static let autoSyncStaleness: TimeInterval = 55
 
     /// Runs the resolve → download → analyse → ready pipeline for one track, updating `prepState`
     /// at each stage. Any failure (missing video ID, resolve, or download error) lands the

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 import Ingest
 import Playback
 import Domain
@@ -22,6 +23,10 @@ struct RootView: View {
     /// Last pasteboard generation we inspected — gates the banner-triggering reads below.
     @AppStorage("lastCheckedPasteboardChange") private var lastCheckedPasteboardChange = -1
 
+    /// One publisher for the view's identity — inline `Timer.publish` in `body` is rebuilt (and
+    /// its countdown reset) on every re-evaluation (scene transitions, alert state).
+    @State private var syncTick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
     var body: some View {
         NowPlayingView(mode: .home)
             // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
@@ -30,6 +35,37 @@ struct RootView: View {
                 // Sync-driven deletions must clear the live queue before models are destroyed.
                 prepQueue.onTracksDeleted = { [weak player] ids in
                     player?.handleDeleted(trackIDs: ids)
+                }
+                // A changed sync re-mirrors the live queue when the current track belongs to the
+                // synced playlist: what follows it matches the fresh remote order, earlier tracks
+                // loop after (wrap-around next() semantics). Remote truth wins for playlist-backed
+                // queues — manual Up Next edits / Flow ordering are overwritten.
+                prepQueue.onPlaylistSynced = { [weak player] _, orderedTracks in
+                    Task { @MainActor in
+                        // replaceUpcoming would cancel a live blend mid-fade — and `changed`
+                        // fires once per remote edit, so a silent skip here would lose the new
+                        // order until the NEXT edit. Wait the blend out instead: blends last
+                        // seconds, syncs are a tick apart, so waiters never stack. Bounded in
+                        // case a blend chain keeps isTransitioning hot.
+                        var waited: TimeInterval = 0
+                        while player?.isTransitioning == true, waited < 30 {
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            waited += 0.5
+                        }
+                        guard let player, !player.isTransitioning,
+                              let current = player.currentTrack else { return }
+                        // Tracks can die during the wait (manual delete mid-blend) — a dead
+                        // @Model in the queue crashes on next access.
+                        let live = orderedTracks.filter { $0.modelContext != nil }
+                        // Current track not in the synced playlist (or removed by the sync,
+                        // already handled via onTracksDeleted) → not our queue, leave it alone.
+                        guard let index = live.firstIndex(where: { $0.id == current.id })
+                        else { return }
+                        let rotated = Array(live[(index + 1)...]) + Array(live[..<index])
+                        // No-op guard: don't churn persistState/notifyUpcoming on an equal order.
+                        guard rotated.map(\.id) != player.upcomingTracks.map(\.id) else { return }
+                        player.replaceUpcoming(with: rotated)
+                    }
                 }
                 // Stems are prepared just-in-time for the play-queue neighborhood, not eagerly
                 // for the whole library (CPU-hours + gigabytes). Wire before restore so the
@@ -48,6 +84,14 @@ struct RootView: View {
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()
                 // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
+                prepQueue.autoSyncIfNeeded(in: modelContext)
+            }
+            // Near-live playlist mirroring: a foreground minute tick re-runs the auto-sync pass;
+            // per-playlist lastSyncedAt staleness (+ failure backoff) is the real rate limiter.
+            // Main-runloop timers pause while suspended, but guard on scenePhase anyway for the
+            // coalesced fire a resume delivers before the app is active again.
+            .onReceive(syncTick) { _ in
+                guard scenePhase == .active else { return }
                 prepQueue.autoSyncIfNeeded(in: modelContext)
             }
             .onOpenURL(perform: handleIncomingLink)
