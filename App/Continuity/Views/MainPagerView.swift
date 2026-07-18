@@ -8,31 +8,38 @@ struct MainPagerView: View {
     @State private var pagerState = MainPagerState()
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 0) {
-                LibrarySheetView()
-                    .containerRelativeFrame(.vertical)
-                    .id(MainPagerState.Page.library)
-                NowPlayingView(mode: .home)
-                    .containerRelativeFrame(.vertical)
-                    .id(MainPagerState.Page.nowPlaying)
-                UpNextView()
-                    .containerRelativeFrame(.vertical)
-                    .id(MainPagerState.Page.upNext)
+        // Full-screen pages: the pager ignores the safe area so each page tiles exactly one
+        // screen (no neighbor bleed into the status-bar / home-indicator bands), and the real
+        // insets are re-injected per page with safeAreaPadding — *additive* safe area, so nav
+        // bars, lists, and chevrons inset correctly while full-bleed layers (AlbumBackdrop's
+        // ignoresSafeArea) still escape to the screen edges.
+        GeometryReader { proxy in
+            let insets = proxy.safeAreaInsets
+            ScrollView(.vertical) {
+                VStack(spacing: 0) {
+                    LibrarySheetView()
+                        .safeAreaPadding(insets)
+                        .containerRelativeFrame(.vertical)
+                        .id(MainPagerState.Page.library)
+                    NowPlayingView(mode: .home)
+                        .safeAreaPadding(insets)
+                        .containerRelativeFrame(.vertical)
+                        .id(MainPagerState.Page.nowPlaying)
+                    UpNextView()
+                        .safeAreaPadding(insets)
+                        .containerRelativeFrame(.vertical)
+                        .id(MainPagerState.Page.upNext)
+                }
+                .scrollTargetLayout()
             }
-            .scrollTargetLayout()
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: pageBinding)
+            .scrollIndicators(.hidden)
+            // Three equal pages → center lands on Now Playing (the home screen).
+            .defaultScrollAnchor(.center)
+            .background(Color.black)
+            .ignoresSafeArea()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: pageBinding)
-        .scrollIndicators(.hidden)
-        // Three equal pages → center lands on Now Playing (the home screen).
-        .defaultScrollAnchor(.center)
-        // Pages are sized to the safe-area height, but scroll content draws edge-to-edge —
-        // so the status-bar / home-indicator bands showed slivers of the neighboring pages.
-        // Clip to the safe-area frame and paint the exposed bands black so exactly one page
-        // is ever visible.
-        .clipped()
-        .background(Color.black.ignoresSafeArea())
         .environment(pagerState)
     }
 
