@@ -192,6 +192,9 @@ public final class Player {
             }
             position = pending
         }
+        // First real audio need (play from a prepare/restore staging) — start JIT stems here,
+        // not at launch. prepare() deliberately skips notifyUpcoming to avoid ORT jetsam.
+        notifyUpcoming()
         return true
     }
 

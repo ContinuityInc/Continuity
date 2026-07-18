@@ -51,6 +51,11 @@ final class OnnxStemSeparator: StemSeparating {
         do {
             let env = try ORTEnv(loggingLevel: .warning)
             let options = try ORTSessionOptions()
+            // Cap thread fan-out: default parallel arenas on a phone balloon RSS toward the
+            // ~3.4 GB per-process jetsam limit when loading HT-Demucs. One intra-op thread is
+            // plenty for an offline cache-once job.
+            try options.setIntraOpNumThreads(1)
+            try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
             let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
             cachedSession = (modelURL.path, session)
             return session

@@ -81,16 +81,29 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 - **New files need `xcodegen generate`** before `xcodebuild`, or you get "cannot find X in
   scope." XcodeGen uses explicit file lists.
-- **Stem separation on the Simulator: CoreML EP is disabled on purpose** (`#if
-  !targetEnvironment(simulator)` in `StemSeparator`). Sim CoreML has no ANE/GPU and routes the
-  model through a ~100× slower serial CPU queue — it looks hung. Real devices use CoreML/ANE.
+- **onnxruntime is a static `.framework` (ar archive), not a dylib.** Xcode still embeds a
+  broken ~50 KB stub into `Continuity.app/Frameworks`. Never "fix" that stub by patching
+  `MinimumOSVersion` and re-signing — that cured ITMS upload checks while leaving a poison
+  Frameworks entry (and earlier, an invalidated signature → device install `0xe8008001`).
+  The app already statically links ORT into its binary. The Continuity target's post-build
+  script must **delete** `onnxruntime.framework` / `onnxruntime_extensions.framework` from
+  the app bundle after Embed Frameworks. Do not reintroduce plist-patch/resign for them.
+- **Stem separation jetsams at ~3.4 GB (`per-process-limit`)** if the ORT session for
+  HT-Demucs starts at cold launch. `Player.prepare` / `restore` must stay metadata-only —
+  no `notifyUpcoming()` → `ensureStems` until the first real play (`ensureCurrentLoaded` /
+  `startCurrentFresh`). Keep the stem limiter at 1; never separate the whole library
+  eagerly. Use CPU EP only (never CoreML EP on device — session creation alone has hit
+  the per-process limit). Cap ORT `intraOpNumThreads` to 1.
+- **Stem separation on the Simulator** is also CPU-only (and slow). Do not "fix" perceived
+  hangs by enabling CoreML on sim — sim CoreML has no ANE/GPU and routes through a ~100×
+  slower serial CPU queue.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures
   (`Ingest/Retry.swift`) and classify errors (`IngestError.network/.rateLimited/.sourceUnavailable`).
 - **Stem cache is size-budgeted** (8 GB LRU) and **demand-driven** — never separate the whole
   library eagerly (that's CPU-hours and gigabytes). `Player.onUpcomingTracks` drives
-  just-in-time separation of the play-queue neighborhood.
+  just-in-time separation of the play-queue neighborhood **after playback starts**.
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
   reference to a freed `@Model` crashes.
 - **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
