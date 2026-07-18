@@ -66,7 +66,9 @@ public final class Track {
 
     /// A seeded demo track (no real source) — it plays synthesized tones, not real audio. Used to
     /// label the placeholder sample library so it isn't mistaken for real playback.
-    public var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil }
+    public var isDemo: Bool {
+        youtubeVideoID == nil && searchQuery == nil && localRelativePath == nil
+    }
 
     /// Real cover art for YouTube-sourced tracks: the video's thumbnail, served from YouTube's
     /// deterministic thumbnail CDN (no API call needed). nil for demo tracks → gradient artwork.
