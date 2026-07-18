@@ -81,9 +81,15 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 - **New files need `xcodegen generate`** before `xcodebuild`, or you get "cannot find X in
   scope." XcodeGen uses explicit file lists.
-- **Stem separation on the Simulator: CoreML EP is disabled on purpose** (`#if
-  !targetEnvironment(simulator)` in `StemSeparator`). Sim CoreML has no ANE/GPU and routes the
-  model through a ~100× slower serial CPU queue — it looks hung. Real devices use CoreML/ANE.
+- **Stem separation uses the CPU execution provider everywhere — CoreML EP is banned** (see the
+  session comment in `StemSeparator.swift`): compiling the HT-Demucs transformer via the CoreML EP
+  jetsammed real devices (~3.4 GB, per-process-limit) before a single window ran. The whole
+  pipeline **streams** (chunked decode → windowed inference → overlap-add → incremental AAC
+  encode), so peak memory is O(segment) regardless of track length — don't reintroduce whole-file
+  buffers. The overlap-add math is `StreamingOverlapAdd` in ContinuityCore (unit-tested);
+  simulator tests for the pipeline live in `ContinuityKit/Tests/IngestTests` (fake-inference seam,
+  no model download; run via `xcodebuild test -scheme ContinuityKit-Package` with a simulator
+  destination).
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures

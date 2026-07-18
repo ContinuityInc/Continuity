@@ -40,6 +40,14 @@ let package = Package(
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // Simulator-run tests for Ingest (xcodebuild test against an iOS Simulator destination —
+        // this package is iOS-only, so `swift test` on macOS can't run them). Exercises the
+        // streaming stem-separation pipeline via the fake-inference seam (no ONNX model needed).
+        .testTarget(
+            name: "IngestTests",
+            dependencies: ["Ingest"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         // Playback: AVAudioEngine decks, player state machine, now-playing bridge.
         // Sibling of Ingest — depends on Domain + ContinuityCore only, never on Ingest.
         .target(
