@@ -38,7 +38,10 @@ extension Player {
         pendingSeekSeconds = nil
         isPlaying = false
         persistState()
-        notifyUpcoming()
+        // Do NOT call notifyUpcoming() here. prepare/restore run at cold launch while paused;
+        // kicking stem separation then loads the ~158 MB HT-Demucs ORT session and has jetsammed
+        // real devices at the ~3.4 GB per-process limit (SIGKILL) before the user ever hits play.
+        // Stems start from ensureCurrentLoaded / startCurrentFresh on first real audio.
     }
 
     /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the

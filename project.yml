@@ -72,31 +72,26 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
-    # onnxruntime SPM xcframework omits MinimumOSVersion → ITMS-90530/90360 on upload.
-    # Patch Info.plist then re-sign — editing the plist after Embed Frameworks invalidates the
-    # vendor signature (device install fails with 0xe8008001). See microsoft/onnxruntime#27396.
+    # onnxruntime SPM ships a *static* .framework (Mach-O archive, not a dylib). Xcode still
+    # copies a broken ~50 KB stub into Continuity.app/Frameworks. That stub:
+    #   - fails code-sign / ITMS MinimumOSVersion checks (microsoft/onnxruntime#27396)
+    #   - is useless at runtime — ORT is already statically linked into the app binary
+    # Remove the embed entirely. Do NOT patch+resign the stub (that papered over ITMS while
+    # leaving a poison Frameworks entry). See also RunAnywhere issue on static-framework embeds.
     postBuildScripts:
-      - name: Patch onnxruntime MinimumOSVersion
+      - name: Remove embedded static onnxruntime
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
           FRAMEWORKS_PATH="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-          # Prefer the expanded identity Xcode used for this build; fall back to ad-hoc for
-          # unsigned CI builds (CODE_SIGNING_ALLOWED=NO).
-          SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
-          if [ -z "$SIGN_IDENTITY" ] || [ "$SIGN_IDENTITY" = "-" ]; then
-            SIGN_IDENTITY="-"
-          fi
           for framework in onnxruntime onnxruntime_extensions; do
             FRAMEWORK="${FRAMEWORKS_PATH}/${framework}.framework"
-            PLIST="${FRAMEWORK}/Info.plist"
-            if [ -f "$PLIST" ]; then
-              /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$PLIST" 2>/dev/null || true
-              /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IPHONEOS_DEPLOYMENT_TARGET}" "$PLIST"
-              /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --timestamp=none --preserve-metadata=identifier,entitlements,flags --generate-entitlement-der "$FRAMEWORK"
-              echo "Patched+resigned MinimumOSVersion=${IPHONEOS_DEPLOYMENT_TARGET} in ${framework}.framework"
+            if [ -d "$FRAMEWORK" ]; then
+              rm -rf "$FRAMEWORK"
+              echo "Removed embedded static ${framework}.framework (linked into app binary)"
             fi
           done
+          # Leave an empty Frameworks dir alone — other embeds (none today) may appear later.
 
   # Share-sheet entry point: stashes the shared URL in the app group for the app to import.
   ContinuityShare:
