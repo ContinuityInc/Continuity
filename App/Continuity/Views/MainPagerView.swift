@@ -1,4 +1,5 @@
 import SwiftUI
+import Playback
 
 /// Vertical three-page shell: Library ↑, Now Playing (home), Up Next ↓.
 /// Sticky paging — one full screen at a time via `scrollTargetBehavior(.paging)`.
@@ -6,22 +7,19 @@ import SwiftUI
 /// their own scroll; jump home via the mini player, chevrons, or starting playback.
 struct MainPagerView: View {
     @State private var pagerState = MainPagerState()
+    @Environment(Player.self) private var player
 
     var body: some View {
         // Full-screen pages: the pager ignores the safe area so each page tiles exactly one
-        // screen (no neighbor bleed into the status-bar / home-indicator bands), and the real
-        // insets are re-injected per page with safeAreaPadding — *additive* safe area, so nav
-        // bars, lists, and chevrons inset correctly while full-bleed layers (AlbumBackdrop's
-        // ignoresSafeArea) still escape to the screen edges.
+        // screen (no neighbor bleed into the status-bar / home-indicator bands); the measured
+        // insets are re-applied per page below.
         GeometryReader { proxy in
             let insets = proxy.safeAreaInsets
             ScrollView(.vertical) {
-                // Two inset strategies on purpose: the NavigationStack pages need HARD padding —
-                // their bars position from the real window safe area, which this full-screen
-                // pager ignores, so additive safeAreaPadding leaves the title/toolbar under the
-                // status bar. Now Playing keeps safeAreaPadding: its content is pure SwiftUI
-                // (chevrons/labels respect it) and its backdrop must escape to full bleed via
-                // ignoresSafeArea, which hard padding would block.
+                // Every page gets HARD insets (the pager hides the window safe area, and
+                // neither NavigationStack bars nor safe-area piercing behave inside scroll
+                // content); full-bleed surfaces are provided as page BACKGROUNDS behind the
+                // padding, which cover the whole page frame including the bars.
                 VStack(spacing: 0) {
                     // background AFTER the padding: it fills the whole page frame, so the
                     // status-bar / home-indicator bands show the page's own surface color
@@ -32,8 +30,18 @@ struct MainPagerView: View {
                         .background(Color(uiColor: .systemGroupedBackground))
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.library)
+                    // Backdrop as a page BACKGROUND behind the padding: backgrounds cover the
+                    // full padded frame, so the blurred art fills the physical screen —
+                    // including the status-bar and home-indicator bands — with no reliance on
+                    // safe-area piercing (which doesn't survive inside scroll content; it left
+                    // a black band up top). Content keeps additive insets for the chevrons.
                     NowPlayingView(mode: .home)
-                        .safeAreaPadding(insets)
+                        .padding(.top, insets.top)
+                        .padding(.bottom, insets.bottom)
+                        .background {
+                            AlbumBackdrop(url: player.currentTrack?.artworkURL,
+                                          seed: player.currentTrack?.gradientSeed ?? 0)
+                        }
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
                     UpNextView()
