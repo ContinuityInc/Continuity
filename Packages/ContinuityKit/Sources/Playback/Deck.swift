@@ -135,9 +135,20 @@ final class Deck {
             // Two bare play() calls can land on different render quanta, starting the stems
             // several ms apart — and nothing ever re-aligns them. Anchor both to one shared
             // host-clock start just far enough out to cover the second call.
-            let start = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.03))
-            accompPlayer.play(at: start)
-            vocalsPlayer.play(at: start)
+            //
+            // Only when the node already has a render clock: play(at:) on a node that hasn't
+            // seen an IO cycle yet (first start after engine build) throws the AVFAudio
+            // start-time exception and crashes on the play button. On that first start the
+            // two play() calls run back-to-back on a freshly started engine, which in practice
+            // lands them on the same quantum; every later start (pause/resume, seek) syncs.
+            if let render = accompPlayer.lastRenderTime, render.isHostTimeValid {
+                let start = AVAudioTime(hostTime: render.hostTime + AVAudioTime.hostTime(forSeconds: 0.03))
+                accompPlayer.play(at: start)
+                vocalsPlayer.play(at: start)
+            } else {
+                accompPlayer.play()
+                vocalsPlayer.play()
+            }
         } else {
             accompPlayer.play()
         }
