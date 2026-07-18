@@ -74,6 +74,16 @@ final class OnnxStemSeparator: StemSeparating {
     private static let sessionLock = NSLock()
     nonisolated(unsafe) private static var cachedSession: (path: String, session: ORTSession)?
 
+    /// Drops the cached session, returning its weights/arenas to the OS. Called when the
+    /// separation queue drains: the session is worth caching *between back-to-back tracks*,
+    /// but holding hundreds of MB of transformer weights under live playback + UI for the
+    /// rest of the process lifetime is exactly the jetsam margin long sessions die on.
+    static func releaseSession() {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        cachedSession = nil
+    }
+
     private static func sharedSession(modelURL: URL) throws -> ORTSession {
         sessionLock.lock()
         defer { sessionLock.unlock() }
@@ -86,6 +96,10 @@ final class OnnxStemSeparator: StemSeparating {
             // plenty for an offline cache-once job.
             try options.setIntraOpNumThreads(1)
             try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
+            // Prepacking rewrites weights into kernel-friendly layouts as ADDITIONAL copies —
+            // for an 85M-param transformer that's hundreds of MB of duplicated RSS for a
+            // marginal speedup on an offline cache-once job. Keeping the originals only.
+            try options.addConfigEntry(withKey: "session.disable_prepacking", value: "1")
             let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
             cachedSession = (modelURL.path, session)
             return session
