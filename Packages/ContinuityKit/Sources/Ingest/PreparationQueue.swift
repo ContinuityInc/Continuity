@@ -258,9 +258,11 @@ public final class PreparationQueue {
                     track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
                 }
                 if needsSilenceScan, track.modelContext != nil {
+                    MemoryFootprint.breadcrumb("silence scan begin")
                     let bounds = await Task.detached(priority: .utility) {
                         SilenceScan.audibleBounds(fileURL: url)
                     }.value
+                    MemoryFootprint.breadcrumb("silence scan end")
                     if let bounds, track.modelContext != nil {
                         track.audibleStartSeconds = bounds.audibleStart
                         track.audibleEndSeconds = bounds.audibleEnd
