@@ -9,6 +9,7 @@ extension PreparationQueue {
     /// Launch-time polling pass: refreshes each source-backed playlist that has auto-sync on
     /// (the opt-out) and hasn't synced recently.
     public func autoSyncIfNeeded(in context: ModelContext) {
+        guard RemoteAudioIngest.isEnabled else { return }
         guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
         for playlist in playlists where playlist.isSourceBacked && playlist.autoSyncEnabled {
             let stale = playlist.lastSyncedAt.map {
@@ -22,6 +23,7 @@ extension PreparationQueue {
 
     /// Manual "sync everything now" — ignores staleness but still skips in-flight playlists.
     public func syncAll(in context: ModelContext) {
+        guard RemoteAudioIngest.isEnabled else { return }
         guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
         for playlist in playlists where playlist.isSourceBacked {
             Task { await syncPlaylist(playlist, in: context) }
@@ -33,6 +35,7 @@ extension PreparationQueue {
     /// share-aware), and local ordering follows the remote. Best-effort: a resolve failure leaves
     /// the local playlist untouched.
     public func syncPlaylist(_ playlist: Playlist, in context: ModelContext) async {
+        guard RemoteAudioIngest.isEnabled else { return }
         guard playlist.isSourceBacked, let sourceID = playlist.sourceID, let kind = playlist.sourceKind,
               !syncingPlaylistIDs.contains(playlist.id) else { return }
         syncingPlaylistIDs.insert(playlist.id)

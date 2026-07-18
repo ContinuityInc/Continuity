@@ -13,7 +13,8 @@ final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
-        extractSharedURL()
+        // External TestFlight / App Store builds do not import YouTube or Spotify audio.
+        finish(message: "Import not available in this build", succeed: false)
     }
 
     /// Walks attachments for a URL (or a plain-text string that parses as one).

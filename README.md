@@ -108,7 +108,10 @@ cd Packages/ContinuityCore && swift test
 
 ## Caveats
 
-- **YouTube sourcing violates YouTube's ToS.** Acceptable only because this is a private
+- **This branch (`release/external-testflight`) disables YouTube / Spotify→YouTube audio
+  download** for External TestFlight. Import, share, clipboard, and sync are gated off;
+  the seeded demo library plays via synthesized audio. Re-enable only on `main`.
+- **YouTube sourcing violates YouTube's ToS** on `main`. Acceptable only as a private
   prototype; it is not shippable as-is. The engine is source-agnostic — local files would
   drop in with no engine changes.
 - **First stem separation downloads the model** (~165 MB, HT-Demucs fp16, cached after).

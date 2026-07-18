@@ -70,6 +70,10 @@ public final class PreparationQueue {
     /// Safe to call from the UI: it persists the pending state immediately so the row's
     /// badge updates, then detaches the resolve/download work into its own `Task`.
     public func enqueue(_ track: Track, in context: ModelContext) {
+        guard RemoteAudioIngest.isEnabled else {
+            Logger.ingest.error("enqueue blocked — remote audio ingest disabled in this build")
+            return
+        }
         track.prepState = .pending
         try? context.save()
         Task { await process(track, in: context) }
@@ -87,6 +91,15 @@ public final class PreparationQueue {
             // for lack of a source, and show up as retry-able failures. Heal any that already did.
             if track.isDemo {
                 if track.prepState != .ready { track.prepState = .ready; try? context.save() }
+                continue
+            }
+            // External/App Store builds never re-download YouTube audio — leave non-demo tracks
+            // as they are (or mark failed if they were mid-pipeline).
+            guard RemoteAudioIngest.isEnabled else {
+                if track.prepState == .pending || track.prepState == .preparing {
+                    track.prepState = .failed
+                    try? context.save()
+                }
                 continue
             }
             switch track.prepState {
@@ -128,6 +141,11 @@ public final class PreparationQueue {
     /// at each stage. Any failure (missing video ID, resolve, or download error) lands the
     /// track in `.failed`; the UI surfaces that as a retry-able badge rather than a crash.
     private func process(_ track: Track, in context: ModelContext) async {
+        guard RemoteAudioIngest.isEnabled else {
+            Logger.ingest.error("process blocked — remote audio ingest disabled in this build")
+            if track.modelContext != nil { track.prepState = .failed; try? context.save() }
+            return
+        }
         track.prepState = .preparing
         try? context.save()
 

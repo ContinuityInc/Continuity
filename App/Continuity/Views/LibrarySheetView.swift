@@ -16,24 +16,26 @@ struct LibrarySheetView: View {
             LibraryView()
                 .navigationTitle("Continuity")
                 .toolbar {
-                    // Manual whole-library sync (source-backed playlists only).
-                    ToolbarItem(placement: .secondaryAction) {
-                        Button {
-                            prepQueue.syncAll(in: modelContext)
-                        } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .symbolEffect(.rotate, isActive: !prepQueue.syncingPlaylistIDs.isEmpty)
+                    if RemoteAudioIngest.isEnabled {
+                        // Manual whole-library sync (source-backed playlists only).
+                        ToolbarItem(placement: .secondaryAction) {
+                            Button {
+                                prepQueue.syncAll(in: modelContext)
+                            } label: {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .symbolEffect(.rotate, isActive: !prepQueue.syncingPlaylistIDs.isEmpty)
+                            }
+                            .disabled(!prepQueue.syncingPlaylistIDs.isEmpty)
+                            .accessibilityLabel("Sync library")
                         }
-                        .disabled(!prepQueue.syncingPlaylistIDs.isEmpty)
-                        .accessibilityLabel("Sync library")
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            showingAdd = true
-                        } label: {
-                            Image(systemName: "plus")
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                showingAdd = true
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .accessibilityLabel("Add music")
                         }
-                        .accessibilityLabel("Add music")
                     }
                 }
         }

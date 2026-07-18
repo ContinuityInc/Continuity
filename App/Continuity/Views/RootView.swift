@@ -48,12 +48,14 @@ struct RootView: View {
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()
                 // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
-                prepQueue.autoSyncIfNeeded(in: modelContext)
+                if RemoteAudioIngest.isEnabled {
+                    prepQueue.autoSyncIfNeeded(in: modelContext)
+                }
             }
             .onOpenURL(perform: handleIncomingLink)
             // `initial: true` covers cold launch; later .active transitions cover foregrounding.
             .onChange(of: scenePhase, initial: true) { _, phase in
-                if phase == .active {
+                if phase == .active, RemoteAudioIngest.isEnabled {
                     // Explicit share beats a stale clipboard hit for the confirmation slot.
                     consumePendingSharedURL()
                     checkClipboardForImportableLink()
@@ -90,6 +92,7 @@ struct RootView: View {
     /// `continuity://import?url=<encoded target>` carries the real link; a directly-shared
     /// http(s) URL *is* the link. Anything unclassifiable is silently ignored.
     private func handleIncomingLink(_ url: URL) {
+        guard RemoteAudioIngest.isEnabled else { return }
         let raw: String
         if url.scheme?.lowercased() == "continuity" {
             guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),

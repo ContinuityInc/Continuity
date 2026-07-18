@@ -27,7 +27,9 @@ struct PlaylistDetailView: View {
                     .onTapGesture {
                         // A failed ingest can't be played — tapping it retries instead.
                         if track.prepState == .failed {
-                            prepQueue.enqueue(track, in: modelContext)
+                            if RemoteAudioIngest.isEnabled {
+                                prepQueue.enqueue(track, in: modelContext)
+                            }
                         } else {
                             player.play(tracks: playlist.orderedTracks, startAt: index)
                         }
@@ -83,7 +85,7 @@ struct PlaylistDetailView: View {
             .padding(.top, 4)
 
             // Source-backed playlists mirror a remote list: manual sync + the auto-sync opt-out.
-            if playlist.isSourceBacked {
+            if RemoteAudioIngest.isEnabled, playlist.isSourceBacked {
                 HStack(spacing: 16) {
                     Button {
                         Task { await prepQueue.syncPlaylist(playlist, in: modelContext) }

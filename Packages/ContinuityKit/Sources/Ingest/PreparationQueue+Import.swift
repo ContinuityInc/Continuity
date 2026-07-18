@@ -14,6 +14,7 @@ extension PreparationQueue {
     /// so the caller can surface an inline error. Returns the created playlist on success.
     @discardableResult
     public func importPlaylist(playlistID: String, fallbackTitle: String? = nil, in context: ModelContext) async throws -> Playlist {
+        guard RemoteAudioIngest.isEnabled else { throw IngestError.sourceUnavailable }
         let resolved = try await playlistResolver.resolvePlaylist(playlistID: playlistID)
 
         let title = resolved.title?.isEmpty == false ? resolved.title! : (fallbackTitle ?? "YouTube Playlist")
@@ -60,6 +61,7 @@ extension PreparationQueue {
     /// Throws if the playlist can't be resolved so the caller can surface an inline error.
     @discardableResult
     public func importSpotifyPlaylist(_ link: SpotifyLink, in context: ModelContext) async throws -> Playlist {
+        guard RemoteAudioIngest.isEnabled else { throw IngestError.sourceUnavailable }
         let resolved = try await spotifyResolver.resolvePlaylist(link)
 
         let title = resolved.name?.isEmpty == false ? resolved.name! : "Spotify \(link.kind.rawValue.capitalized)"

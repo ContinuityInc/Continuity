@@ -62,6 +62,7 @@ enum LinkImporter {
         queue: PreparationQueue,
         in modelContext: ModelContext
     ) async throws {
+        guard RemoteAudioIngest.isEnabled else { throw IngestError.sourceUnavailable }
         switch link {
         case .spotify(let spotifyLink):
             _ = try await queue.importSpotifyPlaylist(spotifyLink, in: modelContext)
@@ -82,6 +83,9 @@ enum LinkImporter {
         case .rateLimited:
             return "Too many requests right now — please try again in a minute."
         case .sourceUnavailable:
+            if !RemoteAudioIngest.isEnabled {
+                return "Importing music isn't available in this build."
+            }
             return "That \(noun) looks private or empty. Make sure it's public and try again."
         default:
             return "Couldn't import that \(noun). Please try again."
