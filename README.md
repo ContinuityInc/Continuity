@@ -127,3 +127,9 @@ All planned milestones (M0–M5) are built: scaffold, YouTube/Spotify ingestion,
 crossfades, analysis + beatmatching, on-device stem separation with vocal-aware blends, and
 config/persistence/stability polish. Remaining: validation on a physical device (Neural
 Engine stem-separation timing, memory behavior under Jetsam).
+
+## App Store release branch
+
+Branched from `release/external-testflight` (YouTube download already disabled).
+Use this branch for App Store–specific work (metadata, local-file ingest, review notes)
+without mixing that into External TestFlight or `main`.
