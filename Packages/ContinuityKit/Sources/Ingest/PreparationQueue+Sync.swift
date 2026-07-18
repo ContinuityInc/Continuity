@@ -6,11 +6,15 @@ import ContinuityCore
 import os
 
 extension PreparationQueue {
-    /// Launch-time polling pass: refreshes each source-backed playlist that has auto-sync on
-    /// (the opt-out) and hasn't synced recently.
+    /// Polling pass (launch + foreground minute tick): refreshes each source-backed playlist
+    /// that has auto-sync on (the opt-out) and hasn't synced recently. `lastSyncedAt` staleness
+    /// is the rate limiter — a tick right after a sync is a no-op per playlist.
     public func autoSyncIfNeeded(in context: ModelContext) {
         guard let playlists = try? context.fetch(FetchDescriptor<Playlist>()) else { return }
         for playlist in playlists where playlist.isSourceBacked && playlist.autoSyncEnabled {
+            // Failing sources sit out their backoff — staleness alone would retry every tick,
+            // since only success advances `lastSyncedAt`.
+            if let notBefore = syncBackoff[playlist.id]?.notBefore, Date() < notBefore { continue }
             let stale = playlist.lastSyncedAt.map {
                 Date().timeIntervalSince($0) > Self.autoSyncStaleness
             } ?? true
@@ -39,28 +43,38 @@ extension PreparationQueue {
         defer { syncingPlaylistIDs.remove(playlist.id) }
 
         do {
+            let changed: Bool
             switch kind {
             case .youtube:
                 let resolved = try await playlistResolver.resolvePlaylist(playlistID: sourceID)
                 guard playlist.modelContext != nil, !resolved.items.isEmpty else { return }
-                applyYouTubeSync(resolved.items, to: playlist, in: context)
+                changed = applyYouTubeSync(resolved.items, to: playlist, in: context)
             case .spotifyPlaylist, .spotifyAlbum:
                 let link = SpotifyLink(kind: kind == .spotifyAlbum ? .album : .playlist, id: sourceID)
                 let resolved = try await spotifyResolver.resolvePlaylist(link)
                 guard playlist.modelContext != nil, !resolved.tracks.isEmpty else { return }
-                applySpotifySync(resolved.tracks, to: playlist, in: context)
+                changed = applySpotifySync(resolved.tracks, to: playlist, in: context)
             }
             playlist.lastSyncedAt = Date()
+            syncBackoff[playlist.id] = nil
             try? context.save()
             Logger.sync.info("synced \(playlist.title, privacy: .public)")
+            // Real content change only — a steady-state sync must not churn the live queue.
+            if changed { onPlaylistSynced?(playlist.id, playlist.orderedTracks) }
         } catch {
-            // The local playlist is never modified on a failed fetch; next sync retries.
+            // The local playlist is never modified on a failed fetch; auto-sync retries after
+            // an exponential backoff (2 min doubling to a 30 min cap) — each attempt already
+            // costs up to 3 requests via Retry, and hammering a rate limit only extends it.
+            let failures = (syncBackoff[playlist.id]?.failures ?? 0) + 1
+            let delay = min(120 * pow(2, Double(failures - 1)), 1_800)
+            syncBackoff[playlist.id] = (Date().addingTimeInterval(delay), failures)
             Logger.sync.error("sync failed for \(playlist.title, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
-    /// Applies a fresh remote YouTube tracklist: key = video ID.
-    private func applyYouTubeSync(_ remote: [YouTubePlaylistItem], to playlist: Playlist, in context: ModelContext) {
+    /// Applies a fresh remote YouTube tracklist: key = video ID. Returns whether membership
+    /// or order actually changed (drives `touch()` and `onPlaylistSynced`).
+    private func applyYouTubeSync(_ remote: [YouTubePlaylistItem], to playlist: Playlist, in context: ModelContext) -> Bool {
         var localByKey: [String: Track] = [:]
         for track in playlist.tracks {
             if let id = track.youtubeVideoID { localByKey[id] = track }
@@ -108,11 +122,13 @@ extension PreparationQueue {
         }
         playlist.subtitle = "From YouTube · \(remote.count) tracks"
         if changed { playlist.touch() }
+        return changed
     }
 
     /// Applies a fresh remote Spotify tracklist: key = the YouTube search query (title + artist),
-    /// the identity Spotify-sourced tracks carry locally.
-    private func applySpotifySync(_ remote: [SpotifyTrack], to playlist: Playlist, in context: ModelContext) {
+    /// the identity Spotify-sourced tracks carry locally. Returns whether membership or order
+    /// actually changed (drives `touch()` and `onPlaylistSynced`).
+    private func applySpotifySync(_ remote: [SpotifyTrack], to playlist: Playlist, in context: ModelContext) -> Bool {
         var localByKey: [String: Track] = [:]
         for track in playlist.tracks {
             if let query = track.searchQuery { localByKey[query] = track }
@@ -157,6 +173,7 @@ extension PreparationQueue {
         }
         playlist.subtitle = "From Spotify · \(remote.count) tracks"
         if changed { playlist.touch() }
+        return changed
     }
 
     /// Deletes tracks the same way the UI does: Player first (so the live queue never holds a
