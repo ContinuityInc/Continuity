@@ -289,7 +289,9 @@ public final class Player {
     /// The moment transitions treat as the current track's end. With silence trimming on, that's
     /// the last audible moment (gapless) rather than the file's end — a blend into trailing
     /// silence reads as a gap. Falls back to the full duration when unscanned or disabled.
-    private var effectiveEndSeconds: TimeInterval {
+    /// Internal (not private): transport's "queue ended, replay from start" check must use the
+    /// same end tick() stops at, or resume plays into trailing silence and immediately re-stops.
+    var effectiveEndSeconds: TimeInterval {
         let full = duration
         // Pre-audio the staged track carries the same trim metadata as the loaded deck would.
         let track = audio?.current.track ?? currentTrack

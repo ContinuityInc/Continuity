@@ -84,9 +84,11 @@ extension Player {
         } else {
             // First real audio need: build the stack, load the staged track, apply pending seek.
             guard ensureCurrentLoaded(), let audio else { isPlaying = false; return }
-            // If the queue had ended (the deck fully drained), replay from the start instead of
-            // calling play() on an empty node, which would just be silent.
-            if !isTransitioning, duration > 0, position >= duration - 0.05 {
+            // If the queue had ended, replay from the start instead of resuming into what's left.
+            // Compare against the same trimmed end tick() stops at — with silence trimming the
+            // playhead parks before the file's full duration, and resuming there would just play
+            // trailing silence until the next tick stops it again (a dead play button).
+            if !isTransitioning, effectiveEndSeconds > 0, position >= effectiveEndSeconds - 0.05 {
                 startCurrentFresh()
             } else {
                 audio.current.play()
