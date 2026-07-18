@@ -108,6 +108,7 @@ final class OnnxStemSeparator: StemSeparating {
         defer { sessionLock.unlock() }
         if let cached = cachedSession, cached.path == modelURL.path { return cached.session }
         do {
+            MemoryFootprint.breadcrumb("ort session load begin")
             let env = try ORTEnv(loggingLevel: .warning)
             let options = try ORTSessionOptions()
             // Cap thread fan-out: default parallel arenas on a phone balloon RSS toward the
@@ -121,6 +122,7 @@ final class OnnxStemSeparator: StemSeparating {
             try options.addConfigEntry(withKey: "session.disable_prepacking", value: "1")
             let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
             cachedSession = (modelURL.path, session)
+            MemoryFootprint.breadcrumb("ort session ready")
             return session
         } catch {
             throw StemSeparationError.inference("session: \(error)")
@@ -164,6 +166,7 @@ final class OnnxStemSeparator: StemSeparating {
             try? FileManager.default.removeItem(at: accompanimentOut)
             throw error
         }
+        MemoryFootprint.breadcrumb("separation done")
         return StemPaths(vocals: vocalsOut, accompaniment: accompanimentOut)
     }
 
@@ -184,6 +187,7 @@ final class OnnxStemSeparator: StemSeparating {
         var input = [Float](repeating: 0, count: channels * segment)
 
         var start = 0
+        var windowCount = 0
         while true {
             // Decode ahead through the end of this window (or EOF / the length cap).
             while !atEOF && decodedEnd < start + segment {
@@ -215,6 +219,8 @@ final class OnnxStemSeparator: StemSeparating {
                 input[segment + i] = 0
             }
 
+            if windowCount % 10 == 0 { MemoryFootprint.breadcrumb("window \(windowCount)") }
+            windowCount += 1
             let vocals = try runWindow(input)
             guard vocals.count >= channels * segment else {
                 throw StemSeparationError.inference("short vocals output: \(vocals.count)")
