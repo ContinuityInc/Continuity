@@ -10,6 +10,17 @@ struct StemPaths: Sendable, Equatable {
     let accompaniment: URL
 }
 
+/// Memory budgets (MB) gating separation — the ORT session load (~600 MB transient: fp16→fp32
+/// upcast + protobuf parse) plus the first window's attention arena (up to ~1.7 GB for the 7.8 s
+/// segment) is the single biggest allocation in the app. Sized from the jetsam RCA estimates;
+/// tune against the mem[] breadcrumbs from a real device run.
+enum StemSeparationBudget {
+    /// Headroom required to START a separation (session load + first-window peak + margin).
+    static let requiredStartMB = 1_400
+    /// Mid-track floor: abort before the next window if headroom falls below this.
+    static let windowFloorMB = 600
+}
+
 enum StemSeparationError: Error, Sendable {
     case decode(String)
     case inference(String)
@@ -268,6 +279,13 @@ final class OnnxStemSeparator: StemSeparating {
             do {
                 if Self.isAbortRequested {
                     throw StemSeparationError.inference("aborted under memory pressure")
+                }
+                // Don't wait for the system warning: if headroom has fallen below the window
+                // floor, the next attention spike could be the fatal one — bail now (the error
+                // path deletes the partial stems; a later ensureStems pass retries).
+                let headroom = MemoryFootprint.headroomMB
+                if headroom < StemSeparationBudget.windowFloorMB {
+                    throw StemSeparationError.inference("aborted: \(headroom) MB headroom below window floor")
                 }
                 let inputValue = try ORTValue(tensorData: inputData, elementType: .float,
                                               shape: [1, NSNumber(value: channels), NSNumber(value: segment)])

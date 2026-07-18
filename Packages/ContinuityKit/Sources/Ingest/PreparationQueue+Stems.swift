@@ -15,12 +15,18 @@ extension PreparationQueue {
         // whole separation pipeline in/out of a memory repro in one run, no code edits.
         if UserDefaults.standard.bool(forKey: "debug.disableStemSeparation") { return }
         protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
+        // First stem demand of the session = playback just started. Hold separation for a
+        // minute so its peak never stacks on engine/UI/download ramp-up.
+        if separationAllowedAt == nil { separationAllowedAt = Date().addingTimeInterval(60) }
+        let holdActive = Date() < (separationAllowedAt ?? .distantPast)
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,
                   let key = track.youtubeVideoID, track.localRelativePath != nil else { continue }
             reconcileStemLinks(track, in: context)
             if track.hasStems {
                 StemCache.markUsed(key: key)   // actively played material stays cache-resident
+            } else if holdActive {
+                scheduleDeferredStemsRetry(for: tracks, in: context)
             } else {
                 separateStems(track, in: context)
             }
@@ -30,6 +36,20 @@ extension PreparationQueue {
         let protected = protectedStemKeys
         Task.detached(priority: .utility) {
             StemCache.enforceBudget(protecting: protected)
+        }
+    }
+
+    /// Re-drives `ensureStems` once after the playback-start hold passes, so stems still arrive
+    /// mid-song without waiting for the next track change. At most one retry is pending.
+    private func scheduleDeferredStemsRetry(for tracks: [Track], in context: ModelContext) {
+        guard !stemsRetryScheduled, let allowedAt = separationAllowedAt else { return }
+        stemsRetryScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, allowedAt.timeIntervalSinceNow + 1)))
+            guard let self else { return }
+            self.stemsRetryScheduled = false
+            // Tracks can be deleted during the hold (sync); a dead @Model crashes on access.
+            self.ensureStems(for: tracks.filter { $0.modelContext != nil }, in: context)
         }
     }
 
@@ -83,6 +103,22 @@ extension PreparationQueue {
             // of the same video, or a re-added track, may have written the stems meanwhile —
             // don't spend CPU-minutes redoing them (reconcileStemLinks links them up next pass).
             if StemCache.hasStems(key: key) {
+                await limiter.release()
+                let queueDrained = await MainActor.run { () -> Bool in
+                    guard let self else { return true }
+                    self.stemsInFlight.remove(key)
+                    return self.stemsInFlight.isEmpty
+                }
+                if queueDrained { OnnxStemSeparator.releaseSession() }
+                return
+            }
+            // HARD headroom gate: session load + first window is the app's biggest peak. If
+            // the process doesn't have the budget, don't start — stems arrive on a later
+            // ensureStems pass (every track change) once memory frees up. Jetsam-proof by
+            // construction: no separation may begin that could not complete its peak.
+            let headroom = MemoryFootprint.headroomMB
+            guard headroom > StemSeparationBudget.requiredStartMB else {
+                Logger.stems.notice("deferring separation for \(key, privacy: .public): \(headroom) MB headroom < \(StemSeparationBudget.requiredStartMB) MB required")
                 await limiter.release()
                 let queueDrained = await MainActor.run { () -> Bool in
                     guard let self else { return true }
