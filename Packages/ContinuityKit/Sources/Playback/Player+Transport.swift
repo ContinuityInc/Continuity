@@ -73,6 +73,9 @@ extension Player {
 
     public func togglePlayPause() {
         guard currentTrack != nil else { return }
+        // The user has taken control: a pending "resume when the interruption ends" must not
+        // override an explicit pause (or double-fire after an explicit resume).
+        resumeAfterInterruption = false
         if isPlaying {
             // isPlaying implies the stack exists; guard-let keeps the pause structurally safe.
             if let audio {

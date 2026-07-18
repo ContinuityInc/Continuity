@@ -271,6 +271,7 @@ public final class Player {
         position = 0
         audio.current.play()
         isPlaying = true
+        resumeAfterInterruption = false   // an explicit (re)start supersedes any pending auto-resume
         startTimer()
         notifyUpcoming()
     }

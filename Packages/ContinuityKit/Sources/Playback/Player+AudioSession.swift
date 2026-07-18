@@ -50,9 +50,11 @@ extension Player {
             MainActor.assumeIsolated {
                 // Headphones unplugged / output vanished: pause (standard platform UX). Other
                 // route changes are handled by the configuration-change recovery below.
+                // No auto-resume: the platform convention after an unplug is to stay paused,
+                // and a later interruption's .shouldResume must not un-pause this.
                 if reason == .oldDeviceUnavailable {
                     Logger.audio.info("audio route lost — pausing")
-                    self?.pauseForEnvironment()
+                    self?.pauseForEnvironment(allowAutoResume: false)
                 }
             }
         })
@@ -107,10 +109,11 @@ extension Player {
     }
 
     /// Clean pause in response to the environment (vs. the user's pause button): remembers that
-    /// playback should resume if the system later allows it.
-    private func pauseForEnvironment() {
+    /// playback should resume if the system later allows it (`allowAutoResume` — headphone
+    /// unplugs pause without ever auto-resuming).
+    private func pauseForEnvironment(allowAutoResume: Bool = true) {
         guard isPlaying else { return }
-        resumeAfterInterruption = true
+        resumeAfterInterruption = allowAutoResume
         cancelTransition()     // blend state won't survive an engine stop; finish cleanly
         audio?.current.pause() // engine-state-guarded; no-ops if the engine is already down
         isPlaying = false
