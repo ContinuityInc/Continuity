@@ -103,6 +103,12 @@ public final class Player {
     /// Pitch shift staged on the incoming deck; promoted to `currentPitchShiftSemitones` when the
     /// transition completes.
     var incomingPitchShiftSemitones = 0
+    /// Beatmatch playback rate the CURRENT track is sounding at (1 when unmatched). Like the
+    /// pitch shift, a matched rate persists for the whole track (Deck.load resets it), so the
+    /// next transition must tempo-match and beat-align against this, not the stored BPM.
+    var currentRate: Double = 1
+    /// Rate staged on the incoming deck; promoted to `currentRate` when the transition completes.
+    var incomingRate: Double = 1
 
     /// True when playback was paused by an interruption/route change and should resume when the
     /// system says the coast is clear.
@@ -181,6 +187,7 @@ public final class Player {
             audio.current.load(track)
             applyLoudness(to: audio.current)
             currentPitchShiftSemitones = 0
+            currentRate = 1
         }
         if let pending = pendingSeekSeconds {
             pendingSeekSeconds = nil
@@ -254,6 +261,7 @@ public final class Player {
         audio.current.load(track)   // load() resets rate/pitch, so the fresh track plays true
         applyLoudness(to: audio.current)
         currentPitchShiftSemitones = 0
+        currentRate = 1
         queueRefillAttempted = false   // new current track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0

@@ -21,12 +21,17 @@ extension Player {
         // incoming deck to the outgoing track so they beat together through the blend. Otherwise
         // (synth samples, missing tempo, or too large a stretch) leave rate at 1 and fall back to
         // the plain equal-power crossfade.
+        // Match against the outgoing track's EFFECTIVE tempo: it may itself be playing
+        // rate-shifted from its own beatmatched entry (the rate persists for the whole track,
+        // like the harmonic pitch shift below).
         var rate = 1.0
+        incomingRate = 1
         if transitionSettings.beatmatchEnabled,
            let outBPM = audio.current.track?.bpm,
            let inBPM = queue[index].bpm,
-           let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
+           let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM * currentRate) {
             rate = matched
+            incomingRate = matched
             incoming.rate = Float(matched)
         }
 
@@ -40,7 +45,8 @@ extension Player {
                outgoingPosition: outgoingPosition,
                outgoingBeats: outBeats,
                incomingBeats: queue[index].beatTimes,
-               rate: rate
+               rate: rate,
+               outgoingRate: currentRate
            ), incoming.seekRealFile(to: offset) {
             incomingStartOffset = offset
         }
@@ -136,6 +142,7 @@ extension Player {
         baselineSeconds = incomingStartOffset
         position = baselineSeconds + incoming.elapsed
         currentPitchShiftSemitones = incomingPitchShiftSemitones
+        currentRate = incomingRate
         isTransitioning = false
         transitionProgress = 0
         persistState()

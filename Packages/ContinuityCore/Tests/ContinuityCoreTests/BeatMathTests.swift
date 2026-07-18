@@ -86,6 +86,36 @@ final class BeatMathTests: XCTestCase {
         XCTAssertEqual(offset, 0.0, accuracy: 1e-9)
     }
 
+    func testIncomingStartOffsetAccountsForOutgoingRate() {
+        // The outgoing deck itself plays at rate 2 (a persisted beatmatch), so its file-time lead
+        // passes in half the real time. Outgoing at 0.0; next beat >= minLead*2 = 0.16 is 0.5 ->
+        // file lead 0.5 -> real lead 0.25. Incoming at rate 1 -> target 0.25 file-seconds. First
+        // incoming beat >= 0.25 is 0.3 -> offset 0.05.
+        let out = stride(from: 0.0, through: 5.0, by: 0.5).map { $0 }
+        let inc = stride(from: 0.3, through: 5.0, by: 0.5).map { $0 }
+        let offset = BeatMath.incomingStartOffset(
+            outgoingPosition: 0.0, outgoingBeats: out, incomingBeats: inc, outgoingRate: 2)!
+        XCTAssertEqual(offset, 0.05, accuracy: 1e-9)
+    }
+
+    func testIncomingStartOffsetOutgoingRateScalesMinLead() {
+        // minLead is real time; at outgoingRate 2 a file-time gap of 0.1s passes in only 0.05s of
+        // real time (< default minLead 0.08), so the 0.1 beat must be skipped for the 0.5 one.
+        let out = [0.1, 0.5, 1.0, 1.5]
+        let inc = stride(from: 0.0, through: 5.0, by: 0.25).map { $0 }
+        let offset = BeatMath.incomingStartOffset(
+            outgoingPosition: 0.0, outgoingBeats: out, incomingBeats: inc, outgoingRate: 2)!
+        // File lead 0.5 -> real lead 0.25 -> target 0.25; first incoming beat >= 0.25 is 0.25.
+        XCTAssertEqual(offset, 0.0, accuracy: 1e-9)
+    }
+
+    func testIncomingStartOffsetNilOnNonPositiveOutgoingRate() {
+        let out = [0.5, 1.0]
+        let inc = [0.0, 0.5]
+        XCTAssertNil(BeatMath.incomingStartOffset(
+            outgoingPosition: 0.0, outgoingBeats: out, incomingBeats: inc, outgoingRate: 0))
+    }
+
     func testIncomingStartOffsetDeclinesOnLongIntro() {
         // Incoming's first beat is 10s in; aligning to a near outgoing beat would require skipping
         // ~9.5s (> maxSkip) -> decline so the caller just starts at 0.
