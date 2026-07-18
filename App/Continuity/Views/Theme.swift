@@ -53,10 +53,17 @@ struct AlbumBackdrop: View {
         ZStack {
             Theme.gradient(seed: seed)
             if let backdrop {
-                Image(uiImage: backdrop)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
+                // Color.clear takes exactly the proposed size; the scaledToFill image lives in
+                // an overlay so its overflow can never widen this view's layout — an
+                // unconstrained fill image inflates the ZStack past the screen and shoves the
+                // page's centered content sideways.
+                Color.clear
+                    .overlay(
+                        Image(uiImage: backdrop)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                    )
                     .transition(.opacity)
             }
         }
