@@ -28,14 +28,14 @@ struct LibrarySheetView: View {
                             .disabled(!prepQueue.syncingPlaylistIDs.isEmpty)
                             .accessibilityLabel("Sync library")
                         }
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                showingAdd = true
-                            } label: {
-                                Image(systemName: "plus")
-                            }
-                            .accessibilityLabel("Add music")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingAdd = true
+                        } label: {
+                            Image(systemName: "plus")
                         }
+                        .accessibilityLabel("Add music")
                     }
                 }
         }

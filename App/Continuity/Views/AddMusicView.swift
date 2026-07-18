@@ -1,18 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Ingest
 import Domain
 import SwiftData
 import ContinuityCore
 
-/// Sheet for pasting a music link and queueing it for ingestion. Detects the source locally and
-/// routes it:
-/// - **YouTube video** → added to the shared "From YouTube" playlist.
-/// - **YouTube playlist** → imported as its own library playlist.
-/// - **Spotify playlist/album** → its tracklist is imported as a new playlist, with each song's
-///   audio re-sourced from YouTube (Spotify audio is DRM-protected and can't feed our engine).
-///
-/// Classification + import routing live in `LinkImporter` (shared with the URL-scheme and
-/// clipboard handlers); the `PreparationQueue` does the resolving/searching/downloading.
+/// Sheet for adding music. On `main` (remote ingest enabled): paste a YouTube/Spotify link.
+/// On External TestFlight / App Store builds: pick local audio files from Files.
 struct AddMusicView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -22,6 +16,7 @@ struct AddMusicView: View {
     @State private var errorMessage: String?
     /// True while a playlist is being resolved (page fetch + track creation).
     @State private var isImporting = false
+    @State private var showingFilePicker = false
 
     private var trimmed: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,45 +34,130 @@ struct AddMusicView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("YouTube or Spotify link", text: $text, axis: .vertical)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .lineLimit(1...3)
-                        .onChange(of: text) { errorMessage = nil }
-                } footer: {
-                    footerContent
-                }
-
-                Section {
-                    Button(action: add) {
-                        HStack {
-                            if isImporting {
-                                ProgressView()
-                                Text("Importing…")
-                            } else {
-                                Label(
-                                    isImportAction ? "Import Playlist" : "Add",
-                                    systemImage: isImportAction ? "music.note.list" : "arrow.down.circle.fill"
-                                )
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(trimmed.isEmpty || isImporting)
-                }
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
+            if RemoteAudioIngest.isEnabled {
+                remoteImportForm
+            } else {
+                localImportForm
             }
-            .navigationTitle("Add Music")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .disabled(isImporting)
+        }
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.audio, .mp3, .mpeg4Audio, .wav, .aiff],
+            allowsMultipleSelection: true
+        ) { result in
+            handlePickedFiles(result)
+        }
+    }
+
+    // MARK: - Local files (External TF / App Store)
+
+    private var localImportForm: some View {
+        Form {
+            Section {
+                Text("Add songs from the Files app. Continuity copies them into its library — no YouTube download.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Button {
+                    showingFilePicker = true
+                } label: {
+                    HStack {
+                        if isImporting {
+                            ProgressView()
+                            Text("Importing…")
+                        } else {
+                            Label("Choose Audio Files", systemImage: "folder.badge.plus")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.glassProminent)
+                .disabled(isImporting)
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
+            if let errorMessage {
+                Section {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.footnote)
+                }
+            }
+        }
+        .navigationTitle("Add Music")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+                    .disabled(isImporting)
+            }
+        }
+    }
+
+    private func handlePickedFiles(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            isImporting = true
+            errorMessage = nil
+            Task {
+                defer { isImporting = false }
+                do {
+                    _ = try await preparationQueue.importLocalAudio(urls: urls, in: modelContext)
+                    dismiss()
+                } catch {
+                    errorMessage = "Couldn't import those files. Try M4A, MP3, WAV, or AIFF."
+                }
+            }
+        }
+    }
+
+    // MARK: - Remote links (main / private builds)
+
+    private var remoteImportForm: some View {
+        Form {
+            Section {
+                TextField("YouTube or Spotify link", text: $text, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .lineLimit(1...3)
+                    .onChange(of: text) { errorMessage = nil }
+            } footer: {
+                footerContent
+            }
+
+            Section {
+                Button(action: addRemote) {
+                    HStack {
+                        if isImporting {
+                            ProgressView()
+                            Text("Importing…")
+                        } else {
+                            Label(
+                                isImportAction ? "Import Playlist" : "Add",
+                                systemImage: isImportAction ? "music.note.list" : "arrow.down.circle.fill"
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(trimmed.isEmpty || isImporting)
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+        }
+        .navigationTitle("Add Music")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+                    .disabled(isImporting)
             }
         }
     }
@@ -100,10 +180,7 @@ struct AddMusicView: View {
         }
     }
 
-    /// Routes the pasted link through the shared importer, or shows an inline error. Shows the
-    /// spinner while resolving, dismisses on success, and maps failures to a cause-specific
-    /// message (so a transient network blip doesn't read as "private").
-    private func add() {
+    private func addRemote() {
         guard let link = detected else {
             errorMessage = "Couldn't find a YouTube or Spotify link in that text."
             return
