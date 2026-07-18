@@ -5,11 +5,6 @@ import Playback
 struct MiniPlayerView: View {
     @Environment(Player.self) private var player
 
-    private var progress: Double {
-        guard player.duration > 0 else { return 0 }
-        return min(max(player.position / player.duration, 0), 1)
-    }
-
     var body: some View {
         HStack(spacing: 12) {
             if let track = player.currentTrack {
@@ -45,16 +40,28 @@ struct MiniPlayerView: View {
         .continuityGlass(cornerRadius: 18)
         // Thin play-progress line hugging the bottom edge of the glass bar.
         .overlay(alignment: .bottomLeading) {
-            GeometryReader { geo in
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: max(0, geo.size.width * progress), height: 2.5)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-            .frame(height: 2.5)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 4)
-            .allowsHitTesting(false)
+            MiniProgressLine()
         }
+    }
+}
+
+/// Leaf view: the mini player's only `player.position` reader, so the 20 Hz playback ticks
+/// re-evaluate just this line — not the whole bar (artwork row included) inside the
+/// always-mounted library page.
+private struct MiniProgressLine: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let progress = player.duration > 0 ? min(max(player.position / player.duration, 0), 1) : 0
+        GeometryReader { geo in
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(width: max(0, geo.size.width * progress), height: 2.5)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+        .frame(height: 2.5)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 4)
+        .allowsHitTesting(false)
     }
 }
