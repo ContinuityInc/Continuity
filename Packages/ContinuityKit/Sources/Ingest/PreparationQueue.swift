@@ -274,9 +274,11 @@ public final class PreparationQueue {
             if needsReanalysis, track.modelContext != nil, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
+                MemoryFootprint.breadcrumb("analysis begin")
                 let analysis = try? await Task.detached(priority: .utility) {
                     try TrackAnalyzer.analyze(fileURL: url)
                 }.value
+                MemoryFootprint.breadcrumb("analysis end")
                 await ingestLimiter.release()
                 if let analysis, track.modelContext != nil {
                     track.bpm = analysis.bpm > 0 ? analysis.bpm : nil

@@ -90,7 +90,9 @@ extension PreparationQueue {
                 return
             }
             do {
+                MemoryFootprint.breadcrumb("separation task begin")
                 let modelURL = try await StemModelStore.ensureModel()
+                MemoryFootprint.breadcrumb("model ensured")
                 let separator = OnnxStemSeparator(modelURL: modelURL)
                 _ = try separator.separate(inputURL: inputURL, vocalsOut: vocalsOut, accompanimentOut: accompanimentOut)
                 await MainActor.run {
