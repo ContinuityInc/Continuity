@@ -84,6 +84,25 @@ final class OnnxStemSeparator: StemSeparating {
         cachedSession = nil
     }
 
+    /// Set on a system memory warning; the streaming loop checks it before each window and
+    /// bails, deleting the partial stems. The track keeps playing without stems and re-enters
+    /// separation on a later `ensureStems` pass. Cleared when the next separation starts.
+    nonisolated(unsafe) private static var abortRequested = false
+    private static let abortLock = NSLock()
+
+    static var isAbortRequested: Bool {
+        abortLock.lock(); defer { abortLock.unlock() }
+        return abortRequested
+    }
+
+    static func requestAbort() {
+        abortLock.lock(); abortRequested = true; abortLock.unlock()
+    }
+
+    static func clearAbort() {
+        abortLock.lock(); abortRequested = false; abortLock.unlock()
+    }
+
     private static func sharedSession(modelURL: URL) throws -> ORTSession {
         sessionLock.lock()
         defer { sessionLock.unlock() }
@@ -109,6 +128,7 @@ final class OnnxStemSeparator: StemSeparating {
     }
 
     func separate(inputURL: URL, vocalsOut: URL, accompanimentOut: URL) throws -> StemPaths {
+        Self.clearAbort()   // a stale warning must not kill this fresh attempt
         // ONNX Runtime session, CPU EP everywhere. The CoreML EP jetsammed real devices:
         // converting/compiling the 85M-param HT-Demucs transformer at session creation ballooned
         // the app past the per-process limit (~3.4 GB observed on iPhone 17 Pro — JetsamEvent
@@ -230,13 +250,22 @@ final class OnnxStemSeparator: StemSeparating {
     /// returns just the vocals source (index 3) as planar (2, segment).
     private static func ortInference(session: ORTSession, segment: Int,
                                      channels: Int, vocalsIndex: Int) -> WindowInference {
-        { input in
+        // Shrink the CPU arena back after every Run: the transformer's attention intermediates
+        // spike the arena to its high-water mark, and by default ORT never returns that memory
+        // between windows — it sits on top of live playback for the whole track (jetsam margin).
+        // Re-growing per window costs a little CPU; an offline cache-once job can afford it.
+        let runOptions = try? ORTRunOptions()
+        try? runOptions?.addConfigEntry(withKey: "memory.enable_memory_arena_shrinkage", value: "cpu:0")
+        return { input in
             let inputData = input.withUnsafeBytes { NSMutableData(bytes: $0.baseAddress, length: $0.count) }
             do {
+                if Self.isAbortRequested {
+                    throw StemSeparationError.inference("aborted under memory pressure")
+                }
                 let inputValue = try ORTValue(tensorData: inputData, elementType: .float,
                                               shape: [1, NSNumber(value: channels), NSNumber(value: segment)])
                 let outputs = try session.run(withInputs: ["mix": inputValue],
-                                              outputNames: ["stems"], runOptions: nil)
+                                              outputNames: ["stems"], runOptions: runOptions)
                 guard let out = outputs["stems"] else { throw StemSeparationError.inference("no 'stems' output") }
                 let outData = try out.tensorData()
                 let vocBase = (vocalsIndex * channels) * segment

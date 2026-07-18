@@ -93,6 +93,12 @@ struct RootView: View {
             // per-playlist lastSyncedAt staleness (+ failure backoff) is the real rate limiter.
             // Main-runloop timers pause while suspended, but guard on scenePhase anyway for the
             // coalesced fire a resume delivers before the app is active again.
+            // Memory warning precedes a jetsam kill: abort any in-flight stem separation and
+            // free the ONNX session. Losing stems for one track beats losing the process.
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                prepQueue.handleMemoryPressure()
+            }
             .onReceive(syncTick) { _ in
                 guard scenePhase == .active else { return }
                 prepQueue.autoSyncIfNeeded(in: modelContext)
