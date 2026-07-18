@@ -130,9 +130,12 @@ extension Player {
         incoming.volume = 1
         incoming.vocalsGain = 1
         incoming.bassGainDB = 0
-        // The outgoing track played to its natural end — earn one forward skip back (capped),
-        // and remember it in the history for unlimited previous-skips.
-        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+        // Natural end-of-track blend: earn one forward skip back (capped). A SKIP blend is a
+        // spend, not a completion — no earn, or the budget would never deplete. Both record
+        // the history step for unlimited previous-skips.
+        if !transitionIsSkip {
+            skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+        }
         pushHistory(currentTrack)
         audio.current = incoming
         currentIndex = transitionTargetIndex
@@ -145,6 +148,8 @@ extension Player {
         currentRate = incomingRate
         isTransitioning = false
         transitionProgress = 0
+        activeTransitionDuration = nil
+        transitionIsSkip = false
         persistState()
         notifyUpcoming()
     }
@@ -164,5 +169,7 @@ extension Player {
         }
         isTransitioning = false
         transitionProgress = 0
+        activeTransitionDuration = nil
+        transitionIsSkip = false
     }
 }

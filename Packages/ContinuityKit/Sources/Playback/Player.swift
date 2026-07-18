@@ -109,6 +109,16 @@ public final class Player {
     var currentRate: Double = 1
     /// Rate staged on the incoming deck; promoted to `currentRate` when the transition completes.
     var incomingRate: Double = 1
+    /// Duration override for the IN-FLIGHT blend (skip blends use a fixed short fade regardless
+    /// of the user's crossfade setting). nil = use `transitionSettings.durationSeconds`.
+    /// Cleared when the transition finishes or cancels.
+    var activeTransitionDuration: TimeInterval?
+    /// True while the in-flight blend was started by a forward skip: its completion is a spend,
+    /// not a natural track finish — history is recorded but NO skip is earned back.
+    var transitionIsSkip = false
+    /// Fixed fade for skip blends — long enough to feel like a DJ mix-out, short enough to feel
+    /// like the skip "took".
+    static let skipCrossfadeDuration: TimeInterval = 5
 
     /// True when playback was paused by an interruption/route change and should resume when the
     /// system says the coast is clear.
@@ -338,7 +348,8 @@ public final class Player {
             persistState()
         }
         let dur = effectiveEndSeconds
-        let plan = TransitionPlan(curve: transitionSettings.curve, duration: transitionSettings.durationSeconds)
+        let plan = TransitionPlan(curve: transitionSettings.curve,
+                                  duration: activeTransitionDuration ?? transitionSettings.durationSeconds)
 
         if isTransitioning {
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
