@@ -1,0 +1,53 @@
+# Runs the platform-agnostic ContinuityCore test suite on Linux for every PR.
+#
+# BeatTracker/KeyDetector import Accelerate (Apple-only), and SwiftPM compiles the target as a
+# unit — so the full package can't build on Linux. Per AGENTS.md, we assemble a throwaway
+# package from the non-Accelerate sources/tests (111 of ~127 test cases: Camelot/flow ordering,
+# crossfade curves, transition plan, loudness, silence trimming, YouTube/Spotify URL + page
+# parsing). The BPM and key suites still need a Mac.
+name: Core tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  core-tests-linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble Linux-buildable subset
+        run: |
+          set -eu
+          SRC=Packages/ContinuityCore
+          DST=/tmp/coretest
+          mkdir -p "$DST/Sources/ContinuityCore" "$DST/Tests/ContinuityCoreTests"
+          for f in "$SRC"/Sources/ContinuityCore/*.swift; do
+            case "$(basename "$f")" in
+              BeatTracker.swift|KeyDetector.swift) ;;   # import Accelerate — Apple-only
+              *) cp "$f" "$DST/Sources/ContinuityCore/" ;;
+            esac
+          done
+          for f in "$SRC"/Tests/ContinuityCoreTests/*.swift; do
+            case "$(basename "$f")" in
+              BeatTrackerTests.swift|KeyDetectorTests.swift|KeyDetectorAccuracyTests.swift) ;;
+              *) cp "$f" "$DST/Tests/ContinuityCoreTests/" ;;
+            esac
+          done
+          cat > "$DST/Package.swift" <<'EOF'
+          // swift-tools-version:5.9
+          import PackageDescription
+          let package = Package(
+              name: "ContinuityCore",
+              targets: [
+                  .target(name: "ContinuityCore"),
+                  .testTarget(name: "ContinuityCoreTests", dependencies: ["ContinuityCore"]),
+              ]
+          )
+          EOF
+
+      - name: swift test
+        run: swift test --package-path /tmp/coretest
