@@ -16,9 +16,16 @@ struct MainPagerView: View {
         GeometryReader { proxy in
             let insets = proxy.safeAreaInsets
             ScrollView(.vertical) {
+                // Two inset strategies on purpose: the NavigationStack pages need HARD padding —
+                // their bars position from the real window safe area, which this full-screen
+                // pager ignores, so additive safeAreaPadding leaves the title/toolbar under the
+                // status bar. Now Playing keeps safeAreaPadding: its content is pure SwiftUI
+                // (chevrons/labels respect it) and its backdrop must escape to full bleed via
+                // ignoresSafeArea, which hard padding would block.
                 VStack(spacing: 0) {
                     LibrarySheetView()
-                        .safeAreaPadding(insets)
+                        .padding(.top, insets.top)
+                        .padding(.bottom, insets.bottom)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.library)
                     NowPlayingView(mode: .home)
@@ -26,7 +33,8 @@ struct MainPagerView: View {
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
                     UpNextView()
-                        .safeAreaPadding(insets)
+                        .padding(.top, insets.top)
+                        .padding(.bottom, insets.bottom)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.upNext)
                 }
