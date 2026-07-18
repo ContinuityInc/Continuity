@@ -58,6 +58,8 @@ public enum BeatMath {
     ///   - incomingBeats: incoming beat grid (s, ascending).
     ///   - rate: playback rate applied to the incoming for tempo matching (its beats play back
     ///     `rate`× faster, so real-time spacing is scaled). 1 when not beatmatched.
+    ///   - outgoingRate: playback rate the OUTGOING deck is currently playing at (a beatmatched
+    ///     rate can persist for the whole track), so its file-time lead converts to real time.
     ///   - minLead: don't align to an outgoing beat sooner than this — we need a moment to actually
     ///     start the deck.
     ///   - maxSkip: cap on how much intro we'll skip; beyond this we decline (return nil) rather
@@ -69,14 +71,17 @@ public enum BeatMath {
         outgoingBeats: [Double],
         incomingBeats: [Double],
         rate: Double = 1,
+        outgoingRate: Double = 1,
         minLead: Double = 0.08,
         maxSkip: Double = 2.0
     ) -> Double? {
-        guard rate > 0, !incomingBeats.isEmpty else { return nil }
+        guard rate > 0, outgoingRate > 0, !incomingBeats.isEmpty else { return nil }
         // The outgoing beat we'll land the incoming on: the first one comfortably ahead.
-        guard let outBeat = outgoingBeats.first(where: { $0 >= outgoingPosition + minLead }) else { return nil }
-        let lead = outBeat - outgoingPosition          // real seconds until that outgoing beat
-        let target = lead * rate                        // incoming file-seconds that must elapse first
+        // Positions and beats are file-time; at `outgoingRate` the file-time lead passes in
+        // lead/outgoingRate real seconds.
+        guard let outBeat = outgoingBeats.first(where: { $0 >= outgoingPosition + minLead * outgoingRate }) else { return nil }
+        let lead = outBeat - outgoingPosition           // outgoing file-seconds until that beat
+        let target = lead * rate / outgoingRate         // incoming file-seconds that must elapse first
         // Land the first incoming beat at/after `target` exactly on the outgoing beat.
         guard let inBeat = incomingBeats.first(where: { $0 >= target }) else { return nil }
         let offset = inBeat - target
