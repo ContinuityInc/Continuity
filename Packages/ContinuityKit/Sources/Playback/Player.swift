@@ -108,6 +108,10 @@ public final class Player {
     /// system says the coast is clear.
     var resumeAfterInterruption = false
 
+    /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
+    /// can drop the old registrations instead of stacking duplicate handlers.
+    var audioEnvironmentObservers: [NSObjectProtocol] = []
+
     /// Publishes state to the lock screen / Control Center and routes remote commands back here.
     let nowPlayingBridge = NowPlayingBridge()
 
