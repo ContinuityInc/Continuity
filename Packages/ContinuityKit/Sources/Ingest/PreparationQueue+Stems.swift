@@ -11,6 +11,9 @@ extension PreparationQueue {
     /// **never** separated eagerly — only the neighborhood vocal-aware transitions need next.
     /// Also refreshes the LRU clock and heals links whose files were evicted.
     public func ensureStems(for tracks: [Track], in context: ModelContext) {
+        // Diagnostic kill switch: launch argument `-debug.disableStemSeparation YES` rules the
+        // whole separation pipeline in/out of a memory repro in one run, no code edits.
+        if UserDefaults.standard.bool(forKey: "debug.disableStemSeparation") { return }
         protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,

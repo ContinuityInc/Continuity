@@ -37,7 +37,8 @@ protocol StemSeparating: Sendable {
 /// devices on long tracks (an hour of 44.1 kHz stereo ≈ >1 GB) while the simulator's host RAM
 /// masked it.
 final class OnnxStemSeparator: StemSeparating {
-    private static let log = Logger(subsystem: "com.sanylax.continuity", category: "StemSeparator")
+    // com.continuity.app matches every other logger in the app — one Console filter sees all.
+    private static let log = Logger(subsystem: "com.continuity.app", category: "StemSeparator")
 
     /// Runs one model window: input is planar (1, 2, segment) mix samples; returns the planar
     /// (2, segment) vocals output. Seam so tests can exercise the streaming pipeline without the
