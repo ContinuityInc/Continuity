@@ -46,6 +46,17 @@ public enum StemCache {
         return nil
     }
 
+    /// Extracts the cache key from a stem file's base name ("<key>-vocals" / "<key>-accompaniment").
+    /// Suffix-only on purpose: a YouTube video ID can itself contain "-vocals"/"-accompaniment"
+    /// as a substring, so anywhere-in-name matching would mangle the key (and the sweep/budget
+    /// logic built on it would misclassify — or delete — valid stems).
+    public static func key(fromStemBaseName base: String) -> String? {
+        for marker in ["-vocals", "-accompaniment"] where base.hasSuffix(marker) {
+            return String(base.dropLast(marker.count))
+        }
+        return nil
+    }
+
     /// Deletes all stem files for a key, across format generations (m4a + legacy caf).
     public static func removeStems(key: String) {
         for kind in ["vocals", "accompaniment"] {
@@ -76,9 +87,7 @@ public enum StemCache {
         var byKey: [String: (bytes: Int64, lastUsed: Date, urls: [URL])] = [:]
         for file in files {
             let base = file.deletingPathExtension().lastPathComponent
-            guard let range = base.range(of: "-vocals") ?? base.range(of: "-accompaniment"),
-                  range.upperBound == base.endIndex else { continue }
-            let key = String(base[..<range.lowerBound])
+            guard let key = Self.key(fromStemBaseName: base) else { continue }
 
             let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let bytes = Int64(values?.fileSize ?? 0)

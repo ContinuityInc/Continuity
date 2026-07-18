@@ -52,11 +52,11 @@ public enum LibraryCleanup {
             at: StemCache.directory, includingPropertiesForKeys: nil
         ) {
             for file in files {
-                // Stem names are "<videoID>-vocals.caf" / "<videoID>-accompaniment.caf".
+                // Stem names are "<key>-vocals.*" / "<key>-accompaniment.*". Suffix-only parsing
+                // (a video ID can contain "-vocals" as a substring); files that don't match the
+                // stem naming scheme at all are junk in this directory and stay sweepable.
                 let base = file.deletingPathExtension().lastPathComponent
-                let key = base
-                    .replacingOccurrences(of: "-vocals", with: "")
-                    .replacingOccurrences(of: "-accompaniment", with: "")
+                let key = StemCache.key(fromStemBaseName: base) ?? base
                 if !referenced.contains(key) {
                     try? FileManager.default.removeItem(at: file)
                 }
