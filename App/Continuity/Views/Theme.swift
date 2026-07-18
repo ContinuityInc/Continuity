@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import CoreImage
 
 /// Lightweight visual helpers: deterministic artwork gradients from a seed, time formatting,
 /// and a centralised Liquid Glass modifier so the iOS 26 API lives in exactly one place.
@@ -45,11 +46,12 @@ struct AlbumBackdrop: View {
     @State private var backdrop: UIImage?
 
     var body: some View {
-        // A pre-rendered tiny bitmap upscaled by the compositor, NOT a live `.blur(radius: 60,
+        // A pre-blurred bitmap upscaled by the compositor, NOT a live `.blur(radius: 60,
         // opaque: true)`. The live blur forced a full-screen (~14 MB) offscreen rasterization
         // that re-rendered whenever this subtree invalidated — under a playing 20 Hz position
-        // timer that render churn ramped memory until jetsam (see the OOM RCA). Upscaling a
-        // ~40 px image is visually equivalent to a radius-60 blur and costs nothing per frame.
+        // timer that render churn ramped memory until jetsam (see the OOM RCA). The bitmap is
+        // rendered once per URL by BackdropRenderer (real gaussian on a 160 px working image),
+        // so it matches the old blur's look at zero per-frame cost.
         ZStack {
             Theme.gradient(seed: seed)
             if let backdrop {
@@ -93,31 +95,64 @@ struct AlbumBackdrop: View {
     }
 }
 
-/// Renders and caches the tiny pre-blurred backdrop bitmaps for `AlbumBackdrop`. Downscaling
-/// artwork to ~40 px and letting the compositor upscale it full-screen looks identical to a
-/// heavy gaussian blur while eliminating the per-frame offscreen render entirely.
+/// Renders and caches the pre-blurred backdrop bitmaps for `AlbumBackdrop`. A ONE-TIME render
+/// per URL (cached): fetch the sharpest available artwork, scale-fill it into a small working
+/// square, run a real gaussian pass, and let the compositor upscale the result full-screen.
+/// Matches the look of the old live `.blur(radius: 60)` with zero per-frame offscreen rendering
+/// (the live blur was the render churn behind the playback jetsam RCA).
 @MainActor
 enum BackdropRenderer {
     private static let cache = NSCache<NSURL, UIImage>()
 
     static func image(for url: URL) async -> UIImage? {
         if let hit = cache.object(forKey: url as NSURL) { return hit }
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let source = UIImage(data: data) else { return nil }
-        let rendered = await Task.detached(priority: .userInitiated) { () -> UIImage in
-            let side: CGFloat = 40
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1
-            return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
-                // scaledToFill into the square; the extreme downscale is the "blur".
-                let s = source.size
-                let scale = max(side / s.width, side / s.height)
-                let w = s.width * scale, h = s.height * scale
-                source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
-            }
-        }.value
+        guard let source = await fetchBestArtwork(url) else { return nil }
+        let rendered = await Task.detached(priority: .userInitiated) { render(source) }.value
         cache.setObject(rendered, forKey: url as NSURL)
         return rendered
+    }
+
+    /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
+    /// some videos), falling back to the stored URL. A sharper source keeps the blurred field
+    /// smooth instead of blocky.
+    private static func fetchBestArtwork(_ url: URL) async -> UIImage? {
+        var candidates: [URL] = []
+        let raw = url.absoluteString
+        if raw.contains("/hqdefault") {
+            for tier in ["/maxresdefault", "/sddefault"] {
+                if let upgraded = URL(string: raw.replacingOccurrences(of: "/hqdefault", with: tier)) {
+                    candidates.append(upgraded)
+                }
+            }
+        }
+        candidates.append(url)
+        for candidate in candidates {
+            guard let (data, response) = try? await URLSession.shared.data(from: candidate) else { continue }
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
+            if let image = UIImage(data: data) { return image }
+        }
+        return nil
+    }
+
+    /// Scale-fill into a 160 px square, then a real gaussian (clamped so edges don't darken).
+    /// sigma 20 at 160 px upscaled to screen width ≈ the old radius-60 live blur.
+    private nonisolated static func render(_ source: UIImage) -> UIImage {
+        let side: CGFloat = 160
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            let s = source.size
+            let scale = max(side / s.width, side / s.height)
+            let w = s.width * scale, h = s.height * scale
+            source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
+        }
+        guard let ci = CIImage(image: small) else { return small }
+        let blurred = ci.clampedToExtent()
+            .applyingGaussianBlur(sigma: 20)
+            .cropped(to: ci.extent)
+        let context = CIContext(options: nil)
+        guard let cg = context.createCGImage(blurred, from: blurred.extent) else { return small }
+        return UIImage(cgImage: cg)
     }
 }
 
