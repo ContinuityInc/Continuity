@@ -34,43 +34,76 @@ extension View {
     }
 }
 
-/// Immersive full-bleed backdrop built from the current track's album art — the Apple Music /
-/// Spotify treatment: a smooth vertical gradient sampled from the artwork's dominant colors
-/// (muted, dark enough for white content), NOT a stretched blurred image. A gradient has no
-/// resolution, always fills the screen, and costs nothing per frame (the old live blur was the
+/// Immersive full-bleed backdrop built from the current track's album art — a hybrid of the
+/// Apple Music and Spotify treatments: a smooth vertical gradient sampled from the artwork's
+/// dominant colors as the base (guarantees full coverage + legibility), with a softly blurred
+/// render of the art itself layered over it, dissolving into the gradient toward the bottom.
+/// Everything is pre-rendered once per URL — zero per-frame cost (the old live blur was the
 /// render churn behind the playback jetsam RCA). Falls back to the deterministic seed gradient
 /// (demo tracks / no art).
 struct AlbumBackdrop: View {
     let url: URL?
     let seed: Int
 
-    /// [top, bottom] colors sampled from the current URL's artwork (nil while loading).
-    @State private var palette: [Color]?
+    /// Palette + pre-blurred art for the current URL (nil while loading).
+    @State private var style: BackdropStyle?
 
     var body: some View {
         ZStack {
-            if let palette {
-                LinearGradient(colors: palette, startPoint: .top, endPoint: .bottom)
+            if let style {
+                LinearGradient(colors: style.colors, startPoint: .top, endPoint: .bottom)
+                    .transition(.opacity)
+                // The blurred art rides on top at partial opacity and fades out toward the
+                // bottom, so the upper screen carries the artwork's texture while the lower
+                // half settles into the clean gradient (the Apple Music look). Color.clear
+                // contains the scaledToFill overflow so it can never affect layout.
+                Color.clear
+                    .overlay(
+                        Image(uiImage: style.blurredArt)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                    )
+                    .opacity(0.55)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .white, location: 0),
+                                .init(color: .white, location: 0.45),
+                                .init(color: .clear, location: 1),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
                     .transition(.opacity)
             } else {
                 Theme.gradient(seed: seed).overlay(Color.black.opacity(0.35))
             }
         }
-        .animation(.easeInOut(duration: 0.6), value: palette)
-        // Soft edge scrim only: the palette is already tone-mapped for legibility; a light
-        // top/bottom darkening anchors the status bar and Up Next chevron.
+        .animation(.easeInOut(duration: 0.6), value: style)
+        // Soft edge scrim: anchors the status bar and Up Next chevron, and keeps white content
+        // legible over the blurred-art region.
         .overlay(
             LinearGradient(
-                colors: [.black.opacity(0.25), .clear, .black.opacity(0.35)],
+                colors: [.black.opacity(0.3), .black.opacity(0.12), .black.opacity(0.35)],
                 startPoint: .top, endPoint: .bottom
             )
         )
+        .clipped()
         .ignoresSafeArea()
         .task(id: url) {
-            guard let url else { palette = nil; return }
-            palette = await BackdropRenderer.palette(for: url)
+            guard let url else { style = nil; return }
+            style = await BackdropRenderer.style(for: url)
         }
     }
+}
+
+/// Everything `AlbumBackdrop` needs for one artwork URL, pre-rendered off-main and cached.
+struct BackdropStyle: Equatable {
+    /// [top, bottom] tone-mapped gradient colors.
+    let colors: [Color]
+    /// Small gaussian-blurred render of the art (compositor-upscaled full-screen).
+    let blurredArt: UIImage
 }
 
 /// Samples and caches the backdrop gradient palette for `AlbumBackdrop`: fetch the sharpest
@@ -79,15 +112,40 @@ struct AlbumBackdrop: View {
 /// brightness pinned so white text always reads.
 @MainActor
 enum BackdropRenderer {
-    private static var cache: [URL: [Color]] = [:]
+    private static var cache: [URL: BackdropStyle] = [:]
 
-    static func palette(for url: URL) async -> [Color]? {
+    static func style(for url: URL) async -> BackdropStyle? {
         if let hit = cache[url] { return hit }
         guard let source = await fetchBestArtwork(url) else { return nil }
-        let colors = await Task.detached(priority: .userInitiated) { samplePalette(source) }.value
-        guard let colors else { return nil }
-        cache[url] = colors
-        return colors
+        let style = await Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
+            guard let colors = samplePalette(source) else { return nil }
+            return BackdropStyle(colors: colors, blurredArt: blurredRender(source))
+        }.value
+        guard let style else { return nil }
+        cache[url] = style
+        return style
+    }
+
+    /// Scale-fill into a 160 px square, then a real gaussian (clamped so edges don't darken) —
+    /// the compositor upscale of the result reads as a soft radius-60-style blur. Rendered once
+    /// per URL; never per frame.
+    private nonisolated static func blurredRender(_ source: UIImage) -> UIImage {
+        let side: CGFloat = 160
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            let s = source.size
+            let scale = max(side / s.width, side / s.height)
+            let w = s.width * scale, h = s.height * scale
+            source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
+        }
+        guard let ci = CIImage(image: small) else { return small }
+        let blurred = ci.clampedToExtent()
+            .applyingGaussianBlur(sigma: 16)
+            .cropped(to: ci.extent)
+        let context = CIContext(options: nil)
+        guard let cg = context.createCGImage(blurred, from: blurred.extent) else { return small }
+        return UIImage(cgImage: cg)
     }
 
     /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
