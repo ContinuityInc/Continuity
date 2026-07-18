@@ -27,6 +27,12 @@ struct MainPagerView: View {
         .scrollIndicators(.hidden)
         // Three equal pages → center lands on Now Playing (the home screen).
         .defaultScrollAnchor(.center)
+        // Pages are sized to the safe-area height, but scroll content draws edge-to-edge —
+        // so the status-bar / home-indicator bands showed slivers of the neighboring pages.
+        // Clip to the safe-area frame and paint the exposed bands black so exactly one page
+        // is ever visible.
+        .clipped()
+        .background(Color.black.ignoresSafeArea())
         .environment(pagerState)
     }
 
