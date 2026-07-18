@@ -21,7 +21,10 @@ struct RootView: View {
     /// Debounce: a clipboard URL is offered at most once, even across launches.
     @AppStorage("lastOfferedClipboardURL") private var lastOfferedClipboardURL = ""
     /// Last pasteboard generation we inspected — gates the banner-triggering reads below.
-    @AppStorage("lastCheckedPasteboardChange") private var lastCheckedPasteboardChange = -1
+    /// In-memory on purpose: UIPasteboard.changeCount restarts from a small number after a
+    /// device reboot, so a value persisted across launches can collide with a fresh generation
+    /// and silently skip a genuinely new link. Re-checking once per launch is the correct cost.
+    @State private var lastCheckedPasteboardChange = -1
 
     /// One publisher for the view's identity — inline `Timer.publish` in `body` is rebuilt (and
     /// its countdown reset) on every re-evaluation (scene transitions, alert state).
@@ -178,19 +181,25 @@ struct RootView: View {
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   raw != lastOfferedClipboardURL,
                   let link = LinkImporter.classify(raw) else { return }
-            lastOfferedClipboardURL = raw
-            offer(link, rawURL: raw)
+            // Debounce only once the offer actually presents — if another confirmation is up,
+            // offer() drops the link and it must stay eligible for the next foreground pass.
+            if offer(link, rawURL: raw) {
+                lastOfferedClipboardURL = raw
+            }
         }
     }
 
-    private func offer(_ link: LinkImporter.Link, rawURL: String) {
+    /// Returns whether the confirmation was actually presented (false when another one is up).
+    @discardableResult
+    private func offer(_ link: LinkImporter.Link, rawURL: String) -> Bool {
         // First confirmation wins — replacing the item under a presented alert would leave it
         // showing (and importing) stale captured data. Covers the async clipboard task racing
         // a link-open, and a second link-open while the alert is up.
-        guard pendingImport == nil else { return }
+        guard pendingImport == nil else { return false }
         let host = URLComponents(string: rawURL.contains("://") ? rawURL : "https://" + rawURL)?
             .host ?? link.sourceName
         pendingImport = PendingLinkImport(link: link, rawURL: rawURL, host: host)
+        return true
     }
 
     /// Same import path AddMusicView uses; failures surface in the "Import Failed" alert.
