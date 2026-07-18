@@ -30,6 +30,14 @@ extension PreparationQueue {
         }
     }
 
+    /// System memory warning: iOS warns before it jetsams. Abort any in-flight stem separation
+    /// (it deletes its partial output; the track plays without stems and retries on a later
+    /// `ensureStems` pass) and drop the cached ORT session — staying alive beats finishing stems.
+    public func handleMemoryPressure() {
+        OnnxStemSeparator.requestAbort()
+        OnnxStemSeparator.releaseSession()
+    }
+
     /// Brings a track's stem links in line with the disk: links cached stems that exist unlinked
     /// (e.g. a re-added video), clears links whose files were evicted so `hasStems` tells the
     /// truth and the track becomes eligible for re-separation.
