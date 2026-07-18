@@ -34,87 +34,64 @@ extension View {
     }
 }
 
-/// Immersive full-bleed backdrop built from the current track's album art: heavily blurred and
-/// darkened with a depth scrim (top/bottom gradient + centre-luminous vignette) so white content
-/// reads on any artwork. Shared by the minimal home and the full Now Playing surface so both
-/// feel like the same room. Falls back to the deterministic gradient (demo tracks / no art).
+/// Immersive full-bleed backdrop built from the current track's album art — the Apple Music /
+/// Spotify treatment: a smooth vertical gradient sampled from the artwork's dominant colors
+/// (muted, dark enough for white content), NOT a stretched blurred image. A gradient has no
+/// resolution, always fills the screen, and costs nothing per frame (the old live blur was the
+/// render churn behind the playback jetsam RCA). Falls back to the deterministic seed gradient
+/// (demo tracks / no art).
 struct AlbumBackdrop: View {
     let url: URL?
     let seed: Int
 
-    /// Pre-blurred backdrop bitmap for the current URL (nil while loading → gradient shows).
-    @State private var backdrop: UIImage?
+    /// [top, bottom] colors sampled from the current URL's artwork (nil while loading).
+    @State private var palette: [Color]?
 
     var body: some View {
-        // A pre-blurred bitmap upscaled by the compositor, NOT a live `.blur(radius: 60,
-        // opaque: true)`. The live blur forced a full-screen (~14 MB) offscreen rasterization
-        // that re-rendered whenever this subtree invalidated — under a playing 20 Hz position
-        // timer that render churn ramped memory until jetsam (see the OOM RCA). The bitmap is
-        // rendered once per URL by BackdropRenderer (real gaussian on a 160 px working image),
-        // so it matches the old blur's look at zero per-frame cost.
         ZStack {
-            Theme.gradient(seed: seed)
-            if let backdrop {
-                // Color.clear takes exactly the proposed size; the scaledToFill image lives in
-                // an overlay so its overflow can never widen this view's layout — an
-                // unconstrained fill image inflates the ZStack past the screen and shoves the
-                // page's centered content sideways.
-                Color.clear
-                    .overlay(
-                        Image(uiImage: backdrop)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFill()
-                    )
+            if let palette {
+                LinearGradient(colors: palette, startPoint: .top, endPoint: .bottom)
                     .transition(.opacity)
+            } else {
+                Theme.gradient(seed: seed).overlay(Color.black.opacity(0.35))
             }
         }
-        .animation(.easeInOut(duration: 0.6), value: backdrop)
-        .overlay(scrim)
-        .clipped()
-        .ignoresSafeArea()
-        .task(id: url) {
-            guard let url else { backdrop = nil; return }
-            backdrop = await BackdropRenderer.image(for: url)
-        }
-    }
-
-    /// Keeps the luminous centre while darkening the edges — legibility without a muddy flat wash.
-    private var scrim: some View {
-        ZStack {
-            Color.black.opacity(0.26)
+        .animation(.easeInOut(duration: 0.6), value: palette)
+        // Soft edge scrim only: the palette is already tone-mapped for legibility; a light
+        // top/bottom darkening anchors the status bar and Up Next chevron.
+        .overlay(
             LinearGradient(
-                colors: [.black.opacity(0.4), .clear, .black.opacity(0.55)],
+                colors: [.black.opacity(0.25), .clear, .black.opacity(0.35)],
                 startPoint: .top, endPoint: .bottom
             )
-            RadialGradient(
-                colors: [.clear, .black.opacity(0.38)],
-                center: .center, startRadius: 80, endRadius: 560
-            )
+        )
+        .ignoresSafeArea()
+        .task(id: url) {
+            guard let url else { palette = nil; return }
+            palette = await BackdropRenderer.palette(for: url)
         }
     }
 }
 
-/// Renders and caches the pre-blurred backdrop bitmaps for `AlbumBackdrop`. A ONE-TIME render
-/// per URL (cached): fetch the sharpest available artwork, scale-fill it into a small working
-/// square, run a real gaussian pass, and let the compositor upscale the result full-screen.
-/// Matches the look of the old live `.blur(radius: 60)` with zero per-frame offscreen rendering
-/// (the live blur was the render churn behind the playback jetsam RCA).
+/// Samples and caches the backdrop gradient palette for `AlbumBackdrop`: fetch the sharpest
+/// available artwork tier, average the top and bottom halves (CIAreaAverage), then tone-map
+/// both into the muted, dark range the reference apps use — hue preserved, saturation softened,
+/// brightness pinned so white text always reads.
 @MainActor
 enum BackdropRenderer {
-    private static let cache = NSCache<NSURL, UIImage>()
+    private static var cache: [URL: [Color]] = [:]
 
-    static func image(for url: URL) async -> UIImage? {
-        if let hit = cache.object(forKey: url as NSURL) { return hit }
+    static func palette(for url: URL) async -> [Color]? {
+        if let hit = cache[url] { return hit }
         guard let source = await fetchBestArtwork(url) else { return nil }
-        let rendered = await Task.detached(priority: .userInitiated) { render(source) }.value
-        cache.setObject(rendered, forKey: url as NSURL)
-        return rendered
+        let colors = await Task.detached(priority: .userInitiated) { samplePalette(source) }.value
+        guard let colors else { return nil }
+        cache[url] = colors
+        return colors
     }
 
     /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
-    /// some videos), falling back to the stored URL. A sharper source keeps the blurred field
-    /// smooth instead of blocky.
+    /// some videos), falling back to the stored URL.
     private static func fetchBestArtwork(_ url: URL) async -> UIImage? {
         var candidates: [URL] = []
         let raw = url.absoluteString
@@ -134,25 +111,39 @@ enum BackdropRenderer {
         return nil
     }
 
-    /// Scale-fill into a 160 px square, then a real gaussian (clamped so edges don't darken).
-    /// sigma 20 at 160 px upscaled to screen width ≈ the old radius-60 live blur.
-    private nonisolated static func render(_ source: UIImage) -> UIImage {
-        let side: CGFloat = 160
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let small = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
-            let s = source.size
-            let scale = max(side / s.width, side / s.height)
-            let w = s.width * scale, h = s.height * scale
-            source.draw(in: CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h))
-        }
-        guard let ci = CIImage(image: small) else { return small }
-        let blurred = ci.clampedToExtent()
-            .applyingGaussianBlur(sigma: 20)
-            .cropped(to: ci.extent)
-        let context = CIContext(options: nil)
-        guard let cg = context.createCGImage(blurred, from: blurred.extent) else { return small }
-        return UIImage(cgImage: cg)
+    /// [top, bottom] gradient colors: average color of the artwork's top and bottom halves,
+    /// tone-mapped into the dark, slightly muted band the Spotify/Apple Music backdrops live in.
+    private nonisolated static func samplePalette(_ image: UIImage) -> [Color]? {
+        guard let ci = CIImage(image: image) else { return nil }
+        let extent = ci.extent
+        let topHalf = CGRect(x: extent.minX, y: extent.midY, width: extent.width, height: extent.height / 2)
+        let bottomHalf = CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: extent.height / 2)
+        guard let top = averageColor(ci, in: topHalf),
+              let bottom = averageColor(ci, in: bottomHalf) else { return nil }
+        return [toneMapped(top, brightness: 0.45), toneMapped(bottom, brightness: 0.14)]
+    }
+
+    private nonisolated static func averageColor(_ image: CIImage, in rect: CGRect) -> UIColor? {
+        guard let filter = CIFilter(name: "CIAreaAverage", parameters: [
+            kCIInputImageKey: image,
+            kCIInputExtentKey: CIVector(cgRect: rect),
+        ]), let output = filter.outputImage else { return nil }
+        var bitmap = [UInt8](repeating: 0, count: 4)
+        let context = CIContext(options: [.workingColorSpace: NSNull()])
+        context.render(output, toBitmap: &bitmap, rowBytes: 4,
+                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        return UIColor(red: CGFloat(bitmap[0]) / 255, green: CGFloat(bitmap[1]) / 255,
+                       blue: CGFloat(bitmap[2]) / 255, alpha: 1)
+    }
+
+    /// Keep the hue, soften the saturation, and PIN the brightness — sampled art can be
+    /// near-white or near-black, and the backdrop must stay in a band where white content is
+    /// always legible and the gradient always reads as "colored dark", never washed out.
+    private nonisolated static func toneMapped(_ color: UIColor, brightness: CGFloat) -> Color {
+        var hue: CGFloat = 0, saturation: CGFloat = 0, currentBrightness: CGFloat = 0, alpha: CGFloat = 0
+        color.getHue(&hue, saturation: &saturation, brightness: &currentBrightness, alpha: &alpha)
+        return Color(hue: hue, saturation: min(saturation * 0.9, 0.55), brightness: brightness)
     }
 }
 
