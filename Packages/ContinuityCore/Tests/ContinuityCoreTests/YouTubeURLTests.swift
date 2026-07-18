@@ -25,6 +25,17 @@ final class YouTubeURLTests: XCTestCase {
         XCTAssertEqual(YouTubeURL.videoID(from: "https://www.youtube.com/embed/dQw4w9WgXcQ"), "dQw4w9WgXcQ")
     }
 
+    func testLiveURL() {
+        // Finished live streams share their permalink as /live/<id>.
+        XCTAssertEqual(YouTubeURL.videoID(from: "https://www.youtube.com/live/dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+        XCTAssertEqual(YouTubeURL.videoID(from: "https://youtube.com/live/dQw4w9WgXcQ?feature=share"), "dQw4w9WgXcQ")
+    }
+
+    func testNoCookieEmbedURL() {
+        // Privacy-enhanced embeds served from youtube-nocookie.com.
+        XCTAssertEqual(YouTubeURL.videoID(from: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+    }
+
     func testMusicSubdomain() {
         XCTAssertEqual(YouTubeURL.videoID(from: "https://music.youtube.com/watch?v=dQw4w9WgXcQ"), "dQw4w9WgXcQ")
     }

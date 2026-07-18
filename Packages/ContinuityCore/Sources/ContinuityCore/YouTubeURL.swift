@@ -53,10 +53,11 @@ public enum YouTubeURL {
 
         if host == "youtu.be" || host.hasSuffix(".youtu.be") {
             if let first = segments.first, isValidVideoID(first) { videoID = first }
-        } else if host == "youtube.com" || host.hasSuffix(".youtube.com") {
+        } else if host == "youtube.com" || host.hasSuffix(".youtube.com")
+                    || host == "youtube-nocookie.com" || host.hasSuffix(".youtube-nocookie.com") {
             if let v = queryValue("v"), isValidVideoID(v) {
                 videoID = v
-            } else if let idx = segments.firstIndex(where: { $0 == "shorts" || $0 == "embed" || $0 == "v" }),
+            } else if let idx = segments.firstIndex(where: { $0 == "shorts" || $0 == "embed" || $0 == "v" || $0 == "live" }),
                       idx + 1 < segments.count,
                       isValidVideoID(segments[idx + 1]) {
                 videoID = segments[idx + 1]
