@@ -18,6 +18,8 @@ name: TestFlight
 on:
   push:
     branches: [main]
+  # Manual retry (e.g. after fixing secrets) without needing another merge.
+  workflow_dispatch:
 
 # One upload at a time, never cancelled mid-upload; queued runs supersede older queued ones.
 concurrency:
