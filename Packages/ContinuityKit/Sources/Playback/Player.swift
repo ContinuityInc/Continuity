@@ -91,6 +91,12 @@ public final class Player {
     var baselineSeconds: TimeInterval = 0
     /// Queue index the in-flight transition is moving to.
     var transitionTargetIndex = 0
+    /// Duration captured when a blend starts. Skip blends are always five seconds; automatic
+    /// blends keep using the user's configured duration.
+    var activeTransitionDurationSeconds: TimeInterval = 0
+    /// Skip blends spend their budget and record history when they start, so completion must not
+    /// award the natural-track-finish refund a scheduled blend receives.
+    var isUserInitiatedSkipTransition = false
     /// Seconds the incoming deck was seeked into its track for beat alignment — becomes the
     /// promoted deck's clock baseline when the transition completes.
     var incomingStartOffset: TimeInterval = 0
@@ -109,16 +115,6 @@ public final class Player {
     var currentRate: Double = 1
     /// Rate staged on the incoming deck; promoted to `currentRate` when the transition completes.
     var incomingRate: Double = 1
-    /// Duration override for the IN-FLIGHT blend (skip blends use a fixed short fade regardless
-    /// of the user's crossfade setting). nil = use `transitionSettings.durationSeconds`.
-    /// Cleared when the transition finishes or cancels.
-    var activeTransitionDuration: TimeInterval?
-    /// True while the in-flight blend was started by a forward skip: its completion is a spend,
-    /// not a natural track finish — history is recorded but NO skip is earned back.
-    var transitionIsSkip = false
-    /// Fixed fade for skip blends — long enough to feel like a DJ mix-out, short enough to feel
-    /// like the skip "took".
-    static let skipCrossfadeDuration: TimeInterval = 5
 
     /// True when playback was paused by an interruption/route change and should resume when the
     /// system says the coast is clear.
@@ -173,7 +169,7 @@ public final class Player {
     ///   - play(tracks:) / next() / previous() / hardAdvance() → startCurrentFresh()
     ///   - togglePlayPause() play direction (incl. remotePlay / lock screen) → ensureCurrentLoaded()
     ///   - seek() with a live deck → ensureRunning() (paused pre-audio scrubs stay metadata-only)
-    ///   - beginTransition() → called here directly (tick() only runs while playing, post-build)
+    ///   - beginTransition() → automatic blends are post-build; next() loads the current deck first
     ///   - recoverPlayback() / pauseForEnvironment() → observers are only registered here, so
     ///     they cannot fire pre-build
     ///   - handleDeleted() / prepare() / restore() / persistState() never build — they guard on
@@ -241,6 +237,7 @@ public final class Player {
     /// Radio-style forward-skip budget: `next()` spends one; finishing a track naturally earns
     /// one back (capped). Previous-skips are unlimited and walk the persistent play history.
     static let maxSkips = 3
+    static let skipTransitionDurationSeconds: TimeInterval = 5
     public internal(set) var skipsRemaining = Player.maxSkips
     /// IDs of previously played tracks, most recent last. Persisted, so "previous" works across
     /// launches.
@@ -348,10 +345,11 @@ public final class Player {
             persistState()
         }
         let dur = effectiveEndSeconds
-        let plan = TransitionPlan(curve: transitionSettings.curve,
-                                  duration: activeTransitionDuration ?? transitionSettings.durationSeconds)
-
         if isTransitioning {
+            let plan = TransitionPlan(
+                curve: transitionSettings.curve,
+                duration: activeTransitionDurationSeconds
+            )
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
             // outgoing file drains, so the transition can never get stuck half-faded.
             let incomingElapsed = audio.idle.elapsed
@@ -373,8 +371,17 @@ public final class Player {
                 finishTransition()
             }
         } else if let next = nextIndex {
+            let plan = TransitionPlan(
+                curve: transitionSettings.curve,
+                duration: transitionSettings.durationSeconds
+            )
             if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
-                beginTransition(toIndex: next, outgoingPosition: elapsed)
+                beginTransition(
+                    toIndex: next,
+                    outgoingPosition: elapsed,
+                    duration: transitionSettings.durationSeconds,
+                    isUserInitiatedSkip: false
+                )
             } else if dur > 0 && elapsed >= dur - 0.05 {
                 // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
                 hardAdvance(toIndex: next)

@@ -105,24 +105,36 @@ extension Player {
 
     public func next() {
         guard !queue.isEmpty, skipsRemaining > 0 else { return }
+        // A second press during an explicit skip would only restart the same incoming track,
+        // spending another skip without advancing farther.
+        guard !isUserInitiatedSkipTransition else { return }
+        // If an automatic blend is already underway, restart it as a five-second user skip.
+        cancelTransition()
         skipsRemaining -= 1
-        let target = (currentIndex + 1) % queue.count
-        // Smooth skip: while audibly playing, blend into the next track over a short fixed
-        // crossfade instead of a hard cut — the same dual-deck machinery as an end-of-track
-        // transition, just started now. finishTransition records the history step (and,
-        // because transitionIsSkip is set, does NOT earn the skip back — a skip is a spend).
-        // A second tap mid-blend, a paused player, or a one-track queue hard-cuts as before.
-        if isPlaying, !isTransitioning, queue.count > 1 {
-            activeTransitionDuration = Player.skipCrossfadeDuration
-            transitionIsSkip = true
-            beginTransition(toIndex: target, outgoingPosition: position)
+        pushHistory(currentTrack)
+        let targetIndex = (currentIndex + 1) % queue.count
+
+        // Skipping from a paused/staged session still needs the outgoing deck materialized so
+        // there is audio to fade away. If CoreAudio cannot start, preserve the old hard-advance
+        // behavior rather than leaving the transport on the track the user skipped.
+        guard ensureCurrentLoaded(), let audio else {
+            currentIndex = targetIndex
+            startCurrentFresh()
             persistState()
             return
         }
-        cancelTransition()
-        pushHistory(currentTrack)
-        currentIndex = target
-        startCurrentFresh()
+        if !isPlaying {
+            audio.current.play()
+            isPlaying = true
+            startTimer()
+        }
+        resumeAfterInterruption = false
+        beginTransition(
+            toIndex: targetIndex,
+            outgoingPosition: position,
+            duration: Player.skipTransitionDurationSeconds,
+            isUserInitiatedSkip: true
+        )
         persistState()
     }
 
