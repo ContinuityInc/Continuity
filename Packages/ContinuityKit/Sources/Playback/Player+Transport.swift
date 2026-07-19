@@ -112,8 +112,13 @@ extension Player {
         // transition, just started now. finishTransition records the history step (and,
         // because transitionIsSkip is set, does NOT earn the skip back — a skip is a spend).
         // A second tap mid-blend, a paused player, or a one-track queue hard-cuts as before.
-        if isPlaying, !isTransitioning, queue.count > 1 {
-            activeTransitionDuration = Player.skipCrossfadeDuration
+        // Clamp the fade to the audio actually LEFT on the outgoing track: a 5 s blend with
+        // only 4 s of outgoing audio ends in the file draining at ~30% gain — an audible hard
+        // cut instead of a fade (short tracks / hot endings). Under a second remaining isn't
+        // enough to read as a blend at all — hard-cut instead.
+        let remaining = effectiveEndSeconds - position
+        if isPlaying, !isTransitioning, queue.count > 1, remaining > 1 {
+            activeTransitionDuration = min(Player.skipCrossfadeDuration, remaining)
             transitionIsSkip = true
             beginTransition(toIndex: target, outgoingPosition: position)
             persistState()
