@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import Combine
 import Ingest
 import Playback
 import Domain
@@ -13,62 +12,15 @@ struct RootView: View {
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.scenePhase) private var scenePhase
-
-    /// Link awaiting user confirmation (from the URL scheme, a shared https URL, or the clipboard).
-    @State private var pendingImport: PendingLinkImport?
-    @State private var importError: String?
-    /// Debounce: a clipboard URL is offered at most once, even across launches.
-    @AppStorage("lastOfferedClipboardURL") private var lastOfferedClipboardURL = ""
-    /// Last pasteboard generation we inspected — gates the banner-triggering reads below.
-    /// In-memory on purpose: UIPasteboard.changeCount restarts from a small number after a
-    /// device reboot, so a value persisted across launches can collide with a fresh generation
-    /// and silently skip a genuinely new link. Re-checking once per launch is the correct cost.
-    @State private var lastCheckedPasteboardChange = -1
-
-    /// One publisher for the view's identity — inline `Timer.publish` in `body` is rebuilt (and
-    /// its countdown reset) on every re-evaluation (scene transitions, alert state).
-    @State private var syncTick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
         MainPagerView()
             // On launch: drop cached files orphaned by deletions, resume unfinished ingestion,
             // then bring back the previous playback session (or stage the first-run track).
             .task {
-                // Sync-driven deletions must clear the live queue before models are destroyed.
+                // Deletions must clear the live queue before models are destroyed.
                 prepQueue.onTracksDeleted = { [weak player] ids in
                     player?.handleDeleted(trackIDs: ids)
-                }
-                // A changed sync re-mirrors the live queue when the current track belongs to the
-                // synced playlist: what follows it matches the fresh remote order, earlier tracks
-                // loop after (wrap-around next() semantics). Remote truth wins for playlist-backed
-                // queues — manual Up Next edits / Flow ordering are overwritten.
-                prepQueue.onPlaylistSynced = { [weak player] _, orderedTracks in
-                    Task { @MainActor in
-                        // replaceUpcoming would cancel a live blend mid-fade — and `changed`
-                        // fires once per remote edit, so a silent skip here would lose the new
-                        // order until the NEXT edit. Wait the blend out instead: blends last
-                        // seconds, syncs are a tick apart, so waiters never stack. Bounded in
-                        // case a blend chain keeps isTransitioning hot.
-                        var waited: TimeInterval = 0
-                        while player?.isTransitioning == true, waited < 30 {
-                            try? await Task.sleep(nanoseconds: 500_000_000)
-                            waited += 0.5
-                        }
-                        guard let player, !player.isTransitioning,
-                              let current = player.currentTrack else { return }
-                        // Tracks can die during the wait (manual delete mid-blend) — a dead
-                        // @Model in the queue crashes on next access.
-                        let live = orderedTracks.filter { $0.modelContext != nil }
-                        // Current track not in the synced playlist (or removed by the sync,
-                        // already handled via onTracksDeleted) → not our queue, leave it alone.
-                        guard let index = live.firstIndex(where: { $0.id == current.id })
-                        else { return }
-                        let rotated = Array(live[(index + 1)...]) + Array(live[..<index])
-                        // No-op guard: don't churn persistState/notifyUpcoming on an equal order.
-                        guard rotated.map(\.id) != player.upcomingTracks.map(\.id) else { return }
-                        player.replaceUpcoming(with: rotated)
-                    }
                 }
                 // Stems are prepared just-in-time for the play-queue neighborhood, not eagerly
                 // for the whole library (CPU-hours + gigabytes). Wire before restore so the
@@ -86,139 +38,13 @@ struct RootView: View {
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
                 prepQueue.resumePreparation(in: modelContext)
                 restorePlaybackSession()
-                // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
-                prepQueue.autoSyncIfNeeded(in: modelContext)
             }
-            // Near-live playlist mirroring: a foreground minute tick re-runs the auto-sync pass;
-            // per-playlist lastSyncedAt staleness (+ failure backoff) is the real rate limiter.
-            // Main-runloop timers pause while suspended, but guard on scenePhase anyway for the
-            // coalesced fire a resume delivers before the app is active again.
             // Memory warning precedes a jetsam kill: abort any in-flight stem separation and
             // free the ONNX session. Losing stems for one track beats losing the process.
             .onReceive(NotificationCenter.default.publisher(
                 for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
                 prepQueue.handleMemoryPressure()
             }
-            .onReceive(syncTick) { _ in
-                guard scenePhase == .active else { return }
-                prepQueue.autoSyncIfNeeded(in: modelContext)
-            }
-            .onOpenURL(perform: handleIncomingLink)
-            // `initial: true` covers cold launch; later .active transitions cover foregrounding.
-            .onChange(of: scenePhase, initial: true) { _, phase in
-                if phase == .active {
-                    // Explicit share beats a stale clipboard hit for the confirmation slot.
-                    consumePendingSharedURL()
-                    checkClipboardForImportableLink()
-                }
-            }
-            .alert(
-                Text(pendingImport.map { "Import from \($0.link.sourceName)?" } ?? "Import?"),
-                isPresented: Binding(
-                    get: { pendingImport != nil },
-                    set: { if !$0 { pendingImport = nil } }
-                ),
-                presenting: pendingImport
-            ) { pending in
-                Button("Import") { startImport(pending) }
-                Button("Cancel", role: .cancel) {}
-            } message: { pending in
-                Text(pending.host)
-            }
-            .alert(
-                "Import Failed",
-                isPresented: Binding(
-                    get: { importError != nil },
-                    set: { if !$0 { importError = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(importError ?? "")
-            }
-    }
-
-    // MARK: - Link handling
-
-    /// `continuity://import?url=<encoded target>` carries the real link; a directly-shared
-    /// http(s) URL *is* the link. Anything unclassifiable is silently ignored.
-    private func handleIncomingLink(_ url: URL) {
-        let raw: String
-        if url.scheme?.lowercased() == "continuity" {
-            guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                  let target = comps.queryItems?.first(where: { $0.name == "url" })?.value,
-                  !target.isEmpty else { return }
-            raw = target
-        } else {
-            raw = url.absoluteString
-        }
-        guard let link = LinkImporter.classify(raw) else { return }
-        offer(link, rawURL: raw)
-    }
-
-    /// Picks up a URL stashed by the share extension (written to group defaults because the
-    /// extension can't talk to the app directly). Read-and-clear so each share is offered once.
-    private func consumePendingSharedURL() {
-        guard pendingImport == nil else { return }
-        // Nil suite (missing app-group entitlement) degrades to a no-op rather than crashing.
-        guard let defaults = UserDefaults(suiteName: "group.com.sanylax.continuity") else { return }
-        guard let payload = defaults.dictionary(forKey: "pendingSharedURL.v1"),
-              let raw = payload["url"] as? String else { return }
-        defaults.removeObject(forKey: "pendingSharedURL.v1")
-        guard let link = LinkImporter.classify(raw) else { return }
-        offer(link, rawURL: raw)
-    }
-
-    /// Offers to import a YouTube/Spotify link sitting on the clipboard. Pattern detection is
-    /// banner-free; the one `.string` read (only after detection says it's a URL) shows the
-    /// iOS paste notice, which is acceptable for a confirmed hit.
-    private func checkClipboardForImportableLink() {
-        guard pendingImport == nil else { return }   // don't stomp a link-open confirmation
-        let pasteboard = UIPasteboard.general
-        // changeCount is banner-free: inspect each clipboard generation once, else the
-        // `.string` read below would flash the paste banner on every foreground.
-        guard pasteboard.changeCount != lastCheckedPasteboardChange else { return }
-        lastCheckedPasteboardChange = pasteboard.changeCount
-        guard pasteboard.hasStrings || pasteboard.hasURLs else { return }
-        Task {
-            guard let patterns = try? await pasteboard.detectedPatterns(for: [\.probableWebURL]),
-                  patterns.contains(\.probableWebURL),
-                  let raw = (pasteboard.string ?? pasteboard.url?.absoluteString)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                  raw != lastOfferedClipboardURL,
-                  let link = LinkImporter.classify(raw) else { return }
-            // Debounce only once the offer actually presents — if another confirmation is up,
-            // offer() drops the link and it must stay eligible for the next foreground pass.
-            if offer(link, rawURL: raw) {
-                lastOfferedClipboardURL = raw
-            }
-        }
-    }
-
-    /// Returns whether the confirmation was actually presented (false when another one is up).
-    @discardableResult
-    private func offer(_ link: LinkImporter.Link, rawURL: String) -> Bool {
-        // First confirmation wins — replacing the item under a presented alert would leave it
-        // showing (and importing) stale captured data. Covers the async clipboard task racing
-        // a link-open, and a second link-open while the alert is up.
-        guard pendingImport == nil else { return false }
-        let host = URLComponents(string: rawURL.contains("://") ? rawURL : "https://" + rawURL)?
-            .host ?? link.sourceName
-        pendingImport = PendingLinkImport(link: link, rawURL: rawURL, host: host)
-        return true
-    }
-
-    /// Same import path AddMusicView uses; failures surface in the "Import Failed" alert.
-    private func startImport(_ pending: PendingLinkImport) {
-        Task {
-            do {
-                try await LinkImporter.run(
-                    pending.link, sourceURL: pending.rawURL, queue: prepQueue, in: modelContext
-                )
-            } catch {
-                importError = LinkImporter.errorMessage(error, noun: pending.link.noun)
-            }
-        }
     }
 
     // MARK: - Session restore
@@ -245,12 +71,4 @@ struct RootView: View {
         guard let index = queue.firstIndex(where: { $0.id == seed.id }) else { return }
         player.prepare(tracks: queue, startAt: index)
     }
-}
-
-/// A classified link waiting for the user's "Import" confirmation.
-private struct PendingLinkImport: Identifiable {
-    let id = UUID()
-    let link: LinkImporter.Link
-    let rawURL: String
-    let host: String
 }

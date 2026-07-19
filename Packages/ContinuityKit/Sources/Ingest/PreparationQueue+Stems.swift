@@ -14,17 +14,17 @@ extension PreparationQueue {
         // Diagnostic kill switch: launch argument `-debug.disableStemSeparation YES` rules the
         // whole separation pipeline in/out of a memory repro in one run, no code edits.
         if UserDefaults.standard.bool(forKey: "debug.disableStemSeparation") { return }
-        protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
+        protectedStemKeys = Set(tracks.map(\.stemKey))
         // First stem demand of the session = playback just started. Hold separation for a
         // minute so its peak never stacks on engine/UI/download ramp-up.
         if separationAllowedAt == nil { separationAllowedAt = Date().addingTimeInterval(60) }
         let holdActive = Date() < (separationAllowedAt ?? .distantPast)
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,
-                  let key = track.youtubeVideoID, track.localRelativePath != nil else { continue }
+                  track.localRelativePath != nil else { continue }
             reconcileStemLinks(track, in: context)
             if track.hasStems {
-                StemCache.markUsed(key: key)   // actively played material stays cache-resident
+                StemCache.markUsed(key: track.stemKey)   // actively played material stays cache-resident
             } else if holdActive {
                 scheduleDeferredStemsRetry(for: tracks, in: context)
             } else {
@@ -65,7 +65,7 @@ extension PreparationQueue {
     /// (e.g. a re-added video), clears links whose files were evicted so `hasStems` tells the
     /// truth and the track becomes eligible for re-separation.
     func reconcileStemLinks(_ track: Track, in context: ModelContext) {
-        guard let key = track.youtubeVideoID else { return }
+        let key = track.stemKey
         if let v = track.vocalsRelativePath, let a = track.accompanimentRelativePath,
            FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: v).path),
            FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: a).path) {
@@ -88,7 +88,8 @@ extension PreparationQueue {
     /// transition for this track. Serialised via `stemLimiter`; after each separation the cache's
     /// byte budget is enforced (LRU eviction, protecting the play-queue neighborhood).
     private func separateStems(_ track: Track, in context: ModelContext) {
-        guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath,
+        let key = track.stemKey
+        guard let relativePath = track.localRelativePath,
               !stemsInFlight.contains(key) else { return }
         stemsInFlight.insert(key)
 

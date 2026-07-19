@@ -35,13 +35,6 @@ targets:
         product: Ingest
       - package: ContinuityKit
         product: Playback
-      - target: ContinuityShare
-    # App group shared with the extension — the share-sheet → app handoff channel.
-    entitlements:
-      path: App/Continuity/Continuity.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.sanylax.continuity
     info:
       path: App/Continuity/Info.plist
       properties:
@@ -58,11 +51,6 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # continuity://import?url=<encoded link> — deep-link entry into the import flow.
-        CFBundleURLTypes:
-          - CFBundleURLName: com.sanylax.continuity
-            CFBundleURLSchemes:
-              - continuity
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity
@@ -92,39 +80,3 @@ targets:
             fi
           done
           # Leave an empty Frameworks dir alone — other embeds (none today) may appear later.
-
-  # Share-sheet entry point: stashes the shared URL in the app group for the app to import.
-  ContinuityShare:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "26.0"
-    sources:
-      - path: App/ShareExtension
-    dependencies:
-      # Same YouTube/Spotify classifiers the app uses — keeps "Added to Continuity" honest.
-      - package: ContinuityCore
-    entitlements:
-      path: App/ShareExtension/ContinuityShare.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.sanylax.continuity
-    info:
-      path: App/ShareExtension/Info.plist
-      properties:
-        CFBundleDisplayName: Continuity
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.share-services
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
-          NSExtensionAttributes:
-            # Activate when any attachment is a URL — dictionary rules that only declare
-            # WebURL miss Spotify/YouTube shares that also attach image/text. Runtime still
-            # rejects non-music links via ContinuityCore before showing success.
-            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity.share
-        GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1"
-        SWIFT_EMIT_LOC_STRINGS: YES
