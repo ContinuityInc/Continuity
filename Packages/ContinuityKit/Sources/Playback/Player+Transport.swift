@@ -129,10 +129,21 @@ extension Player {
             startTimer()
         }
         resumeAfterInterruption = false
+        // Clamp the fade to the audio actually LEFT on the outgoing track: a 5 s blend with
+        // only 4 s of outgoing audio ends in the file draining at ~30% gain — an audible hard
+        // cut instead of a fade (short tracks / hot endings). Under a second remaining isn't
+        // enough to read as a blend at all — hard-advance instead.
+        let remaining = effectiveEndSeconds - position
+        guard remaining > 1 else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
         beginTransition(
             toIndex: targetIndex,
             outgoingPosition: position,
-            duration: Player.skipTransitionDurationSeconds,
+            duration: min(Player.skipTransitionDurationSeconds, remaining),
             isUserInitiatedSkip: true
         )
         persistState()
