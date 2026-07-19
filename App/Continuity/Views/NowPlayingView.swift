@@ -427,7 +427,8 @@ private struct TrackProgressRing: View {
     @Environment(Player.self) private var player
 
     var body: some View {
-        let progress = player.duration > 0 ? min(max(player.position / player.duration, 0), 1) : 0
+        // displayProgress morphs across blends, so the ring glides into the next song.
+        let progress = player.displayProgress
         Circle()
             .trim(from: 0, to: progress)
             .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))

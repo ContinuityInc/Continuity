@@ -79,6 +79,24 @@ public final class Player {
         return currentTrack?.durationSeconds ?? 0
     }
 
+    /// Progress fraction (0…1) for UI rings/bars. During a blend it MORPHS from the outgoing
+    /// track's fraction toward the incoming track's, weighted by the blend progress — by the
+    /// moment the decks swap, the displayed value already equals the incoming fraction, so the
+    /// indicator glides into the next song instead of snapping to it.
+    public var displayProgress: Double {
+        let current = duration > 0 ? min(max(position / duration, 0), 1) : 0
+        guard isTransitioning, let audio,
+              queue.indices.contains(transitionTargetIndex) else { return current }
+        let incoming = queue[transitionTargetIndex]
+        let incomingDuration = audio.idle.loadedDuration > 0
+            ? audio.idle.loadedDuration : incoming.durationSeconds
+        guard incomingDuration > 0 else { return current }
+        let incomingPosition = incomingStartOffset + audio.idle.elapsed
+        let incomingFraction = min(max(incomingPosition / incomingDuration, 0), 1)
+        let weight = min(max(transitionProgress, 0), 1)
+        return current + (incomingFraction - current) * weight
+    }
+
     // MARK: Engine / decks
     /// All CoreAudio state, or nil until the first real audio need (see `ensureAudioStack()`).
     var audio: AudioStack?
