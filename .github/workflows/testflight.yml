@@ -1,0 +1,98 @@
+# Publishes every merge to main to internal TestFlight.
+#
+# Signing is CLOUD-MANAGED: xcodebuild -allowProvisioningUpdates + an App Store Connect API
+# key mints/updates certificates and profiles on the fly — no certificates or provisioning
+# profiles are stored in the repo or in secrets. Three repository secrets are required:
+#
+#   ASC_KEY_ID     App Store Connect API key ID            (App Store Connect → Users and
+#   ASC_ISSUER_ID  App Store Connect API issuer ID          Access → Integrations → App Store
+#   ASC_KEY_P8     the .p8 private key, base64-encoded      Connect API → create a key with
+#                                                           "App Manager" role)
+#   base64 encode:  base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
+#
+# The build number is the workflow run number (monotonic per repo), so TestFlight never
+# rejects a duplicate CFBundleVersion. Uploads become available to INTERNAL testers
+# automatically once App Store Connect finishes processing — no extra distribution step.
+name: TestFlight
+
+on:
+  push:
+    branches: [main]
+
+# One upload at a time, never cancelled mid-upload; queued runs supersede older queued ones.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    # Skip cleanly (rather than fail) until the ASC secrets are configured.
+    if: ${{ vars.TESTFLIGHT_ENABLED != 'false' }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer" && xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -eu
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ]; then
+            echo "::error::ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 secrets are not configured — see the header of this workflow."
+            exit 1
+          fi
+          mkdir -p "$HOME/private_keys"
+          echo "$ASC_KEY_P8" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project Continuity.xcodeproj \
+            -scheme Continuity \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Continuity.xcarchive \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+
+      - name: Upload to TestFlight
+        run: |
+          cat > ExportOptions.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>destination</key>
+              <string>upload</string>
+              <key>signingStyle</key>
+              <string>automatic</string>
+              <key>teamID</key>
+              <string>KP832RV67A</string>
+              <key>manageAppVersionAndBuildNumber</key>
+              <false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath build/Continuity.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
