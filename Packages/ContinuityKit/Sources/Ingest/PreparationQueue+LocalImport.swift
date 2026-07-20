@@ -30,16 +30,17 @@ extension PreparationQueue {
                     duration = 0
                 }
 
-                let title = url.deletingPathExtension().lastPathComponent
+                // Prefer embedded tags (ID3/iTunes metadata) over the filename.
+                let tags = await Self.commonMetadata(of: dest)
+                let title = tags.title ?? url.deletingPathExtension().lastPathComponent
                 let track = Track(
                     title: title,
-                    artist: "Imported",
+                    artist: tags.artist ?? "Imported",
                     durationSeconds: duration,
                     artworkSymbol: "doc.fill",
                     gradientSeed: (title.hashValue & 0x7fff_ffff) % 90 + 10,
                     sortIndex: startIndex,
                     prepState: .ready,
-                    sourceURLString: url.absoluteString,
                     localRelativePath: AudioCache.relativePath(for: dest)
                 )
                 playlist.tracks.append(track)
@@ -83,6 +84,21 @@ extension PreparationQueue {
             }
             await ingestLimiter.release()
         }
+    }
+
+    /// Best-effort title/artist from the file's embedded tags. nil fields fall back to the
+    /// filename / "Imported" at the call site.
+    private static func commonMetadata(of url: URL) async -> (title: String?, artist: String?) {
+        let asset = AVURLAsset(url: url)
+        guard let items = try? await asset.load(.commonMetadata) else { return (nil, nil) }
+        func value(_ identifier: AVMetadataIdentifier) async -> String? {
+            guard let item = AVMetadataItem.metadataItems(
+                from: items, filteredByIdentifier: identifier
+            ).first else { return nil }
+            let string = try? await item.load(.stringValue)
+            return string?.isEmpty == false ? string : nil
+        }
+        return (await value(.commonIdentifierTitle), await value(.commonIdentifierArtist))
     }
 
     private static func findOrCreateImportedPlaylist(in context: ModelContext) -> Playlist {
