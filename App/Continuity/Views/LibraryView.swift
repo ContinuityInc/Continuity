@@ -87,11 +87,11 @@ struct LibraryView: View {
     /// surviving track shares.
     private func delete(_ playlist: Playlist) {
         let trackIDs = Set(playlist.tracks.map(\.id))
-        let videoIDs = playlist.tracks.compactMap(\.youtubeVideoID)
+        let files = playlist.tracks.map(LibraryCleanup.DeletedTrackFiles.init)
         player.handleDeleted(trackIDs: trackIDs)
         modelContext.delete(playlist)   // cascade deletes its tracks
         try? modelContext.save()
-        LibraryCleanup.removeOrphanedFiles(videoIDs: videoIDs, in: modelContext)
+        LibraryCleanup.removeOrphanedFiles(for: files, in: modelContext)
     }
 }
 

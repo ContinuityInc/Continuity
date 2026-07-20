@@ -7,10 +7,7 @@ import Domain
 struct PlaylistDetailView: View {
     @Bindable var playlist: Playlist
     @Environment(Player.self) private var player
-    @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
-
-    private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
 
     var body: some View {
         List {
@@ -25,14 +22,9 @@ struct PlaylistDetailView: View {
                 TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // A failed ingest can't be played — tapping it retries instead.
-                        if track.prepState == .failed {
-                            if RemoteAudioIngest.isEnabled {
-                                prepQueue.enqueue(track, in: modelContext)
-                            }
-                        } else {
-                            player.play(tracks: playlist.orderedTracks, startAt: index)
-                        }
+                        // A failed track has no audio to play; this build can't re-download it.
+                        guard track.prepState != .failed else { return }
+                        player.play(tracks: playlist.orderedTracks, startAt: index)
                     }
                     .contextMenu {
                         Button {
@@ -58,14 +50,12 @@ struct PlaylistDetailView: View {
     /// Removes a track: the player drops it first (so no deck/queue reference dangles), then the
     /// model goes, then any cached files no other track shares.
     private func delete(_ track: Track) {
-        let videoID = track.youtubeVideoID
+        let files = LibraryCleanup.DeletedTrackFiles(track)
         player.handleDeleted(trackIDs: [track.id])
         modelContext.delete(track)
         playlist.touch()    // membership changed → resort the library
         try? modelContext.save()
-        if let videoID {
-            LibraryCleanup.removeOrphanedFiles(videoIDs: [videoID], in: modelContext)
-        }
+        LibraryCleanup.removeOrphanedFiles(for: [files], in: modelContext)
     }
 
     private var header: some View {
@@ -83,33 +73,6 @@ struct PlaylistDetailView: View {
             }
             .buttonStyle(.glassProminent)
             .padding(.top, 4)
-
-            // Source-backed playlists mirror a remote list: manual sync + the auto-sync opt-out.
-            if RemoteAudioIngest.isEnabled, playlist.isSourceBacked {
-                HStack(spacing: 16) {
-                    Button {
-                        Task { await prepQueue.syncPlaylist(playlist, in: modelContext) }
-                    } label: {
-                        Label(isSyncing ? "Syncing…" : "Sync", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.subheadline)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isSyncing)
-
-                    Toggle(isOn: $playlist.autoSyncEnabled) {
-                        Text("Auto-sync")
-                            .font(.subheadline)
-                    }
-                    .fixedSize()
-                }
-                .padding(.top, 2)
-
-                if let synced = playlist.lastSyncedAt {
-                    Text("Synced \(synced.formatted(.relative(presentation: .named)))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
@@ -165,9 +128,9 @@ private struct TrackRow: View {
             ProgressView()
                 .controlSize(.mini)
         case .failed:
-            // Tapping the row retries a failed ingest — the retry glyph signals it's actionable.
-            // Builds without remote ingest can't retry, so show a plain warning instead.
-            Image(systemName: RemoteAudioIngest.isEnabled ? "arrow.clockwise" : "exclamationmark.triangle")
+            // The audio file is missing and this build can't re-download it — plain warning,
+            // not a retry affordance.
+            Image(systemName: "exclamationmark.triangle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
         case .ready:

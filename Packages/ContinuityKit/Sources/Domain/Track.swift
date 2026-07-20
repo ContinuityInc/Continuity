@@ -70,6 +70,11 @@ public final class Track {
         youtubeVideoID == nil && searchQuery == nil && localRelativePath == nil
     }
 
+    /// Stable key for the stem cache (and other per-source on-disk caches). Legacy
+    /// YouTube-sourced tracks keep their video ID (existing stems stay linked); locally
+    /// imported tracks use their own UUID.
+    public var stemKey: String { youtubeVideoID ?? id.uuidString }
+
     /// Real cover art for YouTube-sourced tracks: the video's thumbnail, served from YouTube's
     /// deterministic thumbnail CDN (no API call needed). nil for demo tracks → gradient artwork.
     public var artworkURL: URL? {
