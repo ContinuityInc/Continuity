@@ -33,9 +33,30 @@ extension PreparationQueue {
         }
         // Budget pass on every queue move (not just post-separation): catches overage that
         // accrued outside this code path — e.g. gigabytes of legacy float32 stems.
+        scheduleBudgetPass()
+    }
+
+    /// Runs the cache budget pass single-flight: while one full directory scan is in
+    /// progress, further requests coalesce into (at most) one follow-up pass, which reads
+    /// the protected set fresh when it starts — so the newest play-queue neighborhood is
+    /// what gets protected, and rapid skips can't stack N concurrent scans.
+    private func scheduleBudgetPass() {
+        guard !budgetPassRunning else {
+            budgetPassQueued = true
+            return
+        }
+        budgetPassRunning = true
         let protected = protectedStemKeys
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .utility) { [weak self] in
             StemCache.enforceBudget(protecting: protected)
+            await MainActor.run {
+                guard let self else { return }
+                self.budgetPassRunning = false
+                if self.budgetPassQueued {
+                    self.budgetPassQueued = false
+                    self.scheduleBudgetPass()
+                }
+            }
         }
     }
 
@@ -98,7 +119,10 @@ extension PreparationQueue {
         let accompanimentOut = StemCache.accompanimentURL(key: key)
         let limiter = stemLimiter
 
-        Task.detached(priority: .utility) { [weak self] in
+        // weak track: the separation runs for CPU-minutes; holding the @Model (and with it
+        // its context graph) strongly for that long keeps deleted models alive. All accesses
+        // already guard on modelContext, so weak just lets a deleted track deallocate.
+        Task.detached(priority: .utility) { [weak self, weak track] in
             await limiter.acquire()
             // Re-check after the (possibly long) wait for the slot: another queued separation
             // of the same video, or a re-added track, may have written the stems meanwhile —
@@ -136,7 +160,7 @@ extension PreparationQueue {
                 let separator = OnnxStemSeparator(modelURL: modelURL)
                 _ = try separator.separate(inputURL: inputURL, vocalsOut: vocalsOut, accompanimentOut: accompanimentOut)
                 await MainActor.run {
-                    guard track.modelContext != nil else { return }
+                    guard let track, track.modelContext != nil else { return }
                     track.vocalsRelativePath = StemCache.relativePath(for: vocalsOut)
                     track.accompanimentRelativePath = StemCache.relativePath(for: accompanimentOut)
                     try? context.save()

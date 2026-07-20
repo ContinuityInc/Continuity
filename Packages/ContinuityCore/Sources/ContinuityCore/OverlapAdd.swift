@@ -17,6 +17,10 @@ public final class StreamingOverlapAdd {
 
     /// First frame index still held in internal state (everything before it has been drained).
     private var base = 0
+    /// Physical index of frame `base` within `acc`/`weight`. Drains advance this cursor and
+    /// compact only once a segment of dead frames accumulates — removeFirst on every drain
+    /// memmoved the whole remaining buffer per window.
+    private var head = 0
     /// Per-channel weighted accumulation, index i ↔ absolute frame base + i.
     private var acc: [[Float]]
     /// Sum of window weights per frame, shared across channels.
@@ -43,12 +47,12 @@ public final class StreamingOverlapAdd {
         precondition(length >= 0 && length <= segment)
         let needed = (start - base) + length
         if needed > count {
-            let grow = needed - count
+            let grow = (head + needed) - weight.count
             for c in 0..<channels { acc[c].append(contentsOf: repeatElement(0, count: grow)) }
             weight.append(contentsOf: repeatElement(0, count: grow))
             count = needed
         }
-        let offset = start - base
+        let offset = head + (start - base)
         for i in 0..<length {
             let w = window[i]
             for c in 0..<channels { acc[c][offset + i] += sample(c, i) * w }
@@ -65,14 +69,19 @@ public final class StreamingOverlapAdd {
         let n = upTo - base
         var out = Array(repeating: [Float](repeating: 0, count: n), count: channels)
         for i in 0..<n {
-            let w = weight[i]
+            let w = weight[head + i]
             guard w > 0 else { continue }
-            for c in 0..<channels { out[c][i] = acc[c][i] / w }
+            for c in 0..<channels { out[c][i] = acc[c][head + i] / w }
         }
-        for c in 0..<channels { acc[c].removeFirst(n) }
-        weight.removeFirst(n)
+        head += n
         base = upTo
         count -= n
+        // Amortized compaction: shed dead frames once a segment's worth piled up.
+        if head >= segment {
+            for c in 0..<channels { acc[c].removeFirst(head) }
+            weight.removeFirst(head)
+            head = 0
+        }
         return out
     }
 

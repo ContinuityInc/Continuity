@@ -11,9 +11,17 @@ import SwiftData
 /// post-deletion library.
 public enum LibraryCleanup {
 
+    /// Fetch limited to the fields `stemKey` reads — a cleanup pass has no business eagerly
+    /// hydrating every track's beat grid.
+    private static func stemKeyDescriptor() -> FetchDescriptor<Track> {
+        var descriptor = FetchDescriptor<Track>()
+        descriptor.propertiesToFetch = [\.youtubeVideoID, \.id]
+        return descriptor
+    }
+
     @MainActor
     public static func removeOrphanedFiles(keys: [String], in context: ModelContext) {
-        let tracks = (try? context.fetch(FetchDescriptor<Track>())) ?? []
+        let tracks = (try? context.fetch(Self.stemKeyDescriptor())) ?? []
         let referenced = Set(tracks.map(\.stemKey))
         for key in Set(keys) where !referenced.contains(key) {
             removeCachedFiles(key: key)
@@ -25,7 +33,7 @@ public enum LibraryCleanup {
     /// on disk after the delete-time cleanup had already run.
     @MainActor
     public static func sweepOrphanedFiles(in context: ModelContext) {
-        guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
+        guard let tracks = try? context.fetch(Self.stemKeyDescriptor()) else { return }
         let referenced = Set(tracks.map(\.stemKey))
 
         if let files = try? FileManager.default.contentsOfDirectory(

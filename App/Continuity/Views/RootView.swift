@@ -79,7 +79,11 @@ struct RootView: View {
                 // Natural queue exhaustion loops playback into the listening history — resolve
                 // the persisted IDs to live tracks in order; deleted tracks simply drop out.
                 player.onQueueExhausted = { ids in
-                    let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
+                    // ID-map resolution only: don't eagerly hydrate every track's beatTimes
+                    // (hundreds of doubles each) — untouched properties fault in on demand.
+                    var descriptor = FetchDescriptor<Track>()
+                    descriptor.propertiesToFetch = [\.id]
+                    let tracks = (try? modelContext.fetch(descriptor)) ?? []
                     let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
                     return ids.compactMap { byID[$0] }
                 }
@@ -227,7 +231,10 @@ struct RootView: View {
     /// fresh install, stages COMË N GO paused at the start of its playlist.
     private func restorePlaybackSession() {
         guard player.currentTrack == nil else { return }   // already playing (e.g. state restore re-entry)
-        let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
+        // ID-map resolution: skip eager beatTimes hydration (see onQueueExhausted).
+        var descriptor = FetchDescriptor<Track>()
+        descriptor.propertiesToFetch = [\.id]
+        let tracks = (try? modelContext.fetch(descriptor)) ?? []
 
         if let state = PlaybackStateStore.load() {
             let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
