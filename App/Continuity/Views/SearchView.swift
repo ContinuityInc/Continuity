@@ -156,7 +156,6 @@ struct SearchView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(PreparationQueue.self) private var prepQueue
-    @Query private var allTracks: [Track]
 
     @State private var model = CatalogSearchModel()
 
@@ -168,7 +167,13 @@ struct SearchView: View {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .task {
-            model.seedVocabulary(titles: allTracks.map(\.title) + allTracks.map(\.artist))
+            // One-shot seed, fetching only the two strings we read — @Query here hydrated
+            // every Track (beatTimes arrays included) and kept a live subscription re-firing
+            // on any library change for as long as search stayed open.
+            var descriptor = FetchDescriptor<Track>()
+            descriptor.propertiesToFetch = [\.title, \.artist]
+            let tracks = (try? modelContext.fetch(descriptor)) ?? []
+            model.seedVocabulary(titles: tracks.map(\.title) + tracks.map(\.artist))
         }
     }
 
@@ -398,7 +403,9 @@ private struct MusicKeyboardView: View {
 
     var body: some View {
         VStack(spacing: 7) {
-            suggestionBar
+            // Leaf view: suggestions change on every keystroke; inlined, they re-built the
+            // entire ~40-button key grid per keypress instead of just this bar.
+            SuggestionBar(model: model, haptic: haptic)
             ForEach(showNumbers ? Self.numberRows : Self.letterRows, id: \.self) { row in
                 keyRow(row)
             }
@@ -408,32 +415,6 @@ private struct MusicKeyboardView: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .background(.regularMaterial)
-    }
-
-    private var suggestionBar: some View {
-        HStack(spacing: 6) {
-            let suggestions = model.suggestions
-            if suggestions.isEmpty {
-                // Fixed height so the keyboard never jumps as suggestions come and go.
-                Color.clear.frame(height: 32)
-            } else {
-                ForEach(suggestions, id: \.self) { word in
-                    Button {
-                        haptic.impactOccurred()
-                        model.accept(suggestion: word)
-                    } label: {
-                        Text(word)
-                            .font(.subheadline)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 32)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(.horizontal, 4)
     }
 
     private func keyRow(_ characters: String) -> some View {
@@ -492,5 +473,37 @@ private struct MusicKeyboardView: View {
         .buttonStyle(.plain)
         // Holding backspace repeats, like the real thing.
         .buttonRepeatBehavior(symbol == "delete.left" ? .enabled : .disabled)
+    }
+}
+
+/// Leaf: the keyboard's only per-keystroke invalidation surface (see MusicKeyboardView.body).
+private struct SuggestionBar: View {
+    let model: CatalogSearchModel
+    let haptic: UIImpactFeedbackGenerator
+
+    var body: some View {
+        HStack(spacing: 6) {
+            let suggestions = model.suggestions
+            if suggestions.isEmpty {
+                // Fixed height so the keyboard never jumps as suggestions come and go.
+                Color.clear.frame(height: 32)
+            } else {
+                ForEach(suggestions, id: \.self) { word in
+                    Button {
+                        haptic.impactOccurred()
+                        model.accept(suggestion: word)
+                    } label: {
+                        Text(word)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 32)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 4)
     }
 }

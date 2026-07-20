@@ -13,12 +13,15 @@ struct UpNextView: View {
     @AppStorage("flowMode.v1") private var flowMode = false
 
     var body: some View {
-        NavigationStack {
+        // Capture once: upcomingTracks allocates a fresh array slice per access, and body
+        // read it twice (emptiness check + list).
+        let upcoming = player.upcomingTracks
+        return NavigationStack {
             Group {
-                if player.upcomingTracks.isEmpty {
+                if upcoming.isEmpty {
                     ContentUnavailableView("Nothing up next", systemImage: "list.bullet")
                 } else {
-                    queueList
+                    queueList(upcoming)
                 }
             }
             .navigationTitle("Up Next")
@@ -47,10 +50,10 @@ struct UpNextView: View {
         }
     }
 
-    private var queueList: some View {
+    private func queueList(_ upcoming: [Track]) -> some View {
         List {
             Section {
-                ForEach(player.upcomingTracks) { track in
+                ForEach(upcoming) { track in
                     row(track)
                 }
                 .onMove { player.moveUpcoming(fromOffsets: $0, toOffset: $1) }

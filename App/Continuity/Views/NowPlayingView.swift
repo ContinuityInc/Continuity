@@ -384,31 +384,10 @@ struct NowPlayingView: View {
 
     /// The flagship transition made visible: a live blend graph while a transition is in flight,
     /// or a preview of the next scheduled blend (with a countdown) when one is coming up.
-    @ViewBuilder private var transitionSection: some View {
-        if player.isTransitioning, let next = player.incomingTrack, let current = player.currentTrack {
-            TransitionVisualizationView(
-                settings: player.transitionSettings,
-                outgoing: current,
-                incoming: next,
-                isLive: true,
-                liveProgress: min(max(player.transitionProgress, 0), 1),
-                secondsUntil: nil
-            )
-            .padding(.horizontal, 24)
-            .transition(.opacity)
-        } else if let current = player.currentTrack, let next = player.upcomingTracks.first {
-            TransitionVisualizationView(
-                settings: player.transitionSettings,
-                outgoing: current,
-                incoming: next,
-                isLive: false,
-                liveProgress: 0,
-                secondsUntil: player.secondsUntilTransition
-            )
-            .padding(.horizontal, 24)
-            .transition(.opacity)
-        }
-    }
+    /// A LEAF view on purpose: it reads `transitionProgress` / `secondsUntilTransition`, both
+    /// derived from the 20 Hz `position` writes — inlined into the sheet body (as it used to
+    /// be) those reads re-evaluated the ENTIRE sheet 20x/s whenever it was open.
+    private var transitionSection: some View { TransitionSection() }
 
     // MARK: Scrubber (sheet only)
 
@@ -470,5 +449,36 @@ private struct ScrubberBar: View {
             .foregroundStyle(.white.opacity(0.65))
         }
         .padding(.horizontal, 32)
+    }
+}
+
+/// Leaf: the sheet's only reader of the 20 Hz-derived blend state (see `transitionSection`).
+private struct TransitionSection: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        if player.isTransitioning, let next = player.incomingTrack, let current = player.currentTrack {
+            TransitionVisualizationView(
+                settings: player.transitionSettings,
+                outgoing: current,
+                incoming: next,
+                isLive: true,
+                liveProgress: min(max(player.transitionProgress, 0), 1),
+                secondsUntil: nil
+            )
+            .padding(.horizontal, 24)
+            .transition(.opacity)
+        } else if let current = player.currentTrack, let next = player.upcomingTracks.first {
+            TransitionVisualizationView(
+                settings: player.transitionSettings,
+                outgoing: current,
+                incoming: next,
+                isLive: false,
+                liveProgress: 0,
+                secondsUntil: player.secondsUntilTransition
+            )
+            .padding(.horizontal, 24)
+            .transition(.opacity)
+        }
     }
 }

@@ -17,8 +17,20 @@ struct TransitionVisualizationView: View {
     let liveProgress: Double
     let secondsUntil: TimeInterval?
 
-    private var preview: TransitionPreview {
-        TransitionPreview.make(
+    /// Computed once at construction: `body` reads it in several places (graph + chips), and
+    /// as a computed property `TransitionPreview.make` re-ran on every access — 3×+ per frame
+    /// during live blends. Pure function of the init inputs, so a stored value is identical.
+    private let preview: TransitionPreview
+
+    init(settings: TransitionSettings, outgoing: Track, incoming: Track,
+         isLive: Bool, liveProgress: Double, secondsUntil: TimeInterval?) {
+        self.settings = settings
+        self.outgoing = outgoing
+        self.incoming = incoming
+        self.isLive = isLive
+        self.liveProgress = liveProgress
+        self.secondsUntil = secondsUntil
+        self.preview = TransitionPreview.make(
             curve: settings.curve,
             duration: settings.durationSeconds,
             outgoingBPM: outgoing.bpm,
