@@ -10,6 +10,7 @@ struct LibrarySheetView: View {
     @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
     @State private var showingAdd = false
+    @State private var showingSearch = false
 
     var body: some View {
         NavigationStack {
@@ -29,6 +30,14 @@ struct LibrarySheetView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button {
+                            showingSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .accessibilityLabel("Search music")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
                             showingAdd = true
                         } label: {
                             Image(systemName: "plus")
@@ -39,6 +48,10 @@ struct LibrarySheetView: View {
         }
         .sheet(isPresented: $showingAdd) {
             AddMusicView()
+        }
+        // Full-screen: the page owns its whole layout (pill / results / custom keyboard).
+        .fullScreenCover(isPresented: $showingSearch) {
+            SearchView()
         }
         .safeAreaInset(edge: .bottom) {
             if player.currentTrack != nil {
