@@ -11,10 +11,10 @@ extension PreparationQueue {
     /// **never** separated eagerly — only the neighborhood vocal-aware transitions need next.
     /// Also refreshes the LRU clock and heals links whose files were evicted.
     public func ensureStems(for tracks: [Track], in context: ModelContext) {
-        protectedStemKeys = Set(tracks.compactMap(\.youtubeVideoID))
+        protectedStemKeys = Set(tracks.map(\.stemKey))
         for track in tracks {
-            guard !track.isDemo, track.prepState == .ready,
-                  let key = track.youtubeVideoID, track.localRelativePath != nil else { continue }
+            guard !track.isDemo, track.prepState == .ready, track.localRelativePath != nil else { continue }
+            let key = track.stemKey
             reconcileStemLinks(track, in: context)
             if track.hasStems {
                 StemCache.markUsed(key: key)   // actively played material stays cache-resident
@@ -34,7 +34,7 @@ extension PreparationQueue {
     /// (e.g. a re-added video), clears links whose files were evicted so `hasStems` tells the
     /// truth and the track becomes eligible for re-separation.
     func reconcileStemLinks(_ track: Track, in context: ModelContext) {
-        guard let key = track.youtubeVideoID else { return }
+        let key = track.stemKey
         if let v = track.vocalsRelativePath, let a = track.accompanimentRelativePath,
            FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: v).path),
            FileManager.default.fileExists(atPath: StemCache.url(forRelativePath: a).path) {
@@ -57,8 +57,9 @@ extension PreparationQueue {
     /// transition for this track. Serialised via `stemLimiter`; after each separation the cache's
     /// byte budget is enforced (LRU eviction, protecting the play-queue neighborhood).
     private func separateStems(_ track: Track, in context: ModelContext) {
-        guard let key = track.youtubeVideoID, let relativePath = track.localRelativePath,
+        guard let relativePath = track.localRelativePath,
               !stemsInFlight.contains(track.id) else { return }
+        let key = track.stemKey
         stemsInFlight.insert(track.id)
 
         let inputURL = AudioCache.url(forRelativePath: relativePath)
