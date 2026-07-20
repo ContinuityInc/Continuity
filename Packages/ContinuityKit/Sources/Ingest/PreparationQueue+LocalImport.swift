@@ -71,11 +71,46 @@ extension PreparationQueue {
         let ext = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
         let destination = AudioCache.fileURL(videoID: trackID.uuidString, container: ext)
         do {
-            try FileManager.default.copyItem(at: url, to: destination)
+            try await Self.copyMaterialized(from: url, to: destination)
         } catch {
             Logger.ingest.error("local import copy failed for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
             return false
         }
+        return await finishImport(of: destination, originalURL: url, trackID: trackID, in: context)
+    }
+
+    /// Copies a picked file into the cache, downloading it first when it lives in a cloud
+    /// file provider (Google Drive, iCloud Drive, Dropbox…). Cloud picks often arrive as
+    /// unmaterialized placeholders — a plain `copyItem` fails on those — so on failure we
+    /// retry through `NSFileCoordinator`, whose coordinated read tells the provider to fetch
+    /// the real bytes. The coordinated read blocks while the provider downloads, so it runs
+    /// off the main actor.
+    private static func copyMaterialized(from url: URL, to destination: URL) async throws {
+        do {
+            try FileManager.default.copyItem(at: url, to: destination)
+        } catch {
+            try await Task.detached(priority: .userInitiated) {
+                var coordinatorError: NSError?
+                var copyError: Error?
+                NSFileCoordinator().coordinate(
+                    readingItemAt: url, options: [], error: &coordinatorError
+                ) { materialized in
+                    do {
+                        try? FileManager.default.removeItem(at: destination) // partial first try
+                        try FileManager.default.copyItem(at: materialized, to: destination)
+                    } catch {
+                        copyError = error
+                    }
+                }
+                if let coordinatorError { throw coordinatorError }
+                if let copyError { throw copyError }
+            }.value
+        }
+    }
+
+    /// Metadata extraction + model creation for a file already copied into the cache.
+    private func finishImport(of destination: URL, originalURL url: URL, trackID: UUID,
+                              in context: ModelContext) async -> Bool {
 
         // Metadata load runs off-main (AVURLAsset touches the file).
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
