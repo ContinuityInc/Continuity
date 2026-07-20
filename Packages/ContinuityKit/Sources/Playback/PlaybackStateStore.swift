@@ -16,13 +16,18 @@ public struct PersistedPlaybackState: Codable, Equatable {
 public enum PlaybackStateStore {
     private static let key = "playbackState.v1"
 
+    // Reused across the ~5 s periodic saves — constructing a fresh coder per call is pure
+    // allocation churn on the main thread.
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
     public static func load() -> PersistedPlaybackState? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(PersistedPlaybackState.self, from: data)
+        return try? decoder.decode(PersistedPlaybackState.self, from: data)
     }
 
     static func save(_ state: PersistedPlaybackState) {
-        guard let data = try? JSONEncoder().encode(state) else { return }
+        guard let data = try? encoder.encode(state) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
 

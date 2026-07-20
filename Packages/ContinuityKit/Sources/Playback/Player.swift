@@ -45,7 +45,15 @@ final class AudioStack {
 @Observable
 public final class Player {
     // MARK: Observable state
-    var queue: [Track] = []
+    var queue: [Track] = [] {
+        didSet { cachedQueueIDs = nil }   // persistState() rebuilds the ID array lazily
+    }
+    /// Cached `queue.map(\.id)` for the periodic persist — each `.id` is a SwiftData read,
+    /// so re-mapping an unchanged queue every ~5 s was pure managed-object churn.
+    @ObservationIgnored var cachedQueueIDs: [UUID]?
+    /// Cached `audibleEndSeconds` of the loaded track (refreshed ~1 Hz in `tick()`), so the
+    /// 20 Hz `effectiveEndSeconds` reads don't hit SwiftData property machinery every tick.
+    @ObservationIgnored var trimCache: (track: Track, end: Double?)?
     var currentIndex = 0
     public internal(set) var isPlaying = false
     public internal(set) var isTransitioning = false
@@ -306,8 +314,12 @@ public final class Player {
     func startTimer() {
         stopTimer()
         // 20 Hz: smooth enough for the volume ramp and the scrubber.
+        // The timer fires on RunLoop.main, i.e. already on the main actor — run tick()
+        // synchronously (same pattern as the audio-session notification handlers). Wrapping
+        // it in Task {} allocated and re-queued 20 tasks/second, deferring each tick to a
+        // later scheduling slot — measurable churn exactly when the device is under load.
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
         displayTimer = timer
@@ -327,9 +339,11 @@ public final class Player {
         let full = duration
         // Pre-audio the staged track carries the same trim metadata as the loaded deck would.
         let track = audio?.current.track ?? currentTrack
-        guard transitionSettings.trimSilenceEnabled,
-              let audibleEnd = track?.audibleEndSeconds,
-              audibleEnd > 1, audibleEnd < full else { return full }
+        guard transitionSettings.trimSilenceEnabled, let track else { return full }
+        // Hot path (20 Hz from tick + UI): use the ~1 Hz cache instead of a SwiftData read.
+        // Cache misses (pre-audio, track just changed) fall through to the direct read.
+        let end = trimCache?.track === track ? trimCache?.end : track.audibleEndSeconds
+        guard let audibleEnd = end, audibleEnd > 1, audibleEnd < full else { return full }
         return audibleEnd
     }
 
@@ -361,6 +375,12 @@ public final class Player {
         if ticksSincePersist >= 100 {
             ticksSincePersist = 0
             persistState()
+        }
+        // Refresh the trim cache on track change and ~1 Hz: audibleEndSeconds only ever moves
+        // when the silence scan backfills it (minutes before it matters at track end), so a
+        // ≤1 s pickup delay is imperceptible — and it keeps SwiftData reads off the 20 Hz path.
+        if let track = audio.current.track, trimCache?.track !== track || memTicks % 20 == 0 {
+            trimCache = (track, track.audibleEndSeconds)
         }
         let dur = effectiveEndSeconds
         if isTransitioning {
