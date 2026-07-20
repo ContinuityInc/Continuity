@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Ingest
 import Playback
 
@@ -11,23 +12,17 @@ struct LibrarySheetView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var showingAdd = false
     @State private var showingSearch = false
+    @State private var showingLocalImport = false
+    /// Non-nil while a picked folder/files are being scanned + copied in.
+    @State private var isImportingLocal = false
 
     var body: some View {
         NavigationStack {
             LibraryView()
                 .navigationTitle("Continuity")
                 .toolbar {
-                    // Manual whole-library sync (source-backed playlists only).
-                    ToolbarItem(placement: .secondaryAction) {
-                        Button {
-                            prepQueue.syncAll(in: modelContext)
-                        } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .symbolEffect(.rotate, isActive: !prepQueue.syncingPlaylistIDs.isEmpty)
-                        }
-                        .disabled(!prepQueue.syncingPlaylistIDs.isEmpty)
-                        .accessibilityLabel("Sync library")
-                    }
+                    // Every action is a primaryAction so nothing collapses into a dead "…"
+                    // overflow menu (secondaryAction items did, and looked broken).
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             showingSearch = true
@@ -36,13 +31,28 @@ struct LibrarySheetView: View {
                         }
                         .accessibilityLabel("Search music")
                     }
+                    // Add-by-download: import from other services (YouTube, Spotify links).
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             showingAdd = true
                         } label: {
-                            Image(systemName: "plus")
+                            AddBadgeIcon(base: "arrow.down")
                         }
-                        .accessibilityLabel("Add music")
+                        .accessibilityLabel("Add from YouTube or Spotify")
+                    }
+                    // Add-by-upload: import songs from the user's own files.
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingLocalImport = true
+                        } label: {
+                            if isImportingLocal {
+                                ProgressView()
+                            } else {
+                                AddBadgeIcon(base: "arrow.up")
+                            }
+                        }
+                        .disabled(isImportingLocal)
+                        .accessibilityLabel("Import local files")
                     }
                 }
         }
@@ -52,6 +62,22 @@ struct LibrarySheetView: View {
         // Full-screen: the page owns its whole layout (pill / results / custom keyboard).
         .fullScreenCover(isPresented: $showingSearch) {
             SearchView()
+        }
+        // Local import: pick audio files OR a whole folder — folders are scanned recursively
+        // for music (audio type + song-sized) and imported in bulk into "Local Files".
+        // iOS sandboxing means the app can't read the Files "music folder" unprompted; a
+        // folder grant through this picker is the sanctioned way to scan it.
+        .fileImporter(
+            isPresented: $showingLocalImport,
+            allowedContentTypes: [.audio, .folder],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result, !urls.isEmpty else { return }
+            isImportingLocal = true
+            Task {
+                _ = await prepQueue.importLocalFiles(urls, in: modelContext)
+                isImportingLocal = false
+            }
         }
         .safeAreaInset(edge: .bottom) {
             if player.currentTrack != nil {
@@ -76,5 +102,22 @@ struct LibrarySheetView: View {
                 .accessibilityLabel("Now Playing")
             }
         }
+    }
+}
+
+/// A toolbar glyph composed of a base symbol (arrow.down / arrow.up) with a small plus badge —
+/// "add by downloading" vs "add by uploading". SF Symbols has no built-in plus-badged arrows,
+/// so the badge is drawn as an overlay.
+private struct AddBadgeIcon: View {
+    let base: String
+
+    var body: some View {
+        Image(systemName: base)
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "plus")
+                    .font(.system(size: 8, weight: .heavy))
+                    .offset(x: 7, y: -4)
+            }
+            .padding(.trailing, 4)   // room for the badge inside the tap target
     }
 }
