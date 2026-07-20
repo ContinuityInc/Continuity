@@ -2,48 +2,74 @@ import Foundation
 import Domain
 import SwiftData
 
-/// Removes cached files (downloaded audio + separated stems) for deleted tracks — but only when
-/// no surviving track still references the same source video (the same video can appear in
-/// several playlists; caches are keyed by video ID and shared).
+/// Removes cached files (imported audio + separated stems) for deleted tracks — but only when
+/// no surviving track still references the same source (a YouTube-sourced video can appear in
+/// several playlists; its audio/stems are keyed by video ID and shared. Locally imported files
+/// are keyed by the track's own UUID and never shared).
 ///
 /// Call AFTER the track models have been deleted and saved, so the reference check sees the
 /// post-deletion library.
 public enum LibraryCleanup {
 
-    @MainActor
-    public static func removeOrphanedFiles(videoIDs: [String], in context: ModelContext) {
-        for videoID in Set(videoIDs) {
-            let descriptor = FetchDescriptor<Track>(
-                predicate: #Predicate { $0.youtubeVideoID == videoID }
-            )
-            let stillReferenced = ((try? context.fetchCount(descriptor)) ?? 0) > 0
-            guard !stillReferenced else { continue }
+    /// What a track owned on disk, captured BEFORE the model is deleted.
+    public struct DeletedTrackFiles: Sendable {
+        let stemKey: String
+        let youtubeVideoID: String?
+        let audioRelativePath: String?
 
-            // Audio: the container extension varies (m4a/webm/…), so match by basename.
-            if let files = try? FileManager.default.contentsOfDirectory(
-                at: AudioCache.directory, includingPropertiesForKeys: nil
-            ) {
-                for file in files where file.deletingPathExtension().lastPathComponent == videoID {
-                    try? FileManager.default.removeItem(at: file)
-                }
-            }
-
-            StemCache.removeStems(key: videoID)
+        public init(_ track: Track) {
+            stemKey = track.stemKey
+            youtubeVideoID = track.youtubeVideoID
+            audioRelativePath = track.localRelativePath
         }
     }
 
-    /// Launch-time sweep: removes any cached file whose video ID has no surviving track. Catches
-    /// downloads/stems that were still in flight when their tracks were deleted and landed on
-    /// disk after the delete-time cleanup had already run.
+    @MainActor
+    public static func removeOrphanedFiles(for deleted: [DeletedTrackFiles], in context: ModelContext) {
+        for item in deleted {
+            // Shared-source check only applies to YouTube-keyed files; a local import's UUID
+            // key dies with its track.
+            if let videoID = item.youtubeVideoID {
+                let descriptor = FetchDescriptor<Track>(
+                    predicate: #Predicate { $0.youtubeVideoID == videoID }
+                )
+                let stillReferenced = ((try? context.fetchCount(descriptor)) ?? 0) > 0
+                guard !stillReferenced else { continue }
+
+                // Legacy audio is named "<videoID>.<ext>"; the container extension varies
+                // (m4a/webm/…), so match by basename.
+                if let files = try? FileManager.default.contentsOfDirectory(
+                    at: AudioCache.directory, includingPropertiesForKeys: nil
+                ) {
+                    for file in files where file.deletingPathExtension().lastPathComponent == videoID {
+                        try? FileManager.default.removeItem(at: file)
+                    }
+                }
+            } else if let relativePath = item.audioRelativePath {
+                try? FileManager.default.removeItem(at: AudioCache.url(forRelativePath: relativePath))
+            }
+
+            StemCache.removeStems(key: item.stemKey)
+        }
+    }
+
+    /// Launch-time sweep: removes any cached file no surviving track references. Catches
+    /// stems that were still in flight when their tracks were deleted and landed on disk
+    /// after the delete-time cleanup had already run.
     @MainActor
     public static func sweepOrphanedFiles(in context: ModelContext) {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
-        let referenced = Set(tracks.compactMap(\.youtubeVideoID))
+        // Audio files are referenced by exact relative path (local imports use a random UUID
+        // filename unrelated to the track id); stems are keyed by `stemKey`.
+        let referencedAudio = Set(tracks.compactMap {
+            $0.localRelativePath.map { AudioCache.url(forRelativePath: $0).lastPathComponent }
+        })
+        let referencedStemKeys = Set(tracks.map(\.stemKey))
 
         if let files = try? FileManager.default.contentsOfDirectory(
             at: AudioCache.directory, includingPropertiesForKeys: nil
         ) {
-            for file in files where !referenced.contains(file.deletingPathExtension().lastPathComponent) {
+            for file in files where !referencedAudio.contains(file.lastPathComponent) {
                 try? FileManager.default.removeItem(at: file)
             }
         }
@@ -52,12 +78,12 @@ public enum LibraryCleanup {
             at: StemCache.directory, includingPropertiesForKeys: nil
         ) {
             for file in files {
-                // Stem names are "<videoID>-vocals.caf" / "<videoID>-accompaniment.caf".
+                // Stem names are "<key>-vocals.caf" / "<key>-accompaniment.caf".
                 let base = file.deletingPathExtension().lastPathComponent
                 let key = base
                     .replacingOccurrences(of: "-vocals", with: "")
                     .replacingOccurrences(of: "-accompaniment", with: "")
-                if !referenced.contains(key) {
+                if !referencedStemKeys.contains(key) {
                     try? FileManager.default.removeItem(at: file)
                 }
             }
