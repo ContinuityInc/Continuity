@@ -66,6 +66,14 @@ extension Player {
                 // The engine stopped itself to apply a new configuration (sample rate/route).
                 // Node schedules are gone; reschedule from the current position and keep going.
                 guard let self, self.isPlaying else { return }
+                // Spurious changes happen with the engine still rendering — notably the
+                // Taptic Engine (context-menu long-press haptic) sharing the audio hardware.
+                // Recovery stops + reschedules both stem players (an audible ~1s dropout),
+                // so only do it when the engine actually stopped.
+                guard !engine.isRunning else {
+                    Logger.audio.info("engine configuration change — engine still running, skipping recovery")
+                    return
+                }
                 Logger.audio.info("engine configuration change — recovering playback")
                 self.recoverPlayback(force: true)
             }
