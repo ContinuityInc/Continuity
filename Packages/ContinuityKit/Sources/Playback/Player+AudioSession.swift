@@ -97,8 +97,7 @@ extension Player {
         let wasPlaying = isPlaying
         let resumePosition = position
         // Don't touch the dead engine/decks — even stop() can throw on orphaned nodes.
-        isTransitioning = false
-        transitionProgress = 0
+        clearTransitionState()
         isPlaying = false
         stopTimer()
         audio = nil
@@ -137,11 +136,24 @@ extension Player {
         resumeAfterInterruption = false
         // Observers only exist once the stack does, so `audio` is always live here.
         guard currentTrack != nil, let audio else { return }
+        let transitionWasInterrupted = isTransitioning
         guard ensureRunning() else {
+            if transitionWasInterrupted {
+                // The idle deck's schedule is no longer trustworthy. Clear the blend flags even
+                // when CoreAudio cannot restart so a later play cannot resume that stale deck.
+                clearTransitionState()
+            }
             Logger.audio.error("engine restart failed during recovery")
             isPlaying = false
             stopTimer()
             return
+        }
+        if transitionWasInterrupted {
+            // Configuration-change recovery bypasses pauseForEnvironment(), but an engine stop
+            // invalidates both decks just the same. Drop the incoming deck before rescheduling
+            // the outgoing one; otherwise pause/resume can call play() on its stale schedule.
+            Logger.audio.info("engine stop interrupted transition — discarding incoming deck")
+            cancelTransition()
         }
         // Engine stops invalidate node schedules — reschedule from where the clock stood.
         if audio.current.seekRealFile(to: position) {
