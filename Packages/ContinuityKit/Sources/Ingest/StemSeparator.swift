@@ -198,9 +198,14 @@ final class OnnxStemSeparator: StemSeparating {
         let ola = StreamingOverlapAdd(channels: channels, segment: segment, overlap: segment / 4)
         let stride = ola.stride
 
-        // Un-flushed mix frames [flushed, flushed + mix count) — needed both as model input and
-        // to derive accompaniment = mix − vocals after normalization.
+        // Un-flushed mix frames — needed both as model input and to derive
+        // accompaniment = mix − vocals after normalization. `mixBase` is the absolute frame
+        // index of mixL[0]: flushes advance `flushed` and only compact the arrays once a
+        // whole segment of dead frames has built up, instead of memmoving the remainder on
+        // every window (removeFirst per flush was ~1.4 MB of copy traffic per window, running
+        // concurrently with playback).
         var mixL = [Float](), mixR = [Float]()
+        var mixBase = 0
         var flushed = 0
         var decodedEnd = 0
         var atEOF = false
@@ -229,7 +234,7 @@ final class OnnxStemSeparator: StemSeparating {
 
             // Build the input tensor: shape (1, 2, segment), planar [ch0…, ch1…], zero-padded.
             let length = min(segment, decodedEnd - start)
-            let offset = start - flushed
+            let offset = start - mixBase
             for i in 0..<length {
                 input[i] = mixL[offset + i]
                 input[segment + i] = mixR[offset + i]
@@ -257,15 +262,20 @@ final class OnnxStemSeparator: StemSeparating {
                 let n = finalUpTo - flushed
                 var accL = [Float](repeating: 0, count: n)
                 var accR = [Float](repeating: 0, count: n)
+                let head = flushed - mixBase
                 for i in 0..<n {
-                    accL[i] = mixL[i] - voc[0][i]
-                    accR[i] = mixR[i] - voc[1][i]
+                    accL[i] = mixL[head + i] - voc[0][i]
+                    accR[i] = mixR[head + i] - voc[1][i]
                 }
                 try append(to: vocalsFile, left: voc[0], right: voc[1])
                 try append(to: accFile, left: accL, right: accR)
-                mixL.removeFirst(n)
-                mixR.removeFirst(n)
                 flushed = finalUpTo
+                // Amortized compaction: drop dead frames only once a segment's worth piled up.
+                if flushed - mixBase >= segment {
+                    mixL.removeFirst(flushed - mixBase)
+                    mixR.removeFirst(flushed - mixBase)
+                    mixBase = flushed
+                }
             }
             if atEOF && start >= decodedEnd { break }
         }

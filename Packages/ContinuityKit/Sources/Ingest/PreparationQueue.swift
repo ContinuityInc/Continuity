@@ -174,8 +174,11 @@ public final class PreparationQueue {
                 track.localRelativePath = AudioCache.relativePath(for: fileURL)
 
                 // Real duration for the row (bare-ID adds start at 0, which renders as "0:00").
-                if track.durationSeconds <= 0, let file = try? AVAudioFile(forReading: fileURL) {
-                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+                // Header parse runs off-main: AVAudioFile(forReading:) opens + parses the
+                // container synchronously, and this class is MainActor-bound.
+                if track.durationSeconds <= 0 {
+                    let seconds = await Self.fileDurationSeconds(url: fileURL)
+                    if let seconds, track.modelContext != nil { track.durationSeconds = seconds }
                 }
 
                 // NOTE: the real title/channel (oEmbed) is deliberately NOT fetched here — it
@@ -223,6 +226,14 @@ public final class PreparationQueue {
         }
     }
 
+    /// Opens the audio file off the main actor and returns its duration, or nil if unreadable.
+    nonisolated static func fileDurationSeconds(url: URL) async -> Double? {
+        await Task.detached(priority: .utility) {
+            guard let file = try? AVAudioFile(forReading: url) else { return nil }
+            return Double(file.length) / file.processingFormat.sampleRate
+        }.value
+    }
+
     /// Whether the track still shows the "YouTube Video (abc123)" placeholder from a bare-ID add.
     private static func hasPlaceholderMetadata(_ track: Track) -> Bool {
         track.youtubeVideoID != nil && track.title.hasPrefix("YouTube Video (")
@@ -253,9 +264,11 @@ public final class PreparationQueue {
             if needsDuration || needsSilenceScan, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
-                if needsDuration, track.modelContext != nil,
-                   let file = try? AVAudioFile(forReading: url) {
-                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+                if needsDuration {
+                    // Off-main: a launch backfill over a big library would otherwise do one
+                    // synchronous main-thread file open per track — UI hitches during playback.
+                    let seconds = await Self.fileDurationSeconds(url: url)
+                    if let seconds, track.modelContext != nil { track.durationSeconds = seconds }
                 }
                 if needsSilenceScan, track.modelContext != nil {
                     MemoryFootprint.breadcrumb("silence scan begin")
@@ -320,6 +333,11 @@ public final class PreparationQueue {
     var separationAllowedAt: Date?
     /// At most one pending post-hold retry (ensureStems also re-fires on every track change).
     var stemsRetryScheduled = false
+    /// Single-flight state for the stem-cache budget pass: rapid skips fired one full
+    /// directory scan per queue move, racing each other. One runs at a time; at most one
+    /// more is queued (re-reading the latest protected set when it starts).
+    var budgetPassRunning = false
+    var budgetPassQueued = false
 
 
 }
