@@ -8,6 +8,20 @@ public enum PrepState: String, Codable, Sendable {
     case pending, preparing, ready, failed
 }
 
+/// On-disk store for artwork extracted from imported files' embedded metadata. Mirrors
+/// `StemCache`: flat files in one Application Support directory, excluded from backup.
+public enum ArtworkStore {
+    public static var directory: URL {
+        var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Artwork", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir
+    }
+}
+
 @Model
 public final class Track {
     public var id: UUID
@@ -66,12 +80,24 @@ public final class Track {
 
     /// A seeded demo track (no real source) — it plays synthesized tones, not real audio. Used to
     /// label the placeholder sample library so it isn't mistaken for real playback.
-    public var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil }
+    public var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil && localRelativePath == nil }
 
-    /// Real cover art for YouTube-sourced tracks: the video's thumbnail, served from YouTube's
-    /// deterministic thumbnail CDN (no API call needed). nil for demo tracks → gradient artwork.
+    /// Filename (relative to `ArtworkStore.directory`) of artwork extracted from an imported
+    /// file's embedded metadata; nil when the file carried none.
+    public var artworkPath: String?
+
+    /// Stable key for the stem cache (and other per-source on-disk caches). YouTube-sourced
+    /// tracks keep their video ID (existing stems stay linked, and the same video shared
+    /// across playlists shares its caches); locally imported tracks use their own UUID.
+    public var stemKey: String { youtubeVideoID ?? id.uuidString }
+
+    /// Real cover art: embedded artwork extracted at import, else the YouTube thumbnail for
+    /// YouTube-sourced tracks. nil → gradient placeholder artwork.
     public var artworkURL: URL? {
-        youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }
+        if let artworkPath {
+            return ArtworkStore.directory.appendingPathComponent(artworkPath)
+        }
+        return youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }
     }
 
     /// Inverse side of the Playlist ↔ Track relationship.

@@ -181,8 +181,8 @@ extension PreparationQueue {
     private func removeTracks(_ tracks: [Track], in context: ModelContext) {
         guard !tracks.isEmpty else { return }
         onTracksDeleted?(Set(tracks.map(\.id)))
-        let videoIDs = tracks.compactMap(\.youtubeVideoID)
+        let keys = tracks.map(\.stemKey)
         for track in tracks { context.delete(track) }
-        LibraryCleanup.removeOrphanedFiles(videoIDs: videoIDs, in: context)
+        LibraryCleanup.removeOrphanedFiles(keys: keys, in: context)
     }
 }

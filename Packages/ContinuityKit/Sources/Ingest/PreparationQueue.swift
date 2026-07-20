@@ -238,7 +238,7 @@ public final class PreparationQueue {
     /// `resumePreparation`. Every heavy step is gated by `ingestLimiter` so a large library's
     /// launch backfill can't fan out into dozens of simultaneous file opens / PCM decodes /
     /// oEmbed requests (which hitch launch and thrash memory).
-    private func backfillTrackDetails(_ track: Track, in context: ModelContext) {
+    func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsTitle = Self.hasPlaceholderMetadata(track)
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
         let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil

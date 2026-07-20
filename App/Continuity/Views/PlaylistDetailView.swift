@@ -58,14 +58,12 @@ struct PlaylistDetailView: View {
     /// Removes a track: the player drops it first (so no deck/queue reference dangles), then the
     /// model goes, then any cached files no other track shares.
     private func delete(_ track: Track) {
-        let videoID = track.youtubeVideoID
+        let key = track.stemKey
         player.handleDeleted(trackIDs: [track.id])
         modelContext.delete(track)
         playlist.touch()    // membership changed → resort the library
         try? modelContext.save()
-        if let videoID {
-            LibraryCleanup.removeOrphanedFiles(videoIDs: [videoID], in: modelContext)
-        }
+        LibraryCleanup.removeOrphanedFiles(keys: [key], in: modelContext)
     }
 
     private var header: some View {
