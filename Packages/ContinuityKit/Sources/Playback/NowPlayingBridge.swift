@@ -89,7 +89,9 @@ final class NowPlayingBridge {
         artworkURL = track.artworkURL
         guard let url = track.artworkURL else { return }
 
-        artworkTask = Task { [weak self] in
+        // Lock-screen art is eventually-visible, not latency-critical — utility priority keeps
+        // the fetch from competing with blend/tick work under load.
+        artworkTask = Task(priority: .utility) { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let image = UIImage(data: data), !Task.isCancelled else { return }
             let art = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
