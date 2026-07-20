@@ -93,30 +93,33 @@ public final class PreparationQueue {
                 if track.prepState != .ready { track.prepState = .ready; try? context.save() }
                 continue
             }
-            // External/App Store builds never re-download YouTube audio — leave non-demo tracks
-            // as they are (or mark failed if they were mid-pipeline).
-            guard RemoteAudioIngest.isEnabled else {
-                if track.prepState == .pending || track.prepState == .preparing {
-                    track.prepState = .failed
-                    try? context.save()
-                }
-                continue
-            }
             switch track.prepState {
             case .ready:
                 let hasAudio = track.localRelativePath.map {
                     FileManager.default.fileExists(atPath: AudioCache.url(forRelativePath: $0).path)
                 } ?? false
-                if !hasAudio {
-                    enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
-                } else {
+                if hasAudio {
                     // Stems are demand-driven from the play queue (`ensureStems`) — never
                     // separated library-wide at launch. Just true-up links vs the disk.
+                    // Local-only maintenance, so it runs even when remote ingest is disabled
+                    // (App Store builds import audio from Files and still need this).
                     reconcileStemLinks(track, in: context)
                     backfillTrackDetails(track, in: context)
+                } else if RemoteAudioIngest.isEnabled {
+                    enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
+                } else {
+                    // Audio gone and this build can't re-download — surface as failed rather
+                    // than leaving a "ready" track that silently won't play.
+                    track.prepState = .failed
+                    try? context.save()
                 }
             case .pending, .preparing:
-                enqueue(track, in: context)              // interrupted before finishing → pick back up
+                if RemoteAudioIngest.isEnabled {
+                    enqueue(track, in: context)          // interrupted before finishing → pick back up
+                } else {
+                    track.prepState = .failed            // can't resume a download this build won't do
+                    try? context.save()
+                }
             case .failed:
                 break
             }
@@ -292,7 +295,7 @@ public final class PreparationQueue {
                     track.analysisVersion = TrackAnalyzer.analysisVersion
                 }
             }
-            if needsTitle, let id = track.youtubeVideoID {
+            if needsTitle, RemoteAudioIngest.isEnabled, let id = track.youtubeVideoID {
                 await ingestLimiter.acquire()
                 let meta = try? await metadataResolver.metadata(videoID: id)
                 await ingestLimiter.release()

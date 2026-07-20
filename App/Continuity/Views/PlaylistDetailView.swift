@@ -166,7 +166,8 @@ private struct TrackRow: View {
                 .controlSize(.mini)
         case .failed:
             // Tapping the row retries a failed ingest — the retry glyph signals it's actionable.
-            Image(systemName: "arrow.clockwise")
+            // Builds without remote ingest can't retry, so show a plain warning instead.
+            Image(systemName: RemoteAudioIngest.isEnabled ? "arrow.clockwise" : "exclamationmark.triangle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
         case .ready:
