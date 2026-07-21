@@ -106,6 +106,13 @@ private struct PagerBackdrop: View {
         let palette = Theme.gradientColors(seed: seed)
         let topEdge = style?.colors.first ?? palette.first ?? flat
         let bottomEdge = style?.colors.last ?? palette.last ?? flat
+        // The extensions must meet the backdrop's RENDERED edge, not its raw palette: `AlbumBackdrop`
+        // scrims its gradient by black at 0.30 (top) / 0.35 (bottom), so darken the extension
+        // endpoints by the same factors to kill the brightness seam at the page boundary. The top
+        // edge also carries a 55% blurred-art tint that this flat extension only approximates, so a
+        // faint softness may remain at the top boundary (acceptable); the bottom is an exact match.
+        let topEdgeScrimmed = topEdge.darkened(by: 0.30)
+        let bottomEdgeScrimmed = bottomEdge.darkened(by: 0.35)
 
         // Tuned for dark mode (primary usage): the extensions are muted edge colors fading out by
         // each neighbor's midpoint, so library/queue text stays legible over them.
@@ -116,7 +123,7 @@ private struct PagerBackdrop: View {
 
             // Top extension into the Library page's bottom half [0.5h, 1.0h]: flat at the Library
             // midpoint continuing up to the gradient's TOP edge color at the page boundary.
-            LinearGradient(colors: [flat, topEdge], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [flat, topEdgeScrimmed], startPoint: .top, endPoint: .bottom)
                 .frame(height: pageHeight * 0.5)
                 .offset(y: pageHeight * 0.5)
 
@@ -128,7 +135,7 @@ private struct PagerBackdrop: View {
 
             // Bottom extension into the Up Next page's top half [2.0h, 2.5h]: the gradient's
             // BOTTOM edge color at the page boundary fading to flat by the Up Next midpoint.
-            LinearGradient(colors: [bottomEdge, flat], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [bottomEdgeScrimmed, flat], startPoint: .top, endPoint: .bottom)
                 .frame(height: pageHeight * 0.5)
                 .offset(y: pageHeight * 2)
         }
@@ -137,6 +144,19 @@ private struct PagerBackdrop: View {
             guard let url else { style = nil; return }
             style = await BackdropRenderer.style(for: url)
         }
+    }
+}
+
+private extension Color {
+    /// Mixes the color toward black by `fraction` (0 = unchanged, 1 = black), preserving alpha.
+    /// Used to reproduce `AlbumBackdrop`'s black scrim on the flat bleed extensions so their
+    /// boundary color matches the composited backdrop edge. Falls back to the original color if
+    /// the components can't be resolved.
+    func darkened(by fraction: CGFloat) -> Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a) else { return self }
+        let scale = 1 - fraction
+        return Color(.sRGB, red: r * scale, green: g * scale, blue: b * scale, opacity: a)
     }
 }
 
