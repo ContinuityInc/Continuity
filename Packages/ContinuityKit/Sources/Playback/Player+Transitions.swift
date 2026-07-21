@@ -153,6 +153,10 @@ extension Player {
         position = baselineSeconds + incoming.elapsed
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         currentRate = incomingRate
+        // The key-sync shift was only needed while both tracks overlapped. Now that the incoming
+        // plays solo, glide its pitch back to true over a short window and clear the shift — else
+        // it repitches the whole remaining track (the "plays a little higher" bug).
+        beginPitchSettle()
         isTransitioning = false
         activeTransitionDurationSeconds = 0
         isUserInitiatedSkipTransition = false
@@ -188,5 +192,53 @@ extension Player {
         incomingPitchShiftSemitones = 0
         incomingRate = 1
         transitionProgress = 0
+        cancelPitchSettle()
+    }
+
+    /// Starts the cosmetic pitch settle on the now-current deck once a blend completes. The
+    /// harmonic key-sync detune only has to hold while both tracks overlap; once the incoming
+    /// plays solo we glide it back to true pitch (0 cents) over `pitchSettleDurationSeconds` and
+    /// clear the persisted shift, so the rest of the track isn't left detuned. No-op (and drops
+    /// any prior settle) when the promoted track isn't shifted.
+    func beginPitchSettle() {
+        guard currentPitchShiftSemitones != 0 else { cancelPitchSettle(); return }
+        // Driven by the 20 Hz tick loop (see Player.startTimer): duration / tick interval ticks.
+        pitchSettleTotalTicks = max(1, Int((Player.pitchSettleDurationSeconds / 0.05).rounded()))
+        pitchSettleTicksRemaining = pitchSettleTotalTicks
+        pitchSettleStartCents = Float(currentPitchShiftSemitones * 100)
+    }
+
+    /// One tick of the pitch settle: eases the current deck from its key-sync pitch toward true
+    /// pitch with a raised-cosine glide (zero slope at both ends → no click), then clears the
+    /// persisted shift. Only touches the deck's timePitch node, never `position`, so it can't
+    /// churn the tick-driven UI. Driven from `Player.tick()`.
+    func advancePitchSettle() {
+        guard pitchSettleTicksRemaining > 0, let audio else { return }
+        pitchSettleTicksRemaining -= 1
+        guard pitchSettleTicksRemaining > 0 else {
+            audio.current.pitchCents = 0
+            currentPitchShiftSemitones = 0   // nothing stays detuned for the rest of the track
+            pitchSettleStartCents = 0
+            return
+        }
+        let progress = Double(pitchSettleTotalTicks - pitchSettleTicksRemaining) / Double(pitchSettleTotalTicks)
+        let eased = 0.5 * (1 + cos(progress * .pi))   // 1 → 0 as progress goes 0 → 1
+        audio.current.pitchCents = pitchSettleStartCents * Float(eased)
+    }
+
+    /// Abandons any in-progress pitch settle. When a settle was actually mid-glide, finalize it —
+    /// snap the current deck to true pitch and clear the persisted shift — so a track can't be
+    /// left frozen at a partial detune (e.g. a second transition cancelled while the first's
+    /// settle was still gliding). A pure no-op when no settle is active, so it never touches a
+    /// deck's pitch on the normal path. Fresh-load callers already zeroed the deck via `Deck.load`,
+    /// so the snap is redundant-but-harmless there.
+    func cancelPitchSettle() {
+        if pitchSettleTicksRemaining > 0 {
+            audio?.current.pitchCents = 0
+            currentPitchShiftSemitones = 0
+        }
+        pitchSettleTicksRemaining = 0
+        pitchSettleTotalTicks = 0
+        pitchSettleStartCents = 0
     }
 }

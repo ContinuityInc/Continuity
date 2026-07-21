@@ -33,6 +33,7 @@ extension Player {
         }
         currentPitchShiftSemitones = 0
         currentRate = 1
+        cancelPitchSettle()   // restaging supersedes any in-flight post-transition settle
         queueRefillAttempted = false   // restaged track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
