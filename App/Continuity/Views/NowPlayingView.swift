@@ -72,6 +72,12 @@ struct NowPlayingView: View {
             }
             .padding(.bottom, 12)
         }
+        // Transient thumbs for the blend in flight (or just finished) — floats above the Up
+        // Next chevron so the centered column never reflows when it appears.
+        .overlay(alignment: .bottom) {
+            TransitionVoteBar()
+                .padding(.bottom, 72)
+        }
     }
 
     // MARK: Sheet layout (full detail)
@@ -92,6 +98,8 @@ struct NowPlayingView: View {
             trackLabel
 
             transitionSection
+
+            TransitionVoteBar()
 
             scrubber
             transport

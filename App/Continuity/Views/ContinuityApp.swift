@@ -13,7 +13,7 @@ struct ContinuityApp: App {
 
     init() {
         do {
-            let schema = Schema([Playlist.self, Track.self])
+            let schema = Schema([Playlist.self, Track.self, TransitionVote.self])
             // Pin the store to the app container. `groupContainer` defaults to `.automatic`,
             // which (with our share-extension app group entitlement) put SwiftData in the
             // group container — unused by the extension, noisy on first launch, and desynced
