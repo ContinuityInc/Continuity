@@ -152,6 +152,11 @@ extension Player {
 
     public func previous() {
         guard !queue.isEmpty else { return }
+        // A second press during an explicit skip would cancel the in-flight blend and walk the
+        // history a second time — dropping the entry it already consumed and double-refunding the
+        // skip. Ignore it until the blend lands, mirroring next().
+        guard !isUserInitiatedSkipTransition else { return }
+        // If an automatic blend is already underway, restart it as a user skip-back.
         cancelTransition()
         // Restart the current track if we're more than 3s in; otherwise step back through the
         // play history (unlimited), falling back to the previous queue slot when history is empty
@@ -169,11 +174,53 @@ extension Player {
             backIndex = queue.firstIndex { $0.id == historyIDs[historyIdx] }
             historyIDs.remove(at: historyIdx)
         }
-        currentIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
+        let targetIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
         // Stepping back a track refunds a forward skip (capped) — undoing a skip shouldn't
-        // leave the budget spent. Restart-current (above) deliberately doesn't refund.
+        // leave the budget spent. Restart-current (above) deliberately doesn't refund. A skip
+        // blend spends nothing on completion (finishTransition skips the refund for user skips),
+        // so this single refund holds whether we blend or hard-cut below.
         skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
-        startCurrentFresh()
+
+        // No distinct earlier track to blend into (single-track queue, or the most recent history
+        // entry is the current track) — a self-blend would just echo the same audio, so restart
+        // instead, exactly as the >3s branch does.
+        guard targetIndex != currentIndex else {
+            startCurrentFresh()
+            persistState()
+            return
+        }
+
+        // Blend back into the previous track exactly like next() blends forward: materialize the
+        // outgoing deck so there is audio to fade, then hand off on the idle deck. Skipping from a
+        // paused/staged session still needs the outgoing deck so there is something to fade away;
+        // if CoreAudio cannot start, hard-advance to the target rather than stranding the transport.
+        guard ensureCurrentLoaded(), let audio else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !isPlaying {
+            audio.current.play()
+            isPlaying = true
+            startTimer()
+        }
+        resumeAfterInterruption = false
+        // Clamp the fade to the audio actually LEFT on the outgoing track (short tracks / hot
+        // endings), and hard-advance when under a second remains — too little to read as a blend.
+        let remaining = effectiveEndSeconds - position
+        guard remaining > 1 else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        beginTransition(
+            toIndex: targetIndex,
+            outgoingPosition: position,
+            duration: min(Player.skipTransitionDurationSeconds, remaining),
+            isUserInitiatedSkip: true
+        )
         persistState()
     }
 
