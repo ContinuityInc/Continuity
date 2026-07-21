@@ -141,6 +141,15 @@ public final class Player {
     var currentRate: Double = 1
     /// Rate staged on the incoming deck; promoted to `currentRate` when the transition completes.
     var incomingRate: Double = 1
+    /// Post-transition pitch settle. The harmonic key-sync shift is only needed while the two
+    /// tracks overlap; once the promoted track plays solo, holding the detune repitches its whole
+    /// remaining duration (the audible "plays a little higher" bug). After a blend finishes we
+    /// glide the now-current deck from its shifted pitch back to true (0 cents) over
+    /// `pitchSettleDurationSeconds`, driven tick-by-tick, then clear `currentPitchShiftSemitones`.
+    /// Bookkeeping only (never read by views); 0 ticks remaining = no settle in progress.
+    @ObservationIgnored var pitchSettleTicksRemaining = 0
+    @ObservationIgnored var pitchSettleTotalTicks = 0
+    @ObservationIgnored var pitchSettleStartCents: Float = 0
 
     /// True when playback was paused by an interruption/route change and should resume when the
     /// system says the coast is clear.
@@ -224,6 +233,7 @@ public final class Player {
             applyLoudness(to: audio.current)
             currentPitchShiftSemitones = 0
             currentRate = 1
+            cancelPitchSettle()   // load() reset the deck's pitch; drop any in-flight settle
         }
         if let pending = pendingSeekSeconds {
             pendingSeekSeconds = nil
@@ -264,6 +274,10 @@ public final class Player {
     /// one back (capped). Previous-skips are unlimited and walk the persistent play history.
     static let maxSkips = 3
     static let skipTransitionDurationSeconds: TimeInterval = 5
+    /// Cosmetic window over which a post-transition track glides from its harmonic key-sync pitch
+    /// back to true pitch (0 cents). Short — just long enough that the un-detune isn't an audible
+    /// pitch pop at the handoff.
+    static let pitchSettleDurationSeconds: TimeInterval = 2
     public internal(set) var skipsRemaining = Player.maxSkips
     /// IDs of previously played tracks, most recent last. Persisted, so "previous" works across
     /// launches.
@@ -301,6 +315,7 @@ public final class Player {
         applyLoudness(to: audio.current)
         currentPitchShiftSemitones = 0
         currentRate = 1
+        cancelPitchSettle()   // a fresh start supersedes any in-flight post-transition settle
         queueRefillAttempted = false   // new current track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
@@ -361,6 +376,9 @@ public final class Player {
         guard isPlaying, let audio else { return }
         let elapsed = baselineSeconds + audio.current.elapsed
         position = elapsed
+        // Cosmetic: ease a just-transitioned track's key-sync pitch back to true. Touches only the
+        // deck's timePitch node (never `position`), so it stays off the heavy-view tick path.
+        advancePitchSettle()
         // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
         // that ramps during PLAIN playback (no ingest/stems activity, so no other breadcrumb
         // fires). The decay slope across these lines names the leak rate; the value at the
