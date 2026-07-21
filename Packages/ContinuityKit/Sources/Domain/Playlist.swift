@@ -6,6 +6,9 @@ public enum PlaylistSource: String, Codable, Sendable {
     case youtube
     case spotifyPlaylist
     case spotifyAlbum
+    /// A playlist in the user's on-device Apple Music library; `sourceID` is its persistent ID.
+    /// Unlike the others this re-fetches locally, so sync works offline.
+    case appleMusic
 }
 
 /// A playlist or album. For M0 both concepts are represented by this one model; the

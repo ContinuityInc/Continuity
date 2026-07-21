@@ -13,6 +13,7 @@ struct LibrarySheetView: View {
     @State private var showingAdd = false
     @State private var showingSearch = false
     @State private var showingLocalImport = false
+    @State private var showingAppleMusic = false
     /// Non-nil while a picked folder/files are being scanned + copied in.
     @State private var isImportingLocal = false
 
@@ -40,6 +41,15 @@ struct LibrarySheetView: View {
                         }
                         .accessibilityLabel("Add from YouTube or Spotify")
                     }
+                    // Add-by-library: import playlists from the user's Apple Music library.
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingAppleMusic = true
+                        } label: {
+                            AddBadgeIcon(base: "music.note")
+                        }
+                        .accessibilityLabel("Import from Apple Music")
+                    }
                     // Add-by-upload: import songs from the user's own files.
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -58,6 +68,9 @@ struct LibrarySheetView: View {
         }
         .sheet(isPresented: $showingAdd) {
             AddMusicView()
+        }
+        .sheet(isPresented: $showingAppleMusic) {
+            AppleMusicImportView()
         }
         // Full-screen: the page owns its whole layout (pill / results / custom keyboard).
         .fullScreenCover(isPresented: $showingSearch) {
