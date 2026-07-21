@@ -114,18 +114,29 @@ private struct PagerBackdrop: View {
         let topEdgeScrimmed = topEdge.darkened(by: 0.30)
         let bottomEdgeScrimmed = bottomEdge.darkened(by: 0.35)
 
-        // Tuned for dark mode (primary usage): the extensions are muted edge colors fading out by
-        // each neighbor's midpoint, so library/queue text stays legible over them.
+        // Tuned for dark mode (primary usage): each extension holds full edge color across the near
+        // half of its neighbor and only BEGINS fading at the neighbor's midpoint, so now-playing plus
+        // the near half of Library/Up Next read as one continuous surface; only the far half dissolves
+        // to flat, keeping library/queue text legible over the settled background.
         // Light mode may need tuning — the systemGroupedBackground is near-white there.
         ZStack(alignment: .top) {
             // Base flat fill across the full content height (the far halves of the neighbors).
             flat
 
-            // Top extension into the Library page's bottom half [0.5h, 1.0h]: flat at the Library
-            // midpoint continuing up to the gradient's TOP edge color at the page boundary.
-            LinearGradient(colors: [flat, topEdgeScrimmed], startPoint: .top, endPoint: .bottom)
-                .frame(height: pageHeight * 0.5)
-                .offset(y: pageHeight * 0.5)
+            // Top extension across the FULL Library page [0, 1.0h]: full color held from the page
+            // boundary up through the Library MIDPOINT (so now-playing + the near/bottom half of
+            // Library read as one continuous surface), then fading to flat over the far/top half.
+            LinearGradient(
+                stops: [
+                    .init(color: flat, location: 0.0),            // Library top (y=0) → flat background
+                    .init(color: topEdgeScrimmed, location: 0.5), // Library midpoint — full color reached
+                    .init(color: topEdgeScrimmed, location: 1.0)  // page boundary (y=1h) — hold full color
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: pageHeight)
+            .offset(y: 0)
 
             // Now-playing gradient at FULL strength over the center page [1.0h, 2.0h] — reuses
             // `AlbumBackdrop`, so the now-playing look is unchanged from before.
@@ -133,11 +144,20 @@ private struct PagerBackdrop: View {
                 .frame(height: pageHeight)
                 .offset(y: pageHeight)
 
-            // Bottom extension into the Up Next page's top half [2.0h, 2.5h]: the gradient's
-            // BOTTOM edge color at the page boundary fading to flat by the Up Next midpoint.
-            LinearGradient(colors: [bottomEdgeScrimmed, flat], startPoint: .top, endPoint: .bottom)
-                .frame(height: pageHeight * 0.5)
-                .offset(y: pageHeight * 2)
+            // Bottom extension across the FULL Up Next page [2.0h, 3.0h]: full color held from the
+            // page boundary through the Up Next MIDPOINT (so now-playing + the near/top half of Up
+            // Next read as one continuous surface), then fading to flat over the far/bottom half.
+            LinearGradient(
+                stops: [
+                    .init(color: bottomEdgeScrimmed, location: 0.0), // page boundary (y=2h) — hold full color
+                    .init(color: bottomEdgeScrimmed, location: 0.5), // Up Next midpoint — full color held
+                    .init(color: flat, location: 1.0)                // Up Next bottom (y=3h) → flat background
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: pageHeight)
+            .offset(y: pageHeight * 2)
         }
         .frame(height: pageHeight * 3, alignment: .top)
         .task(id: url) {
