@@ -1,5 +1,6 @@
 import Foundation
 import Domain
+import ContinuityCore
 
 /// Downloads a resolved audio stream to the on-disk cache.
 ///
@@ -73,11 +74,14 @@ final class AudioDownloader: AudioFileDownloading {
 
             try handle.close()
 
+            // A truncated or empty body is a transient server-side symptom (throttling, dropped
+            // connection), not a permanent property of the video — classify it retryable so the
+            // track-level backoff gets another pass rather than failing the row outright.
             if let totalSize, offset < totalSize {
-                throw IngestError.downloadFailed("incomplete download: \(offset)/\(totalSize) bytes")
+                throw IngestError.network("incomplete download: \(offset)/\(totalSize) bytes")
             }
             if offset == 0 {
-                throw IngestError.downloadFailed("empty download")
+                throw IngestError.network("empty download")
             }
         } catch {
             try? handle.close()
@@ -91,35 +95,59 @@ final class AudioDownloader: AudioFileDownloading {
     /// must not append a whole-file body at a non-zero offset.
     private func fetchChunk(url: URL, from: Int, to: Int) async throws -> (Data, Int?, Bool) {
         var lastError: Error?
-        for attempt in 0..<maxRetriesPerChunk {
+        for attempt in 1...max(1, maxRetriesPerChunk) {
+            // Share the app-wide cool-down: if the source is throttling other tracks' resolves,
+            // pushing chunk requests through anyway just deepens it.
+            await IngestThrottle.shared.gate()
             do {
                 var request = URLRequest(url: url)
                 request.setValue("bytes=\(from)-\(to)", forHTTPHeaderField: "Range")
                 let (data, response) = try await URLSession.shared.data(for: request)
 
                 guard let http = response as? HTTPURLResponse else {
+                    await IngestThrottle.shared.noteSuccess()
                     return (data, nil, false)
                 }
                 switch http.statusCode {
                 case 206:
                     // Partial content — the normal ranged path.
+                    await IngestThrottle.shared.noteSuccess()
                     let total = Self.totalSize(fromContentRange: http.value(forHTTPHeaderField: "Content-Range"))
                     return (data, total, false)
                 case 200:
                     // Server ignored Range and sent the whole file in one shot.
+                    await IngestThrottle.shared.noteSuccess()
                     return (data, data.count, true)
                 case 416:
                     // Requested range not satisfiable — we've already read past the end.
+                    await IngestThrottle.shared.noteSuccess()
                     return (Data(), nil, false)
+                case 403, 410:
+                    // Signed googlevideo URL went stale (they're short-lived, and a throttled
+                    // client gets them invalidated early). Retrying this URL is guaranteed to
+                    // fail; bail out immediately so the caller can re-resolve for a fresh one.
+                    throw IngestError.streamURLExpired
+                case 429:
+                    throw IngestError.rateLimited
                 default:
-                    throw IngestError.downloadFailed("HTTP \(http.statusCode)")
+                    throw IngestError.network("range fetch HTTP \(http.statusCode)")
                 }
+            } catch let error as IngestError where error.needsFreshStreamURL {
+                throw error     // pointless to retry — needs a different URL
             } catch {
                 lastError = error
-                // Linear backoff before retrying this chunk.
-                try? await Task.sleep(nanoseconds: UInt64(200_000_000) * UInt64(attempt + 1))
+                let ingestError = error as? IngestError
+                await IngestThrottle.shared.noteThrottled(isRateLimit: ingestError?.isRateLimited ?? false)
+                guard !IngestBackoff.isFinalAttempt(attempt, maxAttempts: maxRetriesPerChunk) else { break }
+                try Task.checkCancellation()
+                // Exponential backoff + jitter, matching the resolve path. The old linear
+                // 0.2/0.4/0.6s schedule burned its whole budget inside a single throttle window.
+                let policy: IngestBackoff.Policy = (ingestError?.isRateLimited ?? false) ? .rateLimited : .request
+                let delay = IngestBackoff.delay(afterAttempt: attempt, policy: policy)
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
+        if let ingestError = lastError as? IngestError { throw ingestError }
         throw IngestError.downloadFailed(String(describing: lastError ?? IngestError.downloadFailed("range fetch failed")))
     }
 

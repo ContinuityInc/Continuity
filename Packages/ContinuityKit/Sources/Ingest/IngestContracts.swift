@@ -28,17 +28,31 @@ public enum IngestError: Error, Sendable {
     case network(String)
     /// HTTP 429 from the source — a retry after a short delay may succeed.
     case rateLimited
+    /// The `googlevideo` URL was rejected (403/410): its signature expired, or the source
+    /// invalidated it mid-download. Retrying the same URL can never work — the video must be
+    /// re-resolved for a fresh one.
+    case streamURLExpired
     /// The source was reached and understood, but has no usable content
     /// (private, empty, region-locked, or deleted). Retrying won't help.
     case sourceUnavailable
 
     /// Whether retrying the same request with backoff could plausibly succeed. Distinguishes a
     /// transient blip (worth retrying, and not the user's fault) from a definitively empty source.
+    ///
+    /// `.streamURLExpired` is deliberately excluded: it needs a *different* URL, not another
+    /// attempt at this one. `process` handles it by re-resolving.
     var isRetryable: Bool {
         switch self {
         case .network, .rateLimited: return true
         default: return false
         }
+    }
+
+    /// Whether a fresh resolve could plausibly fix this — i.e. the failure is about the URL we
+    /// used, not about the video or the connection.
+    var needsFreshStreamURL: Bool {
+        if case .streamURLExpired = self { return true }
+        return false
     }
 }
 

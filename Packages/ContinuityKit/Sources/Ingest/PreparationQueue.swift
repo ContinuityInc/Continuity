@@ -69,10 +69,36 @@ public final class PreparationQueue {
     ///
     /// Safe to call from the UI: it persists the pending state immediately so the row's
     /// badge updates, then detaches the resolve/download work into its own `Task`.
+    ///
+    /// User-initiated calls (tapping a failed row) reset the track's backoff — an explicit retry
+    /// means "try now", not "resume the curve where it left off".
     public func enqueue(_ track: Track, in context: ModelContext) {
+        ingestAttempts[track.id] = nil
+        retryScheduledTrackIDs.remove(track.id)
+        enqueueInternal(track, in: context)
+    }
+
+    /// Enqueue without clearing the retry budget — used by the automatic backoff so a track that
+    /// keeps failing keeps climbing its curve instead of looping at `base` forever.
+    func enqueueInternal(_ track: Track, in context: ModelContext) {
         track.prepState = .pending
         try? context.save()
         Task { await process(track, in: context) }
+    }
+
+    /// Re-enqueues every `.failed` track (optionally only within one playlist) with a fresh
+    /// backoff budget. Surfaces as the "Retry all" affordance after an import that hit a
+    /// sustained throttle.
+    public func retryFailedTracks(in context: ModelContext, playlist: Playlist? = nil) {
+        let candidates: [Track]
+        if let playlist {
+            candidates = playlist.tracks
+        } else {
+            candidates = (try? context.fetch(FetchDescriptor<Track>())) ?? []
+        }
+        for track in candidates where track.prepState == .failed && !track.isDemo {
+            enqueue(track, in: context)
+        }
     }
 
     /// Resumes preparation for a persisted library at launch: re-enqueues tracks that were
@@ -143,6 +169,7 @@ public final class PreparationQueue {
     private func process(_ track: Track, in context: ModelContext) async {
         track.prepState = .preparing
         try? context.save()
+        retryScheduledTrackIDs.remove(track.id)
 
         // A track needs either a direct video ID (YouTube) or a search query (Spotify-sourced).
         guard track.youtubeVideoID != nil || track.searchQuery != nil else {
@@ -154,6 +181,7 @@ public final class PreparationQueue {
         // Gate the network/CPU-heavy stage so a playlist import doesn't run all tracks at once.
         await ingestLimiter.acquire()
         var prepared = false
+        var failure: Error?
         do {
             // Resolve the video ID: use the known one, or find it on YouTube from the search query.
             let id: String
@@ -167,7 +195,17 @@ public final class PreparationQueue {
             }
 
             let resolved = try await resolver.resolveAudio(videoID: id)
-            let fileURL = try await downloader.downloadAudio(resolved)
+            let fileURL: URL
+            do {
+                fileURL = try await downloader.downloadAudio(resolved)
+            } catch let error as IngestError where error.needsFreshStreamURL {
+                // Signed `googlevideo` URLs are short-lived, and a throttled client gets them
+                // invalidated early — so a queued track's URL can be dead by the time its turn
+                // comes. Retrying the dead URL can never work; re-resolve for a fresh one.
+                Logger.ingest.notice("stream URL expired for \(id, privacy: .public) — re-resolving")
+                let refreshed = try await resolver.resolveAudio(videoID: id)
+                fileURL = try await downloader.downloadAudio(refreshed)
+            }
             // The track could have been deleted while we were off the main actor; don't write to
             // (or resurrect) a dead model.
             if track.modelContext != nil {
@@ -204,12 +242,27 @@ public final class PreparationQueue {
                 "prep failed for \(label, privacy: .public): \(String(describing: error), privacy: .public)"
             )
             prepared = false
+            failure = error
         }
         await ingestLimiter.release()
 
         // Don't touch a track that was deleted while we worked.
-        if track.modelContext != nil {
-            track.prepState = prepared ? .ready : .failed
+        guard track.modelContext != nil else {
+            ingestAttempts[track.id] = nil
+            try? context.save()
+            return
+        }
+
+        if prepared {
+            ingestAttempts[track.id] = nil
+            track.prepState = .ready
+        } else if let failure, scheduleRetry(track, after: failure, in: context) {
+            // Stays `.pending`, not `.failed`: the row keeps its in-progress badge, and if the
+            // app is killed before the retry fires, `resumePreparation` picks it up at launch.
+            track.prepState = .pending
+        } else {
+            ingestAttempts[track.id] = nil
+            track.prepState = .failed
         }
         try? context.save()
 
@@ -221,6 +274,74 @@ public final class PreparationQueue {
             reconcileStemLinks(track, in: context)
             backfillTrackDetails(track, in: context)
         }
+    }
+
+    // MARK: - Track-level retry
+
+    /// Consecutive failed ingest attempts per track, in memory (like `syncBackoff` for playlists).
+    /// Deliberately not persisted: a relaunch is itself a fresh start, and a `.pending` track is
+    /// re-enqueued by `resumePreparation` anyway.
+    var ingestAttempts: [UUID: Int] = [:]
+
+    /// Tracks with a backoff retry already queued, so overlapping failures can't stack timers.
+    var retryScheduledTrackIDs: Set<UUID> = []
+
+    /// Whole-track attempts before a track is finally marked `.failed`. With the `.track` curve
+    /// this spans roughly five minutes — long enough to outlast the bot-detection window that a
+    /// fresh playlist import trips.
+    static let maxIngestAttempts = 5
+
+    /// Schedules a backed-off re-attempt for a track whose ingest just failed, and reports whether
+    /// one was queued (`false` → the caller should mark the track `.failed`).
+    ///
+    /// This is the fix for the reported bug: a freshly imported playlist fires N resolves at once,
+    /// YouTube throttles, and every track used to burn its few seconds of retries inside the same
+    /// throttle window and land in `.failed` permanently — the whole playlist dead, recoverable
+    /// only by tapping each row. Now a transient failure keeps the track alive on an exponential
+    /// curve, and the shared `IngestThrottle` cool-down is added on top so the retry lands *after*
+    /// the source has stopped throttling rather than during.
+    private func scheduleRetry(_ track: Track, after error: Error, in context: ModelContext) -> Bool {
+        // Only transient failures earn a retry. A private/deleted video or a query that matches
+        // nothing will fail identically forever — surfacing that immediately is the honest answer.
+        guard let ingestError = error as? IngestError,
+              ingestError.isRetryable || ingestError.needsFreshStreamURL else { return false }
+        guard !retryScheduledTrackIDs.contains(track.id) else { return true }
+
+        let attempt = (ingestAttempts[track.id] ?? 0) + 1
+        ingestAttempts[track.id] = attempt
+        guard !IngestBackoff.isFinalAttempt(attempt, maxAttempts: Self.maxIngestAttempts) else {
+            return false
+        }
+
+        let trackID = track.id
+        retryScheduledTrackIDs.insert(trackID)
+        let label = track.youtubeVideoID ?? track.searchQuery ?? track.title
+
+        let maxAttempts = Self.maxIngestAttempts
+        Task { [weak self] in
+            // Wait out the curve, then whatever remains of the app-wide cool-down — a per-track
+            // delay alone would still let 50 tracks resume simultaneously into a live throttle.
+            let backoff = IngestBackoff.delay(afterAttempt: attempt, policy: .track)
+            try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+            let cooldown = await IngestThrottle.shared.remainingCooldown()
+            if cooldown > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(cooldown * 1_000_000_000))
+            }
+            guard let self else { return }
+            guard self.retryScheduledTrackIDs.remove(trackID) != nil else { return }  // superseded
+            // Re-fetch rather than capture the `@Model` across a minutes-long sleep — holding one
+            // (and its context) alive that long is a known memory-pressure pattern here. This also
+            // naturally drops tracks deleted while we waited.
+            var descriptor = FetchDescriptor<Track>(predicate: #Predicate { $0.id == trackID })
+            descriptor.fetchLimit = 1
+            guard let fresh = try? context.fetch(descriptor).first,
+                  fresh.prepState != .ready else { return }   // healed by a manual retry meanwhile
+            Logger.ingest.notice(
+                "retrying \(label, privacy: .public) (attempt \(attempt + 1)/\(maxAttempts))"
+            )
+            self.enqueueInternal(fresh, in: context)
+        }
+        return true
     }
 
     /// Whether the track still shows the "YouTube Video (abc123)" placeholder from a bare-ID add.
