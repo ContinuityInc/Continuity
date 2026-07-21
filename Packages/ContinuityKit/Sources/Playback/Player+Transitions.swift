@@ -174,9 +174,19 @@ extension Player {
             audio.current.vocalsGain = 1
             audio.current.bassGainDB = 0
         }
+        clearTransitionState()
+    }
+
+    /// Clears blend bookkeeping without touching AVAudio objects. Media-services reset leaves
+    /// every node orphaned, so that path must abandon state without calling even `stop()`.
+    func clearTransitionState() {
         isTransitioning = false
+        transitionTargetIndex = currentIndex
         activeTransitionDurationSeconds = 0
         isUserInitiatedSkipTransition = false
+        incomingStartOffset = 0
+        incomingPitchShiftSemitones = 0
+        incomingRate = 1
         transitionProgress = 0
     }
 }

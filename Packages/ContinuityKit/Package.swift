@@ -55,5 +55,10 @@ let package = Package(
             dependencies: ["Domain", .product(name: "ContinuityCore", package: "ContinuityCore")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "PlaybackTests",
+            dependencies: ["Playback"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )
