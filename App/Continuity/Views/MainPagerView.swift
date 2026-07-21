@@ -104,10 +104,29 @@ private struct NowPlayingBackgroundFade: View {
     @Environment(MainPagerState.self) private var pagerState
 
     var body: some View {
-        // Opacity 0 at center (full gradient) → 1 at either neighbor (exact background match).
-        Color(uiColor: .systemGroupedBackground)
-            .opacity(min(1, abs(pagerState.scrollFraction - 1)))
-            .ignoresSafeArea()
+        // Distance from the now-playing page center: 0 at rest (full gradient), 1 at a neighbor.
+        let progress = min(1, abs(pagerState.scrollFraction - 1))
+        // The revealed neighbor sits ABOVE when paging to Library (fraction < 1) and BELOW when
+        // paging to Up Next — so the neighbor's opaque background abuts the now-playing page at
+        // its top or bottom edge respectively. A *uniform* tint (the old approach) darkened the
+        // whole backdrop evenly, leaving a crisp step at that page boundary: half-darkened
+        // gradient meeting the neighbor's solid fill. Instead dissolve the backdrop into the
+        // neighbor's background from the abutting edge inward, as a soft vertical ramp — the
+        // boundary is background-on-background (no seam) and the fall-off into the gradient is
+        // continuous (no crisp internal line). At rest (progress 0) every stop is clear, so the
+        // full artwork gradient shows untouched.
+        let towardLibrary = pagerState.scrollFraction < 1
+        let neighbor = Color(uiColor: .systemGroupedBackground)
+        LinearGradient(
+            stops: [
+                .init(color: neighbor.opacity(progress), location: 0),
+                .init(color: neighbor.opacity(progress * 0.5), location: 0.28),
+                .init(color: .clear, location: 0.6),
+            ],
+            startPoint: towardLibrary ? .top : .bottom,
+            endPoint: towardLibrary ? .bottom : .top
+        )
+        .ignoresSafeArea()
     }
 }
 
