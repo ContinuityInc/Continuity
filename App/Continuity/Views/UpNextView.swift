@@ -65,6 +65,9 @@ struct UpNextView: View {
             }
         }
         .listStyle(.insetGrouped)
+        // Let the shared pager backdrop (the gradient bleeding up from Now Playing) show through
+        // the list; the inset rows stay opaque so queue content remains legible.
+        .scrollContentBackground(.hidden)
     }
 
     /// Same 44pt artwork + title/artist treatment as the library's track rows.
