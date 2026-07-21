@@ -35,6 +35,8 @@ public enum IngestError: Error, Sendable {
     /// The source was reached and understood, but has no usable content
     /// (private, empty, region-locked, or deleted). Retrying won't help.
     case sourceUnavailable
+    /// The user hasn't granted (or has revoked) access to their Apple Music library.
+    case appleMusicAccessDenied
 
     /// Whether retrying the same request with backoff could plausibly succeed. Distinguishes a
     /// transient blip (worth retrying, and not the user's fault) from a definitively empty source.
@@ -86,6 +88,26 @@ protocol PlaylistResolving: Sendable {
 /// Implemented by `SpotifyPlaylistResolver`.
 protocol SpotifyPlaylistResolving: Sendable {
     func resolvePlaylist(_ link: SpotifyLink) async throws -> ResolvedSpotifyPlaylist
+}
+
+/// Whether the user has let us read their Apple Music / iTunes library.
+public enum AppleMusicAccess: Sendable {
+    case notDetermined
+    case authorized
+    /// Declined, or blocked by Screen Time / MDM restrictions — Settings is the only way back.
+    case denied
+}
+
+/// Reads playlists out of the user's on-device Apple Music library (metadata only).
+/// Implemented by `AppleMusicLibraryReader`.
+protocol AppleMusicLibraryReading: Sendable {
+    var access: AppleMusicAccess { get }
+    /// Prompts on first call; returns the settled status afterwards without re-prompting.
+    func requestAccess() async -> AppleMusicAccess
+    /// Every non-empty playlist in the library, in the order Music shows them.
+    func playlists() async throws -> [AppleMusicPlaylistContents]
+    /// One playlist by persistent ID, or nil if it's been deleted from the library.
+    func playlist(persistentID: String) async throws -> AppleMusicPlaylistContents?
 }
 
 /// Finds the best-matching YouTube video ID for a text query.

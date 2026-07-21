@@ -33,6 +33,8 @@ public final class PreparationQueue {
     let playlistResolver: PlaylistResolving
     /// Resolves a Spotify playlist/album to its tracklist (metadata only).
     let spotifyResolver: SpotifyPlaylistResolving
+    /// Reads playlists out of the user's on-device Apple Music library (metadata only).
+    let appleMusicLibrary: AppleMusicLibraryReading
     /// Finds a YouTube video for a Spotify-sourced track (title + artist → video ID).
     let searcher: YouTubeSearching
     /// Resolves a video's real title/channel (replaces bare-ID placeholders).
@@ -53,6 +55,7 @@ public final class PreparationQueue {
         resolver: AudioStreamResolving = YouTubeStreamResolver(),
         playlistResolver: PlaylistResolving = YouTubePlaylistResolver(),
         spotifyResolver: SpotifyPlaylistResolving = SpotifyPlaylistResolver(),
+        appleMusicLibrary: AppleMusicLibraryReading = AppleMusicLibraryReader(),
         searcher: YouTubeSearching = YouTubeSearchResolver(),
         metadataResolver: VideoMetadataResolving = YouTubeOEmbedResolver(),
         downloader: AudioFileDownloading = AudioDownloader()
@@ -60,6 +63,7 @@ public final class PreparationQueue {
         self.resolver = resolver
         self.playlistResolver = playlistResolver
         self.spotifyResolver = spotifyResolver
+        self.appleMusicLibrary = appleMusicLibrary
         self.searcher = searcher
         self.metadataResolver = metadataResolver
         self.downloader = downloader

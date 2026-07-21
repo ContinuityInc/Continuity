@@ -56,6 +56,9 @@ targets:
         UIBackgroundModes:
           - audio
         ITSAppUsesNonExemptEncryption: false
+        # MPMediaQuery reads playlist titles/artists only — Apple Music audio is DRM-protected,
+        # so imported songs are re-sourced from YouTube like the Spotify path.
+        NSAppleMusicUsageDescription: Continuity reads your Apple Music playlists so you can import them into your library.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # continuity://import?url=<encoded link> — deep-link entry into the import flow.

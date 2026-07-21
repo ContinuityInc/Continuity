@@ -53,7 +53,24 @@ extension PreparationQueue {
                 let link = SpotifyLink(kind: kind == .spotifyAlbum ? .album : .playlist, id: sourceID)
                 let resolved = try await spotifyResolver.resolvePlaylist(link)
                 guard playlist.modelContext != nil, !resolved.tracks.isEmpty else { return }
-                changed = applySpotifySync(resolved.tracks, to: playlist, in: context)
+                changed = applyMetadataSync(
+                    resolved.tracks,
+                    subtitle: "From Spotify · \(resolved.tracks.count) tracks",
+                    to: playlist,
+                    in: context
+                )
+            case .appleMusic:
+                // Reads the on-device library, so this succeeds offline — but a playlist the
+                // user deleted in Music resolves to nil, and we leave the local copy alone
+                // rather than wiping an import they may still want.
+                guard let contents = try await appleMusicLibrary.playlist(persistentID: sourceID) else { return }
+                guard playlist.modelContext != nil, !contents.isEmpty else { return }
+                changed = applyMetadataSync(
+                    contents.tracks,
+                    subtitle: Self.appleMusicSubtitle(count: contents.tracks.count),
+                    to: playlist,
+                    in: context
+                )
             }
             playlist.lastSyncedAt = Date()
             syncBackoff[playlist.id] = nil
@@ -125,16 +142,22 @@ extension PreparationQueue {
         return changed
     }
 
-    /// Applies a fresh remote Spotify tracklist: key = the YouTube search query (title + artist),
-    /// the identity Spotify-sourced tracks carry locally. Returns whether membership or order
-    /// actually changed (drives `touch()` and `onPlaylistSynced`).
-    private func applySpotifySync(_ remote: [SpotifyTrack], to playlist: Playlist, in context: ModelContext) -> Bool {
+    /// Applies a fresh metadata-only tracklist (Spotify or Apple Music): key = the YouTube search
+    /// query (title + artist), the identity such tracks carry locally since they have no video ID.
+    /// Returns whether membership or order actually changed (drives `touch()` and
+    /// `onPlaylistSynced`).
+    private func applyMetadataSync(
+        _ remote: [any MetadataSourcedTrack],
+        subtitle: String,
+        to playlist: Playlist,
+        in context: ModelContext
+    ) -> Bool {
         var localByKey: [String: Track] = [:]
         for track in playlist.tracks {
             if let query = track.searchQuery { localByKey[query] = track }
         }
 
-        let remoteKeys = Set(remote.map(\.youtubeSearchQuery))
+        let remoteKeys = Set(remote.map { $0.youtubeSearchQuery })
         let removed = playlist.tracks.filter { track in
             guard let query = track.searchQuery else { return false }
             return !remoteKeys.contains(query)
@@ -171,7 +194,7 @@ extension PreparationQueue {
                 changed = true
             }
         }
-        playlist.subtitle = "From Spotify · \(remote.count) tracks"
+        playlist.subtitle = subtitle
         if changed { playlist.touch() }
         return changed
     }
