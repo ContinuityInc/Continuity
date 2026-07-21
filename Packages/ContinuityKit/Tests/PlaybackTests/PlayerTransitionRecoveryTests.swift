@@ -27,4 +27,37 @@ final class PlayerTransitionRecoveryTests: XCTestCase {
         XCTAssertEqual(player.transitionProgress, 0)
         XCTAssertNil(player.audio)
     }
+
+    func testRecentRenderClockFromPreviousEngineRunIsRejected() {
+        XCTAssertFalse(Deck.isRenderClockUsable(
+            renderHostTime: 950,
+            engineStartedAtHostTime: 1_000,
+            now: 1_010,
+            maximumAge: 100
+        ))
+    }
+
+    func testRecentRenderClockFromCurrentEngineRunIsAccepted() {
+        XCTAssertTrue(Deck.isRenderClockUsable(
+            renderHostTime: 1_005,
+            engineStartedAtHostTime: 1_000,
+            now: 1_010,
+            maximumAge: 100
+        ))
+    }
+
+    func testFutureAndExpiredRenderClocksAreRejected() {
+        XCTAssertFalse(Deck.isRenderClockUsable(
+            renderHostTime: 1_020,
+            engineStartedAtHostTime: 1_000,
+            now: 1_010,
+            maximumAge: 100
+        ))
+        XCTAssertFalse(Deck.isRenderClockUsable(
+            renderHostTime: 1_005,
+            engineStartedAtHostTime: 1_000,
+            now: 1_200,
+            maximumAge: 100
+        ))
+    }
 }

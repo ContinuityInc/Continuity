@@ -247,13 +247,40 @@ extension Player {
             return
         }
         pendingSeekSeconds = nil   // a live deck seek supersedes any staged one
+        guard audio.engine.isRunning else {
+            // A system event invalidated the schedule before the seek reached the deck. Leave the
+            // requested position staged for a clean reload instead of touching stopped nodes.
+            pendingSeekSeconds = clamped
+            audio.current.stop()
+            baselineSeconds = clamped
+            position = clamped
+            isPlaying = false
+            stopTimer()
+            persistState()
+            return
+        }
         if audio.current.seekRealFile(to: clamped) {
             baselineSeconds = clamped
             position = clamped
             if isPlaying {
-                guard ensureRunning() else { isPlaying = false; return }
+                guard audio.engine.isRunning else {
+                    pendingSeekSeconds = clamped
+                    audio.current.stop()
+                    isPlaying = false
+                    stopTimer()
+                    persistState()
+                    return
+                }
                 audio.current.play()
             }
+        } else if audio.current.hasRealFile {
+            // The engine stopped between the initial check and segment scheduling.
+            pendingSeekSeconds = clamped
+            baselineSeconds = clamped
+            position = clamped
+            audio.current.stop()
+            isPlaying = false
+            stopTimer()
         } else {
             // Synth deck: looped audio is identical at any offset, so just move the clock.
             baselineSeconds = clamped - audio.current.elapsed

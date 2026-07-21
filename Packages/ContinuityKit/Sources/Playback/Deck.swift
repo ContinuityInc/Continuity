@@ -24,11 +24,18 @@ final class Deck {
     private let synthFormat: AVAudioFormat
     /// Current `accompPlayer → stemMixer` connection format (varies with single-file content).
     private var accompFormat: AVAudioFormat
+    /// Host-time boundary of the current engine run. A render timestamp older than this belongs
+    /// to a stopped engine and must never authorize `play(at:)`.
+    private var engineStartedAtHostTime: UInt64 = 0
 
     private(set) var track: Track?
     private(set) var loadedDuration: TimeInterval = 0
     /// True when this deck loaded separated stems (so vocal-aware transitions apply).
     private(set) var hasStems = false
+    /// Distinguishes a failed real-file reschedule from a synth deck, where seeking is unsupported.
+    var hasRealFile: Bool { accompFile != nil }
+    /// Engine stops invalidate player-node schedules even though this Deck still holds its files.
+    private(set) var needsRescheduleAfterEngineStart = false
 
     private var accompFile: AVAudioFile?   // drives accompPlayer (accompaniment stem, or whole mix)
     private var vocalsFile: AVAudioFile?   // drives vocalsPlayer (vocals stem), stem mode only
@@ -51,6 +58,11 @@ final class Deck {
         engine.connect(timePitch, to: eq, format: synthFormat)
         engine.connect(eq, to: deckMixer, format: synthFormat)
         engine.connect(deckMixer, to: mainMixer, format: synthFormat) // fixed; never reconnected
+    }
+
+    func markEngineStarted(at hostTime: UInt64) {
+        engineStartedAtHostTime = hostTime
+        needsRescheduleAfterEngineStart = track != nil
     }
 
     /// Overall deck output gain — the crossfade ramps this.
@@ -123,6 +135,7 @@ final class Deck {
             accompPlayer.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
             loadedDuration = track.durationSeconds > 0 ? track.durationSeconds : 30
         }
+        needsRescheduleAfterEngineStart = false
         return loadedDuration
     }
 
@@ -144,14 +157,19 @@ final class Deck {
             //   pre-interruption timeline. Anchoring to it puts the start time in the PAST,
             //   which raises the same uncatchable exception → SIGABRT mid-song whenever the
             //   system pokes the audio environment.
-            // So: require a render cycle within the last second (proof the engine is actively
-            // rendering) and anchor to NOW, not to the render timestamp. Otherwise fall back to
-            // two bare play() calls — on a freshly (re)started engine they land on the same
-            // quantum in practice.
+            // So: require a render cycle from THIS engine run, within the last second, and anchor
+            // to NOW rather than to the render timestamp. A quick stop/restart can leave the old
+            // timestamp less than a second old, so recency alone is not proof of freshness.
+            // Otherwise fall back to two bare play() calls — on a freshly (re)started engine they
+            // land on the same quantum in practice.
             let now = mach_absolute_time()
             if let render = accompPlayer.lastRenderTime, render.isHostTimeValid,
-               render.hostTime <= now,
-               now - render.hostTime < AVAudioTime.hostTime(forSeconds: 1.0) {
+               Deck.isRenderClockUsable(
+                   renderHostTime: render.hostTime,
+                   engineStartedAtHostTime: engineStartedAtHostTime,
+                   now: now,
+                   maximumAge: AVAudioTime.hostTime(forSeconds: 1.0)
+               ) {
                 let start = AVAudioTime(hostTime: now + AVAudioTime.hostTime(forSeconds: 0.03))
                 accompPlayer.play(at: start)
                 vocalsPlayer.play(at: start)
@@ -171,9 +189,15 @@ final class Deck {
     }
 
     func stop() {
-        accompPlayer.stop(); vocalsPlayer.stop()
+        // A system configuration change can stop the engine after its notification was delivered.
+        // AVAudioPlayerNode.stop() may raise an uncatchable ObjC exception in that window.
+        if engine.isRunning {
+            accompPlayer.stop()
+            vocalsPlayer.stop()
+        }
         accompFile = nil; vocalsFile = nil; track = nil
         loadedDuration = 0; hasStems = false
+        needsRescheduleAfterEngineStart = false
     }
 
     /// Seconds elapsed since this deck last (re)started (from the always-present accompaniment).
@@ -185,11 +209,12 @@ final class Deck {
 
     /// Frame-accurate seek for a real-file (or stem) deck. Returns `false` for a synth deck.
     func seekRealFile(to seconds: TimeInterval) -> Bool {
-        guard let aFile = accompFile else { return false }
+        guard engine.isRunning, let aFile = accompFile else { return false }
         scheduleSegment(accompPlayer, file: aFile, from: seconds)
         if hasStems, let vFile = vocalsFile {
             scheduleSegment(vocalsPlayer, file: vFile, from: seconds)
         }
+        needsRescheduleAfterEngineStart = false
         return true
     }
 
@@ -199,6 +224,17 @@ final class Deck {
         guard startFrame < file.length else { return }
         player.scheduleSegment(file, startingFrame: startFrame,
                                frameCount: AVAudioFrameCount(file.length - startFrame), at: nil)
+    }
+
+    nonisolated static func isRenderClockUsable(
+        renderHostTime: UInt64,
+        engineStartedAtHostTime: UInt64,
+        now: UInt64,
+        maximumAge: UInt64
+    ) -> Bool {
+        renderHostTime >= engineStartedAtHostTime
+            && renderHostTime <= now
+            && now - renderHostTime < maximumAge
     }
 
     private func resolveDuration(_ track: Track, file: AVAudioFile) -> TimeInterval {
