@@ -25,7 +25,20 @@ final class YouTubeSearchResolver: YouTubeSearching {
         // Spotify playlist imports fire many searches; a single 429/5xx/blip shouldn't fail a track.
         return try await Retry.run {
             let html = try await self.fetchSearchHTML(url)
-            return YouTubeSearch.firstVideoID(html: html)
+            switch YouTubeSearch.outcome(html: html) {
+            case .found(let id):
+                return id
+            case .noResults:
+                // A real results page with nothing in it — the query genuinely has no match.
+                return nil
+            case .unreadable:
+                // HTTP 200 but no `ytInitialData`: a consent interstitial or bot wall, which is
+                // what a burst of import searches provokes. This used to collapse into the same
+                // `nil` as `.noResults` and fail the track permanently — the main reason a fresh
+                // Spotify import failed every song. It's transient: retry it, and let the shared
+                // throttle back the whole import off.
+                throw IngestError.network("YouTube search page had no ytInitialData (bot wall?)")
+            }
         }
     }
 

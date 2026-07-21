@@ -9,14 +9,35 @@ import Foundation
 /// changes the path. **No networking** — the app layer fetches the HTML; pinned by unit tests.
 public enum YouTubeSearch {
 
-    /// The video ID of the top result, or nil if none is found.
-    public static func firstVideoID(html: String) -> String? {
+    /// What a fetched search page actually told us. A bare `nil` video ID conflates two opposite
+    /// situations — "YouTube answered, nothing matched" (permanent) and "YouTube didn't send us a
+    /// results page at all" (transient: bot wall, consent interstitial, throttle page). Callers
+    /// must retry the second and must not retry the first.
+    public enum PageOutcome: Equatable, Sendable {
+        /// Top-ranked result.
+        case found(String)
+        /// A genuine results page that contained no usable video. Retrying won't change it.
+        case noResults
+        /// No parseable `ytInitialData` — this wasn't a results page. Worth retrying with backoff.
+        case unreadable
+    }
+
+    /// Classifies a fetched search results page.
+    public static func outcome(html: String) -> PageOutcome {
         guard let json = YouTubePlaylist.extractBracedObject(in: html, afterMarker: "ytInitialData"),
               let data = json.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) else {
-            return nil
+            return .unreadable
         }
-        return rankedFirstVideoID(root) ?? anyVideoID(root)
+        if let id = rankedFirstVideoID(root) ?? anyVideoID(root) { return .found(id) }
+        return .noResults
+    }
+
+    /// The video ID of the top result, or nil if none is found.
+    /// Prefer `outcome(html:)` when you need to tell "no match" from "no results page".
+    public static func firstVideoID(html: String) -> String? {
+        if case .found(let id) = outcome(html: html) { return id }
+        return nil
     }
 
     /// Walks the ordered results arrays and returns the first video's ID (rank-correct).
