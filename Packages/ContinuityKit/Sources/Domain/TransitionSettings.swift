@@ -103,6 +103,30 @@ extension TransitionSettings {
     }
 }
 
+extension TransitionSettings {
+    /// The engine-side mapping for `TransitionFeedback.simplificationLevel`: each notch backs a
+    /// downvoted pair's blend off toward a plain short fade. The ladder drops the most audible
+    /// artifacts first — key shifting, then tempo warping, then everything but the crossfade.
+    /// Level 0 (and anything unrecognized) returns the settings unchanged.
+    public func simplified(level: Int) -> TransitionSettings {
+        var s = self
+        if level >= 1 {
+            s.harmonicMixingEnabled = false
+            s.durationSeconds = min(s.durationSeconds, 8)
+        }
+        if level >= 2 {
+            s.beatmatchEnabled = false
+            s.durationSeconds = min(s.durationSeconds, 5)
+        }
+        if level >= 3 {
+            s.bassSwapEnabled = false
+            s.vocalMode = .hardSwap
+            s.durationSeconds = min(s.durationSeconds, 2)
+        }
+        return s
+    }
+}
+
 /// A named bundle of transition settings for one-tap application in the settings UI.
 public struct TransitionPreset: Identifiable, Equatable, Sendable {
     public var id: String { name }

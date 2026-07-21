@@ -16,6 +16,28 @@ extension Player {
         // Automatic blends arrive from tick(); skip blends may materialize a staged session first.
         // Funnel both through the same lazy stack accessor.
         let audio = ensureAudioStack()
+
+        // Vote adaptation: a downvoted pair runs a simplified blend (see Player+Voting). The
+        // adapted settings drive every effect decision below and the mid-blend shaping in
+        // tick(); `duration` stays the caller's (tick already passes the adapted duration,
+        // and skip blends keep their fixed 5 s).
+        let outgoingTrack = audio.current.track ?? currentTrack
+        let (blend, level) = adaptedTransitionSettings(from: outgoingTrack, to: queue[index])
+        activeBlendSettings = blend
+        var blendForRecord = blend
+        blendForRecord.durationSeconds = duration
+        if let outgoingTrack {
+            votableTransition = TransitionRecord(
+                id: UUID(),
+                fromTrackID: outgoingTrack.id,
+                toTrackID: queue[index].id,
+                fromTitle: outgoingTrack.title,
+                toTitle: queue[index].title,
+                settings: blendForRecord,
+                simplificationLevel: level,
+                completedAt: nil
+            )
+        }
         let incoming = audio.idle
         incoming.load(queue[index])
         applyLoudness(to: incoming)
@@ -32,7 +54,7 @@ extension Player {
         // like the harmonic pitch shift below).
         var rate = 1.0
         incomingRate = 1
-        if transitionSettings.beatmatchEnabled,
+        if blend.beatmatchEnabled,
            let outBPM = audio.current.track?.bpm,
            let inBPM = queue[index].bpm,
            let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM * currentRate) {
@@ -45,7 +67,7 @@ extension Player {
         // phase-locking the two grids through the blend (the "you won't notice" bit). Needs a beat
         // grid on both tracks; declines gracefully — and only when the seek lands — leaving the
         // incoming at its start otherwise.
-        if transitionSettings.beatmatchEnabled,
+        if blend.beatmatchEnabled,
            let outBeats = audio.current.track?.beatTimes, !outBeats.isEmpty,
            let offset = BeatMath.incomingStartOffset(
                outgoingPosition: outgoingPosition,
@@ -60,7 +82,7 @@ extension Player {
         // Gapless: if beat-alignment didn't already seek, skip the incoming track's leading
         // silence so the blend brings in audio, not dead air. (Beat grids start at the first
         // onsets, so an aligned seek is already past any leading silence.)
-        if transitionSettings.trimSilenceEnabled, incomingStartOffset == 0,
+        if blend.trimSilenceEnabled, incomingStartOffset == 0,
            let audibleStart = queue[index].audibleStartSeconds, audibleStart > 0.05,
            incoming.seekRealFile(to: audibleStart) {
             incomingStartOffset = audibleStart
@@ -71,7 +93,7 @@ extension Player {
         // the shift persists for the whole track — Deck.load resets it on the next load). Compare
         // against the outgoing track's EFFECTIVE key: it may itself be playing shifted.
         incomingPitchShiftSemitones = 0
-        if transitionSettings.harmonicMixingEnabled,
+        if blend.harmonicMixingEnabled,
            let outKey = audio.current.track?.camelotCode.flatMap(Camelot.parse),
            let inKey = queue[index].camelotCode.flatMap(Camelot.parse),
            let shift = HarmonicMix.pitchShiftSemitones(
@@ -85,7 +107,7 @@ extension Player {
         // Vocal-aware setup: for instrumental-overlap / hard-swap the incoming vocals start silent
         // (they enter later); for ducking they ride in with the track.
         if incoming.hasStems {
-            switch transitionSettings.vocalMode {
+            switch blend.vocalMode {
             case .duck: incoming.vocalsGain = 1
             case .instrumentalOverlap, .hardSwap: incoming.vocalsGain = 0
             }
@@ -93,7 +115,7 @@ extension Player {
 
         // Start the incoming with its low end cut so the bass-swap has something to ramp up from
         // (avoids a low-end blip before the first tick).
-        if transitionSettings.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
+        if blend.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
 
         incoming.play()
         transitionTargetIndex = index
@@ -106,7 +128,7 @@ extension Player {
     /// both decks have stems.
     func applyVocalHandling(progress: Double) {
         guard let audio else { return }
-        switch transitionSettings.vocalMode {
+        switch blendSettings.vocalMode {
         case .duck:
             // Outgoing vocals fade out over the first ~70% of the blend; incoming vocals ride in.
             audio.current.vocalsGain = Float(max(0, 1 - progress / 0.7))
@@ -161,6 +183,9 @@ extension Player {
         activeTransitionDurationSeconds = 0
         isUserInitiatedSkipTransition = false
         transitionProgress = 0
+        activeBlendSettings = nil
+        // Timestamp the record: the blend is now rateable as "the transition you just heard".
+        votableTransition?.completedAt = Date()
         persistState()
         notifyUpcoming()
     }
@@ -192,6 +217,8 @@ extension Player {
         incomingPitchShiftSemitones = 0
         incomingRate = 1
         transitionProgress = 0
+        activeBlendSettings = nil
+        votableTransition = nil   // an aborted blend was never fully heard — nothing to rate
         cancelPitchSettle()
     }
 

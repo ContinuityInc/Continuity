@@ -76,6 +76,15 @@ struct RootView: View {
                 player.onUpcomingTracks = { [weak prepQueue] tracks in
                     prepQueue?.ensureStems(for: tracks, in: modelContext)
                 }
+                // Transition voting: the engine asks for a pair's thumb history when scheduling
+                // its next blend (cached per pair, so this fetch is rare, not per-tick).
+                player.transitionVoteHistory = { fromID, toID in
+                    let descriptor = FetchDescriptor<TransitionVote>(
+                        predicate: #Predicate { $0.fromTrackID == fromID && $0.toTrackID == toID },
+                        sortBy: [SortDescriptor(\.createdAt)]
+                    )
+                    return ((try? modelContext.fetch(descriptor)) ?? []).map(\.isUpvote)
+                }
                 // Natural queue exhaustion loops playback into the listening history — resolve
                 // the persisted IDs to live tracks in order; deleted tracks simply drop out.
                 player.onQueueExhausted = { ids in

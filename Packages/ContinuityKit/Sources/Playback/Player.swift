@@ -177,6 +177,22 @@ public final class Player {
     /// Reset wherever the current track changes (startCurrentFresh, finishTransition, prepare).
     var queueRefillAttempted = false
 
+    // MARK: Transition voting
+
+    /// The blend currently (or most recently) available for a thumbs-up/down. Set when a
+    /// transition starts, timestamped on completion, cleared on cancel; the UI decides how long
+    /// a completed record stays votable. Changes rarely — safe for non-leaf views to observe.
+    public internal(set) var votableTransition: TransitionRecord?
+    /// The (possibly vote-adapted) settings the in-flight blend runs with. Falls back to the
+    /// user's configured settings outside a blend.
+    @ObservationIgnored var activeBlendSettings: TransitionSettings?
+    /// Settings the in-flight blend uses everywhere `transitionSettings` used to be read mid-blend.
+    var blendSettings: TransitionSettings { activeBlendSettings ?? transitionSettings }
+    /// Backing storage for `transitionVoteHistory` (see Player+Voting).
+    @ObservationIgnored var transitionVoteHistoryStorage: ((UUID, UUID) -> [Bool])?
+    /// Per-pair adaptation cache: (pair, base settings it was derived from, result).
+    @ObservationIgnored var adaptationCache: (fromID: UUID, toID: UUID, base: TransitionSettings, settings: TransitionSettings, level: Int)?
+
     /// How far ahead stems are prepared. At ~2–4 min per separation and ~3.5 min per song, three
     /// tracks of lead time keeps the next blend's stems ready even right after a skip.
     private static let upcomingStemWindow = 3
@@ -448,7 +464,7 @@ public final class Player {
         let dur = effectiveEndSeconds
         if isTransitioning {
             let plan = TransitionPlan(
-                curve: transitionSettings.curve,
+                curve: blendSettings.curve,
                 duration: activeTransitionDurationSeconds
             )
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
@@ -460,7 +476,7 @@ public final class Player {
             let progress = plan.progress(position: incomingElapsed, startPosition: 0)
             transitionProgress = progress
             // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
-            if transitionSettings.bassSwapEnabled {
+            if blendSettings.bassSwapEnabled {
                 applyBassSwap(progress: progress)
             }
             // When both decks have stems, shape the per-stem gains so the outgoing vocals duck out
@@ -472,15 +488,18 @@ public final class Player {
                 finishTransition()
             }
         } else if let next = nextIndex {
+            // Vote-adapted per pair: a downvoted blend gets simpler (shorter fade, fewer
+            // effects) the next time this pair comes around. Cached, so no fetch per tick.
+            let adapted = adaptedTransitionSettings(from: currentTrack, to: queue[next]).settings
             let plan = TransitionPlan(
-                curve: transitionSettings.curve,
-                duration: transitionSettings.durationSeconds
+                curve: adapted.curve,
+                duration: adapted.durationSeconds
             )
             if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
                 beginTransition(
                     toIndex: next,
                     outgoingPosition: elapsed,
-                    duration: transitionSettings.durationSeconds,
+                    duration: adapted.durationSeconds,
                     isUserInitiatedSkip: false
                 )
             } else if dur > 0 && elapsed >= dur - 0.05 {
