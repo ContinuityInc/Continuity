@@ -69,9 +69,20 @@ extension Player {
                 // Spurious changes happen with the engine still rendering — notably the
                 // Taptic Engine (context-menu long-press haptic) sharing the audio hardware.
                 // Recovery stops + reschedules both stem players (an audible ~1s dropout),
-                // so only do it when the engine actually stopped.
+                // so only do it when the engine actually stopped. The stop can land just AFTER
+                // this callback (Live Activity / Dynamic Island updates exercise that race), so
+                // recheck once after the system has settled instead of trusting one snapshot.
                 guard !engine.isRunning else {
-                    Logger.audio.info("engine configuration change — engine still running, skipping recovery")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, self.isPlaying,
+                                  let currentEngine = self.audio?.engine,
+                                  currentEngine === engine,
+                                  !engine.isRunning else { return }
+                            Logger.audio.error("engine stopped after configuration callback — recovering")
+                            self.recoverPlayback(force: true)
+                        }
+                    }
                     return
                 }
                 Logger.audio.info("engine configuration change — recovering playback")
@@ -131,7 +142,7 @@ extension Player {
     /// Restarts the engine and reschedules the current track at the current position. `force`
     /// recovers even without a preceding `pauseForEnvironment` (configuration changes stop the
     /// engine without an interruption notification).
-    private func recoverPlayback(force: Bool = false) {
+    func recoverPlayback(force: Bool = false) {
         guard force || resumeAfterInterruption else { return }
         resumeAfterInterruption = false
         // Observers only exist once the stack does, so `audio` is always live here.
@@ -161,6 +172,14 @@ extension Player {
             audio.current.play()
             isPlaying = true
             startTimer()
+        } else if audio.current.hasRealFile {
+            // The engine stopped again between ensureRunning() and the reschedule. Unload the
+            // invalid schedule and stage this position so the next explicit play rebuilds it.
+            Logger.audio.error("engine stopped again during playback reschedule")
+            pendingSeekSeconds = position
+            audio.current.stop()
+            isPlaying = false
+            stopTimer()
         } else {
             // Synth deck: the loop is position-agnostic; a fresh start is equivalent.
             startCurrentFresh()

@@ -219,6 +219,12 @@ public final class Player {
         guard let track = currentTrack else { return false }
         let audio = ensureAudioStack()
         guard ensureRunning() else { return false }
+        if isTransitioning && audio.idle.needsRescheduleAfterEngineStart {
+            // A paused blend cannot survive an engine stop: both node schedules were invalidated.
+            // Keep the outgoing track and discard the incoming deck before manual/remote resume.
+            Logger.audio.info("engine restart invalidated paused transition — discarding incoming deck")
+            cancelTransition()
+        }
         if audio.current.track?.id != track.id {
             audio.current.load(track)
             applyLoudness(to: audio.current)
@@ -227,13 +233,37 @@ public final class Player {
         }
         if let pending = pendingSeekSeconds {
             pendingSeekSeconds = nil
-            if pending > 0, audio.current.seekRealFile(to: pending) {
+            if audio.current.seekRealFile(to: pending) {
                 baselineSeconds = pending
+            } else if audio.current.hasRealFile {
+                // The engine stopped again between ensureRunning() and scheduling. Preserve the
+                // staged seek and force a fresh load on the next play attempt.
+                pendingSeekSeconds = pending
+                audio.current.stop()
+                return false
             } else {
                 // Synth deck: looped audio is identical at any offset, so just move the clock.
                 baselineSeconds = pending - audio.current.elapsed
             }
             position = pending
+        } else if audio.current.needsRescheduleAfterEngineStart {
+            // The track stayed loaded while a system event stopped the engine, invalidating its
+            // player-node schedules. Rebuild them before any manual/remote resume can call play().
+            if audio.current.seekRealFile(to: position) {
+                baselineSeconds = position
+            } else if audio.current.hasRealFile {
+                pendingSeekSeconds = position
+                audio.current.stop()
+                return false
+            } else {
+                // Synth loops cannot seek; reloading is position-agnostic, then retain the logical
+                // clock and any rate/pitch inherited from the previous transition.
+                audio.current.load(track)
+                applyLoudness(to: audio.current)
+                audio.current.rate = Float(currentRate)
+                audio.current.pitchCents = Float(currentPitchShiftSemitones * 100)
+                baselineSeconds = position
+            }
         }
         // First real audio need (play from a prepare/restore staging) — start JIT stems here,
         // not at launch. prepare() deliberately skips notifyUpcoming to avoid ORT jetsam.
@@ -285,7 +315,15 @@ public final class Player {
         let audio = ensureAudioStack()
         if audio.engine.isRunning { return true }
         try? AVAudioSession.sharedInstance().setActive(true)
-        do { try audio.engine.start(); return true } catch { return false }
+        do {
+            try audio.engine.start()
+            let start = mach_absolute_time()
+            audio.deckA.markEngineStarted(at: start)
+            audio.deckB.markEngineStarted(at: start)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Starts the current track from scratch on the current deck (play / next / previous / restart).
@@ -359,6 +397,13 @@ public final class Player {
 
     private func tick() {
         guard isPlaying, let audio else { return }
+        // Configuration changes can report the engine as running in their callback, then stop it
+        // asynchronously. Never let transition scheduling touch player nodes in that gap.
+        guard audio.engine.isRunning else {
+            Logger.audio.error("playback tick found stopped engine — recovering")
+            recoverPlayback(force: true)
+            return
+        }
         let elapsed = baselineSeconds + audio.current.elapsed
         position = elapsed
         // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
