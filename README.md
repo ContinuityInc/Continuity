@@ -9,6 +9,15 @@ Automix: stem-separated, beatmatched, harmonically-mixed DJ blends.
 This is a **personal portfolio prototype**. iOS 26+, SwiftUI + `AVAudioEngine`. Music is
 sourced from YouTube (see [Caveats](#caveats)).
 
+## Screenshots
+
+<p align="center">
+  <a href="docs/screenshots/now-playing.png"><img src="docs/screenshots/now-playing.png" alt="Continuity Now Playing screen" width="23%"></a>
+  <a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" alt="Continuity music library" width="23%"></a>
+  <a href="docs/screenshots/playlist.png"><img src="docs/screenshots/playlist.png" alt="Continuity playlist detail" width="23%"></a>
+  <a href="docs/screenshots/up-next.png"><img src="docs/screenshots/up-next.png" alt="Continuity Up Next queue" width="23%"></a>
+</p>
+
 ## What it does
 
 **The transition engine** — a dual-deck `AVAudioEngine` graph where every track change is a blend:
