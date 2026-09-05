@@ -3,7 +3,7 @@
 Anyone who merges a PR gets a free copy of the premium version of Continuity
 
 <p align="center">
-  <a href="docs/screenshots/now-playing.png"><img src="docs/screenshots/now-playing.png" alt="Continuity Now Playing screen" width="46%"></a>
+  <a href="docs/screenshots/NowPlaying.png"><img src="docs/screenshots/now-playing.png" alt="Continuity Now Playing screen" width="46%"></a>
 </p>
 
 A minimal native iOS music app whose one differentiating feature is **transitions so smooth
@@ -134,7 +134,7 @@ Engine stem-separation timing, memory behavior under Jetsam).
 ## Screenshots
 
 <p align="center">
-  <a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" alt="Continuity music library" width="31%"></a>
-  <a href="docs/screenshots/playlist.png"><img src="docs/screenshots/playlist.png" alt="Continuity playlist detail" width="31%"></a>
-  <a href="docs/screenshots/up-next.png"><img src="docs/screenshots/up-next.png" alt="Continuity Up Next queue" width="31%"></a>
+  <a href="docs/screenshots/LibraryNew.png"><img src="docs/screenshots/library.png" alt="Continuity music library" width="31%"></a>
+  <a href="docs/screenshots/Playlist.png"><img src="docs/screenshots/playlist.png" alt="Continuity playlist detail" width="31%"></a>
+  <a href="docs/screenshots/Queue.png"><img src="docs/screenshots/up-next.png" alt="Continuity Up Next queue" width="31%"></a>
 </p>
