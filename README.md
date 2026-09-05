@@ -2,12 +2,18 @@
 
 Anyone who merges a PR gets a free copy of the premium version of Continuity
 
+<p align="center">
+  <a href="docs/screenshots/now-playing.png"><img src="docs/screenshots/now-playing.png" alt="Continuity Now Playing screen" width="46%"></a>
+</p>
+
 A minimal native iOS music app whose one differentiating feature is **transitions so smooth
 you don't notice a song changed** — a configurable, higher-quality take on Apple Music's
 Automix: stem-separated, beatmatched, harmonically-mixed DJ blends.
 
 This is a **personal portfolio prototype**. iOS 26+, SwiftUI + `AVAudioEngine`. Music is
 sourced from YouTube (see [Caveats](#caveats)).
+
+Artists receive a minimum **80% revenue share**.
 
 ## What it does
 
@@ -124,3 +130,11 @@ All planned milestones (M0–M5) are built: scaffold, YouTube/Spotify ingestion,
 crossfades, analysis + beatmatching, on-device stem separation with vocal-aware blends, and
 config/persistence/stability polish. Remaining: validation on a physical device (Neural
 Engine stem-separation timing, memory behavior under Jetsam).
+
+## Screenshots
+
+<p align="center">
+  <a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" alt="Continuity music library" width="31%"></a>
+  <a href="docs/screenshots/playlist.png"><img src="docs/screenshots/playlist.png" alt="Continuity playlist detail" width="31%"></a>
+  <a href="docs/screenshots/up-next.png"><img src="docs/screenshots/up-next.png" alt="Continuity Up Next queue" width="31%"></a>
+</p>
