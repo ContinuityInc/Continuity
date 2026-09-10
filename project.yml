@@ -66,6 +66,10 @@ targets:
           - CFBundleURLName: com.sanylax.continuity
             CFBundleURLSchemes:
               - continuity
+    # Shared scheme so `xcodebuild -scheme Continuity` works on a fresh checkout / CI without
+    # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
+    scheme:
+      gatherCoverageData: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity
