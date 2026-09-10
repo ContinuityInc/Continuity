@@ -13,7 +13,11 @@ public enum StemCache {
     /// 1000-song library stays under the ~15 GB target even when the stem cache is full.
     public static let budgetBytes: Int64 = 8_000_000_000
 
-    public static var directory: URL {
+    /// Memoized (`static let`, lazily initialized once per process): `stemFile`, `markUsed`,
+    /// `removeStems` and `url(forRelativePath:)` all read this in loops, and as a computed
+    /// property every one of those iterations paid a `createDirectory` + `setResourceValues`
+    /// syscall pair.
+    public static let directory: URL = {
         // Under Application Support (not Caches) so stems persist across launches. Excluded from
         // iCloud backup — they're large and re-derivable from the cached audio.
         var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -23,7 +27,7 @@ public enum StemCache {
         values.isExcludedFromBackup = true
         try? dir.setResourceValues(values)
         return dir
-    }
+    }()
 
     public static func vocalsURL(key: String) -> URL { directory.appendingPathComponent("\(key)-vocals.m4a") }
     public static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }

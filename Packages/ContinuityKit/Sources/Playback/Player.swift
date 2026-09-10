@@ -418,12 +418,32 @@ public final class Player {
 
     /// Seconds until the next automatic transition begins, or nil if none is scheduled
     /// (already transitioning, no next track, or the current track/settings can't blend).
+    ///
+    /// Derived from `position`, so any view that reads this is pulled into the 20 Hz tick
+    /// loop. UI should read `transitionCountdownSeconds` instead.
     public var secondsUntilTransition: TimeInterval? {
         guard !isTransitioning, nextIndex != nil else { return nil }
         let dur = effectiveEndSeconds
         let fade = transitionSettings.durationSeconds
         guard dur > 0, fade > 0, dur > fade else { return nil }
         return max(0, (dur - fade) - position)
+    }
+
+    /// Whole-second mirror of `secondsUntilTransition` for the Now Playing countdown, written
+    /// only when the displayed second actually changes.
+    ///
+    /// The countdown is the only thing on that panel that moves while a blend is merely
+    /// *scheduled*, and reading `secondsUntilTransition` for it dragged the whole transition
+    /// visualization — a `TransitionPreview` rebuild, two `Canvas` redraws, and a read of both
+    /// tracks' `beatTimes` arrays out of SwiftData — into every one of the 20 ticks a second.
+    /// Publishing it at 1 Hz keeps that panel off the tick path entirely.
+    public internal(set) var transitionCountdownSeconds: Int?
+
+    /// Republishes the coarse countdown. Called from `tick()` and from `persistState()` (the
+    /// funnel every playback discontinuity already goes through), so it can never go stale.
+    func refreshTransitionCountdown() {
+        let seconds = secondsUntilTransition.map { Int($0.rounded()) }
+        if transitionCountdownSeconds != seconds { transitionCountdownSeconds = seconds }
     }
 
     private func tick() {
@@ -526,6 +546,8 @@ public final class Player {
             pushHistory(currentTrack)
             stopPlayback()
         }
+        // Last thing in the tick, so it reflects any transition this tick started or finished.
+        refreshTransitionCountdown()
     }
 
 }

@@ -10,7 +10,13 @@ public enum AudioCache {
     ///
     /// Under Application Support (not Caches) so the library survives relaunch and isn't evicted
     /// under storage pressure. Excluded from iCloud backup — it's large and re-downloadable.
-    public static var directory: URL {
+    ///
+    /// `static let`, not a computed property: this is read on every `url(forRelativePath:)` —
+    /// per track row, per launch-time resume pass, per deck load — and as a computed property
+    /// each of those paid a `createDirectory` + `setResourceValues` (an `setattrlist`) syscall
+    /// pair. Swift's lazy static initialization runs the directory setup exactly once per
+    /// process, on first access, which is all it was ever meant to do.
+    public static let directory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         var dir = base.appendingPathComponent("ContinuityAudio", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -18,7 +24,7 @@ public enum AudioCache {
         values.isExcludedFromBackup = true
         try? dir.setResourceValues(values)
         return dir
-    }
+    }()
 
     /// The on-disk URL for a given video's audio, e.g. `.../ContinuityAudio/<videoID>.<container>`.
     public static func fileURL(videoID: String, container: String) -> URL {

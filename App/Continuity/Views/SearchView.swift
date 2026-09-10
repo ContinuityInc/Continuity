@@ -200,7 +200,7 @@ struct SearchView: View {
             .font(.body)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(.thinMaterial, in: Capsule())
+            .continuityGlassCapsule()
             .fixedSize(horizontal: true, vertical: false)
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(.snappy(duration: 0.2), value: model.query)
@@ -252,7 +252,7 @@ struct SearchView: View {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .padding(10)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .continuityGlass(cornerRadius: 12)
                     .padding()
             }
         }
@@ -376,18 +376,49 @@ private struct CatalogArtwork: View {
     let url: URL?
 
     var body: some View {
-        AsyncImage(url: url) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
-            RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-                .overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
+        Group {
+            if let url {
+                // Same shared decode + bounded cache as library artwork: search results scroll,
+                // and `AsyncImage` re-fetched and re-decoded every row that came back on screen.
+                CachedArtworkImage(url: url, cornerRadius: 8, cropsLetterbox: false) {
+                    placeholder
+                }
+            } else {
+                placeholder
+            }
         }
         .frame(width: 44, height: 44)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 8).fill(.quaternary)
+            .overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
     }
 }
 
 // MARK: - Custom keyboard
+
+/// One shared, pre-armed feedback generator for the in-app keyboard.
+///
+/// The keyboard used to hold `let haptic = UIImpactFeedbackGenerator(...)` as a stored property,
+/// which cost twice: the Taptic Engine was re-armed from cold on every keypress (so the first
+/// tap of each was late), and — because `SearchView.body` re-runs on every keystroke — the new
+/// object reference made SwiftUI treat the keyboard as changed and re-evaluate all ~40 keys,
+/// which is exactly what the `SuggestionBar` leaf split was meant to prevent.
+@MainActor
+private enum KeyboardHaptics {
+    private static let generator: UIImpactFeedbackGenerator = {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
+        return generator
+    }()
+
+    /// Fires, then re-arms for the next keypress.
+    static func tap() {
+        generator.impactOccurred()
+        generator.prepare()
+    }
+}
 
 /// The app's own keyboard: a QWERTY grid rendered in SwiftUI (the system keyboard never
 /// appears). Its suggestion bar and space-bar autocorrect run against the catalog vocabulary
@@ -399,22 +430,28 @@ private struct MusicKeyboardView: View {
     private static let letterRows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
     private static let numberRows = ["1234567890", "-'&.,?!/", "@:;()$#"]
 
-    private let haptic = UIImpactFeedbackGenerator(style: .light)
-
     var body: some View {
-        VStack(spacing: 7) {
-            // Leaf view: suggestions change on every keystroke; inlined, they re-built the
-            // entire ~40-button key grid per keypress instead of just this bar.
-            SuggestionBar(model: model, haptic: haptic)
-            ForEach(showNumbers ? Self.numberRows : Self.letterRows, id: \.self) { row in
-                keyRow(row)
+        // One container for the whole key grid: sibling Liquid Glass elements inside a
+        // container are composited in a single pass rather than each sampling what is behind
+        // it — which is what ~40 separate material backdrops used to cost, every frame the
+        // keyboard was on screen. Spacing 0 keeps neighbouring keys from merging into blobs.
+        GlassEffectContainer(spacing: 0) {
+            VStack(spacing: 7) {
+                // Leaf view: suggestions change on every keystroke; inlined, they re-built the
+                // entire ~40-button key grid per keypress instead of just this bar.
+                SuggestionBar(model: model)
+                ForEach(showNumbers ? Self.numberRows : Self.letterRows, id: \.self) { row in
+                    keyRow(row)
+                }
+                bottomRow
             }
-            bottomRow
         }
         .padding(.horizontal, 4)
         .padding(.top, 8)
         .padding(.bottom, 6)
-        .background(.regularMaterial)
+        // The plane the glass keys sit on stays an opaque fill — Liquid Glass layered directly
+        // on more Liquid Glass is exactly what Apple's guidance rules out.
+        .background(Color(uiColor: .secondarySystemBackground))
     }
 
     private func keyRow(_ characters: String) -> some View {
@@ -451,7 +488,7 @@ private struct MusicKeyboardView: View {
     private func key(_ label: String = "", symbol: String? = nil, width: CGFloat? = nil,
                      prominent: Bool = false, action: @escaping () -> Void) -> some View {
         Button {
-            haptic.impactOccurred()
+            KeyboardHaptics.tap()
             action()
         } label: {
             Group {
@@ -464,11 +501,11 @@ private struct MusicKeyboardView: View {
             .font(label.count > 1 ? .subheadline : .title3)
             .frame(maxWidth: width ?? .infinity)
             .frame(width: width, height: 42)
-            .background(
-                prominent ? AnyShapeStyle(Color.accentColor.opacity(0.85)) : AnyShapeStyle(.thinMaterial),
-                in: RoundedRectangle(cornerRadius: 6)
-            )
             .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .glassEffect(
+                prominent ? .regular.tint(Color.accentColor).interactive() : .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
         }
         .buttonStyle(.plain)
         // Holding backspace repeats, like the real thing.
@@ -479,7 +516,6 @@ private struct MusicKeyboardView: View {
 /// Leaf: the keyboard's only per-keystroke invalidation surface (see MusicKeyboardView.body).
 private struct SuggestionBar: View {
     let model: CatalogSearchModel
-    let haptic: UIImpactFeedbackGenerator
 
     var body: some View {
         HStack(spacing: 6) {
@@ -490,7 +526,7 @@ private struct SuggestionBar: View {
             } else {
                 ForEach(suggestions, id: \.self) { word in
                     Button {
-                        haptic.impactOccurred()
+                        KeyboardHaptics.tap()
                         model.accept(suggestion: word)
                     } label: {
                         Text(word)
@@ -498,7 +534,7 @@ private struct SuggestionBar: View {
                             .lineLimit(1)
                             .frame(maxWidth: .infinity)
                             .frame(height: 32)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .continuityGlass(cornerRadius: 8, interactive: true)
                     }
                     .buttonStyle(.plain)
                 }

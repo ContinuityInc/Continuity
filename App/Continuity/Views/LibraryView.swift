@@ -108,12 +108,20 @@ private struct SearchResultsView: View {
     }
 
     /// Track matches by title or artist, capped so pathological queries stay snappy.
+    ///
+    /// Filters first and orders only the matches: `orderedTracks` sorts and copies every track
+    /// in a playlist, and this whole scan re-runs on each keystroke, so the old shape paid a
+    /// full library sort per character typed.
     private var matchingTracks: [Track] {
         var results: [Track] = []
         for playlist in playlists {
-            for track in playlist.orderedTracks
-            where track.title.localizedCaseInsensitiveContains(query)
-                || track.artist.localizedCaseInsensitiveContains(query) {
+            var matches = playlist.tracks.filter {
+                $0.title.localizedCaseInsensitiveContains(query)
+                    || $0.artist.localizedCaseInsensitiveContains(query)
+            }
+            if matches.isEmpty { continue }
+            matches.sort { $0.sortIndex < $1.sortIndex }
+            for track in matches {
                 results.append(track)
                 if results.count >= 100 { return results }
             }
@@ -148,34 +156,7 @@ private struct SearchResultsView: View {
             if !trackMatches.isEmpty {
                 Section("Songs") {
                     ForEach(trackMatches) { track in
-                        Button {
-                            play(track)
-                        } label: {
-                            HStack(spacing: 12) {
-                                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol,
-                                                  seed: track.gradientSeed, cornerRadius: 8)
-                                    .frame(width: 44, height: 44)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(track.title)
-                                        .foregroundStyle(player.currentTrack?.id == track.id
-                                                         ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                                        .lineLimit(1)
-                                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                Text(Theme.time(track.durationSeconds))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button {
-                                player.playNext(track)
-                            } label: {
-                                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                            }
-                        }
+                        SearchSongRow(track: track) { play(track) }
                     }
                 }
             }
@@ -197,6 +178,43 @@ private struct SearchResultsView: View {
     }
 }
 
+/// One song result. Reads the now-playing highlight itself, so a track change re-renders the
+/// affected rows instead of re-running the whole library scan in `SearchResultsView.body`.
+private struct SearchSongRow: View {
+    let track: Track
+    let play: () -> Void
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        Button(action: play) {
+            HStack(spacing: 12) {
+                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol,
+                                  seed: track.gradientSeed, cornerRadius: 8)
+                    .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .foregroundStyle(player.currentTrack?.id == track.id
+                                         ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                        .lineLimit(1)
+                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                Text(Theme.time(track.durationSeconds))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                player.playNext(track)
+            } label: {
+                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+        }
+    }
+}
+
 private struct PlaylistCard: View {
     let playlist: Playlist
 
@@ -211,7 +229,7 @@ private struct PlaylistCard: View {
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .continuityGlassCapsule()
                             .padding(8)
                     }
                 }

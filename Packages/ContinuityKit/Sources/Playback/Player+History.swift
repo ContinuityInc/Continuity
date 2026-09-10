@@ -16,6 +16,9 @@ extension Player {
     /// and mirrors the same state to the lock screen / Control Center. Every playback
     /// discontinuity funnels through here, which is exactly when both need updating.
     func persistState() {
+        // Every playback discontinuity funnels through here, which is also exactly when the
+        // scheduled-blend countdown moves for a reason other than the clock ticking.
+        refreshTransitionCountdown()
         nowPlayingBridge.update(
             track: currentTrack,
             duration: duration,
