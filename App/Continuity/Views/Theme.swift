@@ -35,8 +35,9 @@ enum Theme {
 extension View {
     /// Continuity's standard Liquid Glass surface. Centralised so the exact iOS 26
     /// `glassEffect` API is touched in one spot.
-    func continuityGlass(cornerRadius: CGFloat = 22) -> some View {
-        self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    func continuityGlass(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
+        self.glassEffect(interactive ? .regular.interactive() : .regular,
+                         in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 

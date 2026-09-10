@@ -53,6 +53,9 @@ struct PlaylistDetailView: View {
         .listStyle(.plain)
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
+        // Pushed destinations don't inherit insets added outside the NavigationStack, so the
+        // dock is attached here too — this is what keeps the bar off the last row.
+        .miniPlayerDock()
     }
 
     /// Removes a track: the player drops it first (so no deck/queue reference dangles), then the
