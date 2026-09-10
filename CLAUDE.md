@@ -47,6 +47,26 @@ branch: require the render clock to be *fresh* (host-time-valid, ≤ now, within
 anchor at `mach_absolute_time()+0.03s`, else fall back to plain `play()` calls. Any new
 `play(at:)` usage must follow the same freshness rule.
 
+### Non-finite playback clock (resolved)
+Transient crashes that clustered "when the phone is moving". The app uses **no** motion,
+altimeter or location APIs, so no sensor was involved — movement is a proxy for **audio route
+churn** (AirPods connecting/dropping, car stereos, a jostled cable) and network path changes.
+Around a route or `AVAudioEngineConfigurationChange`, `AVAudioPlayerNode`'s time base can report
+an unset sample rate, and `sampleTime / 0` is `.infinity` in Swift, not an error. That value flowed
+out of `Deck.elapsed` into `Player.position` and from there into:
+- `AVAudioFramePosition(seconds * sampleRate)` in `Deck.scheduleSegment` — **traps** on a
+  non-finite double, and `scheduleSegment` raises an uncatchable ObjC exception on a negative
+  start frame;
+- SwiftUI `frame`/`Shape.trim`/`Slider` — all of which trap on a non-finite number.
+
+Fixes (keep all): `Deck.elapsed` requires sample-time validity + a positive sample rate and
+returns 0 otherwise; `scheduleSegment` clamps into the file before converting; `Player.duration`
+and every published fraction go through `Player.fraction` (**`min`/`max` do NOT sanitize NaN —
+`min(NaN, 1)` is NaN**); `seek` rejects non-finite targets; the 1 Hz countdown clamps before
+`Int(_:)`. Pinned by `PlaybackTests/PlayerClockSafetyTests`. Also: the session opts out of system
+alert interruptions, and the stem model download is size-validated before being cached (a cut-off
+transfer or a captive-portal page used to be cached as "the model" forever).
+
 ### UI architecture decisions
 - **20 Hz `position` writes must not reach heavy views**: only leaf views
   (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`) read `player.position` /
@@ -60,6 +80,12 @@ anchor at `mach_absolute_time()+0.03s`, else fall back to plain `play()` calls. 
   padding, and full-bleed surfaces are page `.background`s behind that padding.
   NavigationStack bars and `safeAreaPadding` do NOT behave inside scroll content — that's why
   it's built this way (black bars / status-bar overlap regressions otherwise).
+  **The pager's `GeometryReader` sits INSIDE the safe area while its ScrollView ignores it**, so
+  `proxy.size.height` is short by exactly the insets it reports, and every page's
+  `containerRelativeFrame(.vertical)` is the full window height. `pageHeight` must therefore be
+  `proxy.size.height + insets.top + insets.bottom`. Measuring the shared backdrop with the short
+  value is what put flat `systemGroupedBackground` (black in dark mode) bands at the top and
+  bottom and slid the album gradient out of register with Now Playing.
 - **Transitions**: skip button starts a 5s blend (`Player.skipTransitionDurationSeconds`),
   clamped to remaining audio (`effectiveEndSeconds - position`; hard-advance under 1s) so short
   tracks don't end in an audible cut. `isUserInitiatedSkipTransition` prevents double-spend.

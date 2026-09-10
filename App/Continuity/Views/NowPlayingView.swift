@@ -301,7 +301,9 @@ private struct ScrubberBar: View {
         VStack(spacing: 4) {
             Slider(
                 value: Binding(
-                    get: { isEditing ? scrubValue : player.position },
+                    // Clamped into the slider's own range: a value outside it (or a non-finite
+                    // one from a disturbed render clock) is a layout trap, not a visual glitch.
+                    get: { min(max(isEditing ? scrubValue : player.position, 0), max(player.duration, 0.1)) },
                     set: { scrubValue = $0 }
                 ),
                 in: 0...max(player.duration, 0.1),

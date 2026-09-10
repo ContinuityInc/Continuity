@@ -82,9 +82,28 @@ public final class Player {
     }
     /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
     /// model whenever no deck is loaded (pre-audio staging, or before the first load).
+    ///
+    /// Guaranteed finite: this is the scrubber's range, the divisor for every progress fraction,
+    /// and the basis of the transition schedule, and SwiftUI traps rather than degrades when a
+    /// non-finite number reaches layout.
     public var duration: TimeInterval {
-        if let deck = audio?.current, deck.loadedDuration > 0 { return deck.loadedDuration }
-        return currentTrack?.durationSeconds ?? 0
+        let resolved: TimeInterval
+        if let deck = audio?.current, deck.loadedDuration > 0 {
+            resolved = deck.loadedDuration
+        } else {
+            resolved = currentTrack?.durationSeconds ?? 0
+        }
+        return resolved.isFinite && resolved > 0 ? resolved : 0
+    }
+
+    /// Clamps a progress fraction into `0...1`, mapping any non-finite value to 0.
+    ///
+    /// `min`/`max` do NOT sanitize NaN — `min(NaN, 1)` is NaN — so every fraction this type
+    /// publishes goes through here. A NaN reaching `Shape.trim` or a SwiftUI `frame(width:)`
+    /// is a hard crash, not a visual glitch.
+    static func fraction(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, 0), 1)
     }
 
     /// Progress fraction (0…1) for UI rings/bars. During a blend it MORPHS from the outgoing
@@ -92,21 +111,21 @@ public final class Player {
     /// moment the decks swap, the displayed value already equals the incoming fraction, so the
     /// indicator glides into the next song instead of snapping to it.
     public var displayProgress: Double {
-        let current = duration > 0 ? min(max(position / duration, 0), 1) : 0
+        let current = duration > 0 ? Player.fraction(position / duration) : 0
         guard isTransitioning, let audio,
               queue.indices.contains(transitionTargetIndex) else { return current }
         let incoming = queue[transitionTargetIndex]
         let incomingDuration = audio.idle.loadedDuration > 0
             ? audio.idle.loadedDuration : incoming.durationSeconds
-        guard incomingDuration > 0 else { return current }
+        guard incomingDuration.isFinite, incomingDuration > 0 else { return current }
         // The tick's snapshot, not a fresh `Deck.elapsed`: every reader of this property is a
         // 20 Hz leaf, and each `elapsed` call round-trips through AVAudioEngine for a render
         // timestamp and a player time. Three progress views during a blend meant six of those
         // per tick for a value that only moves once per tick anyway.
         let incomingPosition = incomingStartOffset + incomingDeckElapsed
-        let incomingFraction = min(max(incomingPosition / incomingDuration, 0), 1)
-        let weight = min(max(transitionProgress, 0), 1)
-        return current + (incomingFraction - current) * weight
+        let incomingFraction = Player.fraction(incomingPosition / incomingDuration)
+        let weight = Player.fraction(transitionProgress)
+        return Player.fraction(current + (incomingFraction - current) * weight)
     }
 
     // MARK: Engine / decks
@@ -450,7 +469,8 @@ public final class Player {
     /// Republishes the coarse countdown. Called from `tick()` and from `persistState()` (the
     /// funnel every playback discontinuity already goes through), so it can never go stale.
     func refreshTransitionCountdown() {
-        let seconds = secondsUntilTransition.map { Int($0.rounded()) }
+        // `Int(_: Double)` traps on infinity and NaN; a day is far past any real countdown.
+        let seconds = secondsUntilTransition.map { Int(min(max(0, $0), 86_400).rounded()) }
         if transitionCountdownSeconds != seconds { transitionCountdownSeconds = seconds }
     }
 
@@ -463,8 +483,11 @@ public final class Player {
             recoverPlayback(force: true)
             return
         }
+        // If the clock baseline has been corrupted (a stale render time survived long enough
+        // to poison it), hold the last good position rather than publish a number that traps
+        // SwiftUI layout on its way to the scrubber.
         let elapsed = baselineSeconds + audio.current.elapsed
-        position = elapsed
+        if elapsed.isFinite, elapsed >= 0 { position = elapsed }
         // Cosmetic: ease a just-transitioned track's key-sync pitch back to true. Touches only the
         // deck's timePitch node (never `position`), so it stays off the heavy-view tick path.
         advancePitchSettle()
@@ -502,7 +525,7 @@ public final class Player {
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
             audio.current.volume = Float(gains.outgoing)
             audio.idle.volume = Float(gains.incoming)
-            let progress = plan.progress(position: incomingElapsed, startPosition: 0)
+            let progress = Player.fraction(plan.progress(position: incomingElapsed, startPosition: 0))
             transitionProgress = progress
             // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
             if blendSettings.bassSwapEnabled {

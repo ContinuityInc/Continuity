@@ -201,10 +201,25 @@ final class Deck {
     }
 
     /// Seconds elapsed since this deck last (re)started (from the always-present accompaniment).
+    ///
+    /// Defensive about the render clock, because this value is the root of every number the app
+    /// computes about playback. Around a route or configuration change — AirPods connecting, a
+    /// car stereo, a jostled cable — the node's time base can briefly report an unset sample
+    /// rate or a sample time from the previous engine run. `sampleTime / 0` is `.infinity` in
+    /// Swift, not an error, so that used to flow into `Player.position` and from there into
+    /// `AVAudioFramePosition(seconds * sampleRate)`, which **traps** on a non-finite double, and
+    /// into SwiftUI frames and `Shape.trim`, which trap on one too.
+    ///
+    /// That is the crash class that clusters "when the phone is moving": moving is when routes
+    /// change. An unusable clock now reads as 0 — the position simply doesn't advance for a
+    /// tick — instead of poisoning everything downstream.
     var elapsed: TimeInterval {
-        guard let nodeTime = accompPlayer.lastRenderTime,
-              let playerTime = accompPlayer.playerTime(forNodeTime: nodeTime) else { return 0 }
-        return Double(playerTime.sampleTime) / playerTime.sampleRate
+        guard let nodeTime = accompPlayer.lastRenderTime, nodeTime.isSampleTimeValid,
+              let playerTime = accompPlayer.playerTime(forNodeTime: nodeTime),
+              playerTime.isSampleTimeValid, playerTime.sampleRate > 0 else { return 0 }
+        let seconds = Double(playerTime.sampleTime) / playerTime.sampleRate
+        guard seconds.isFinite, seconds >= 0 else { return 0 }
+        return seconds
     }
 
     /// Frame-accurate seek for a real-file (or stem) deck. Returns `false` for a synth deck.
@@ -219,9 +234,17 @@ final class Deck {
     }
 
     private func scheduleSegment(_ player: AVAudioPlayerNode, file: AVAudioFile, from seconds: TimeInterval) {
-        let startFrame = AVAudioFramePosition(seconds * file.processingFormat.sampleRate)
+        // Clamp into the file before converting. `Double` → `AVAudioFramePosition` traps on
+        // infinity, NaN, or anything outside Int64, and `scheduleSegment` raises an uncatchable
+        // ObjC exception on a negative start frame. Both are reachable from a disturbed render
+        // clock (see `elapsed`) or a negative clock baseline, and neither is worth dying for:
+        // an offset that isn't a real position in this file starts it from the beginning.
+        let sampleRate = file.processingFormat.sampleRate
+        let fileSeconds = sampleRate > 0 ? Double(file.length) / sampleRate : 0
+        let safeSeconds = seconds.isFinite ? min(max(0, seconds), fileSeconds) : 0
+        let startFrame = AVAudioFramePosition(safeSeconds * sampleRate)
         player.stop()
-        guard startFrame < file.length else { return }
+        guard startFrame >= 0, startFrame < file.length else { return }
         player.scheduleSegment(file, startingFrame: startFrame,
                                frameCount: AVAudioFrameCount(file.length - startFrame), at: nil)
     }
