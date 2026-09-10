@@ -122,7 +122,10 @@ final class ArtworkImageStore {
     private let cache: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 180
-        cache.totalCostLimit = 48 * 1024 * 1024
+        // ~45 YouTube thumbnails' worth of decoded bitmap. Deliberately modest: this app has a
+        // jetsam history and gates stem separation on 1.4 GB of headroom, so the artwork cache
+        // must stay a rounding error against that. NSCache also drops it under memory pressure.
+        cache.totalCostLimit = 32 * 1024 * 1024
         return cache
     }()
 
@@ -143,11 +146,11 @@ final class ArtworkImageStore {
         if let existing = inFlight[url] { return await existing.value }
 
         let maxPixel = Self.maxPixelSize
-        let task = Task { () -> UIImage? in
-            await Task.detached(priority: .userInitiated) { () -> UIImage? in
-                guard let data = await ArtworkDecoder.data(for: url) else { return nil }
-                return ArtworkDecoder.image(from: data, maxPixel: maxPixel)
-            }.value
+        // Detached: fetching and decoding must not run on the main actor, and this load is
+        // shared, so it must not inherit (or be cancelled with) whichever view asked first.
+        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = await ArtworkDecoder.data(for: url) else { return nil }
+            return ArtworkDecoder.image(from: data, maxPixel: maxPixel)
         }
         inFlight[url] = task
         let image = await task.value
@@ -270,12 +273,13 @@ enum BackdropRenderer {
         if let hit = cache.object(forKey: url as NSURL) { return hit.style }
         if let existing = inFlight[url] { return await existing.value }
 
-        let task = Task { () -> BackdropStyle? in
-            guard let source = await fetchBestArtwork(url) else { return nil }
-            return await Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
-                guard let colors = samplePalette(source) else { return nil }
-                return BackdropStyle(colors: colors, blurredArt: blurredRender(source))
-            }.value
+        // One detached task for the whole render: fetch, decode, palette sample and gaussian
+        // all belong off the main actor, and this work is shared between backdrops, so it must
+        // not be cancelled along with whichever view happened to ask for it first.
+        let task = Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
+            guard let source = await Self.fetchBestArtwork(url) else { return nil }
+            guard let colors = Self.samplePalette(source) else { return nil }
+            return BackdropStyle(colors: colors, blurredArt: Self.blurredRender(source))
         }
         inFlight[url] = task
         let style = await task.value
@@ -315,7 +319,7 @@ enum BackdropRenderer {
 
     /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
     /// some videos), falling back to the stored URL.
-    private static func fetchBestArtwork(_ url: URL) async -> UIImage? {
+    private nonisolated static func fetchBestArtwork(_ url: URL) async -> UIImage? {
         var candidates: [URL] = []
         let raw = url.absoluteString
         if raw.contains("/hqdefault") {
