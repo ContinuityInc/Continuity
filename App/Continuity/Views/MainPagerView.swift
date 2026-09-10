@@ -15,7 +15,12 @@ struct MainPagerView: View {
         // insets are re-applied per page below.
         GeometryReader { proxy in
             let insets = proxy.safeAreaInsets
-            let pageHeight = proxy.size.height
+            // The GeometryReader sits INSIDE the safe area, but the pages tile the full-bleed
+            // viewport (the ScrollView ignores the safe area) — so the true page height is the
+            // measured height plus both insets. Using proxy.size.height alone leaves the shared
+            // backdrop half-an-inset short at each end of every page (dark bands at the status
+            // bar and home indicator on Now Playing).
+            let pageHeight = proxy.size.height + insets.top + insets.bottom
             ScrollView(.vertical) {
                 // Every page gets HARD insets (the pager hides the window safe area, and
                 // neither NavigationStack bars nor safe-area piercing behave inside scroll
