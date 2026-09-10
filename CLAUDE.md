@@ -68,6 +68,16 @@ anchor at `mach_absolute_time()+0.03s`, else fall back to plain `play()` calls. 
 - `Player.prepare`/`restore` stay **metadata-only** (no engine build, no `notifyUpcoming()`)
   — see AGENTS.md jetsam gotcha.
 
+### Playlist import "spins forever, then orange retry" (Sept 2026, resolved)
+Every imported track resolved fine, then every ranged download got HTTP 403 → mapped to
+`streamURLExpired` → re-resolve → 403 again → `scheduleRetry` kept the row `.pending` through
+5 whole-track attempts (minutes of spinner) → `.failed`. Root cause: the pinned YouTubeKit
+(7cc8190, July) fetched stream URLs via the ANDROID_VR InnerTube client, which YouTube stopped
+serving past the first chunk in mid-August 2026. Fix: pin YouTubeKit `exact: "0.4.9"`
+(visionOS/web clients + embed fallback). Verified with the opt-in live probe test on the
+simulator: 0/8 tracks ready before, 8/8 after (full files, BPM analysed). See the AGENTS.md
+gotcha for the diagnosis recipe.
+
 ### Catalog search (PR #108)
 iTunes Search API (no key) for songs/albums; custom in-app keyboard with
 `CatalogAutocorrect` (ContinuityCore, Linux-tested) learning vocabulary from results + the

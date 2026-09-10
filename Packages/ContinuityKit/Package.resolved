@@ -1,5 +1,5 @@
 {
-  "originHash" : "7274ab7883ed66e6373fa5e86d553a5f47b1b676558d15005aefa58cdd4c9260",
+  "originHash" : "9510f39439c4eba8d14bf450fcc3c836fb7203d1498224e004303a913e7ccc15",
   "pins" : [
     {
       "identity" : "onnxruntime-swift-package-manager",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/alexeichhorn/YouTubeKit",
       "state" : {
-        "branch" : "main",
-        "revision" : "7cc81901f9bbf2f9d2766bd8a54e128b974e4c94"
+        "revision" : "e5b7d0396ce12bf3444f0d209e8436c83373b7af",
+        "version" : "0.4.9"
       }
     }
   ],
