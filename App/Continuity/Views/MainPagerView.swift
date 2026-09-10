@@ -33,7 +33,7 @@ struct MainPagerView: View {
                         .padding(.bottom, insets.bottom)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.library)
-                    NowPlayingView(mode: .home)
+                    NowPlayingView()
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
                         .containerRelativeFrame(.vertical)
