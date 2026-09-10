@@ -81,6 +81,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 - **New files need `xcodegen generate`** before `xcodebuild`, or you get "cannot find X in
   scope." XcodeGen uses explicit file lists.
+- **Schemes come only from `project.yml`.** XcodeGen emits no scheme unless a target declares
+  `scheme:` (the Continuity target does — keep it). `xcodebuild` on Xcode 26.x does **not**
+  auto-create schemes the way the Xcode GUI does, so without it `-scheme Continuity` fails in
+  ~30s with exit 65 "does not contain a scheme named" — which is exactly how every TestFlight
+  run from PR #127 to #137 died.
 - **onnxruntime is a static `.framework` (ar archive), not a dylib.** Xcode still embeds a
   broken ~50 KB stub into `Continuity.app/Frameworks`. Never "fix" that stub by patching
   `MinimumOSVersion` and re-signing — that cured ITMS upload checks while leaving a poison

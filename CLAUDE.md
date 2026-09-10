@@ -88,7 +88,9 @@ existing `searchQuery` → YouTube ingest path.
   automatically after processing.
 - Known failure modes already hit: App-Manager-role key (fixed — Admin key created);
   empty/placeholder secrets from copy-pasted commands; **ITMS error 90382 "Upload limit
-  reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix.
+  reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix;
+  **Archive step exits 65 after ~30s** = no `Continuity` scheme in the generated project
+  (see the AGENTS.md scheme gotcha) — `project.yml` must keep the target-level `scheme:`.
 - App Store Connect still has a legacy **Xcode Cloud "Archive – iOS"** workflow producing
   `action_required` checks on PRs; it's ASC-side, unrelated to code, and competes for upload
   quota — worth disabling in ASC.
