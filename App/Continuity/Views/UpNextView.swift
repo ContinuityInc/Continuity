@@ -91,7 +91,9 @@ struct UpNextView: View {
         let tracks = [current] + player.upcomingTracks
         let items = tracks.map { FlowItem(id: $0.id, bpm: $0.bpm, camelotCode: $0.camelotCode) }
         let ordered = FlowOrdering.order(items, startingAt: current.id)
-        let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        // `uniquingKeysWith`, not `uniqueKeysWithValues`: a repeated id in the queue would trap
+        // the app on a Flow toggle rather than just ordering one track once.
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         player.replaceUpcoming(with: ordered.filter { $0 != current.id }.compactMap { byID[$0] })
     }
 }

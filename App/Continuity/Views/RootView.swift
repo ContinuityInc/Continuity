@@ -94,7 +94,10 @@ struct RootView: View {
                     var descriptor = FetchDescriptor<Track>()
                     descriptor.propertiesToFetch = [\.id]
                     let tracks = (try? modelContext.fetch(descriptor)) ?? []
-                    let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+                    // `uniquingKeysWith`, not `uniqueKeysWithValues`: the latter traps on a
+                    // duplicate key, and trapping is not the right answer to a store that
+                    // handed back the same row twice.
+                    let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                     return ids.compactMap { byID[$0] }
                 }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
@@ -249,7 +252,8 @@ struct RootView: View {
             var descriptor = FetchDescriptor<Track>()
             descriptor.propertiesToFetch = [\.id]
             let stored = (try? modelContext.fetch(descriptor)) ?? []
-            let byID = Dictionary(uniqueKeysWithValues: stored.map { ($0.id, $0) })
+            // Never trap on a duplicate id here — this is the cold-launch path.
+            let byID = Dictionary(stored.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             player.restore(state, resolving: byID)
             if player.currentTrack != nil { return }
             // Every persisted track was deleted — fall through to the first-run seed.
