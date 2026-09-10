@@ -11,16 +11,33 @@ import Foundation
 /// - `correction(for:)` returns a replacement only when it is *confidently* wrong: the typed
 ///   word is unknown and exactly one edit away from a known word — applied on space, like a
 ///   conventional keyboard autocorrect, but against the music vocabulary.
+///
+/// Both run a bounded Levenshtein against the WHOLE vocabulary, and `suggestions` runs on every
+/// keystroke — with the user's library seeded in, that vocabulary is thousands of words. So the
+/// per-word cost is kept allocation-free: each word's unicode scalars and character count are
+/// derived once, when it's learned, and the distance matrix rows are allocated once per query
+/// and reused across every candidate.
 public struct CatalogAutocorrect: Sendable {
 
-    /// Learned vocabulary: lowercase word → accumulated weight (frequency across learned
-    /// phrases, so words from many catalog hits outrank one-off matches).
-    private var vocabulary: [String: Int] = [:]
+    /// One learned word: the text, the scalars and length the matcher needs (precomputed), and
+    /// its accumulated weight (frequency across learned phrases, so words from many catalog
+    /// hits outrank one-off matches).
+    private struct Entry: Sendable {
+        let word: String
+        let scalars: [Unicode.Scalar]
+        let characterCount: Int
+        var weight: Int
+    }
+
+    /// Learned vocabulary, in first-seen order.
+    private var entries: [Entry] = []
+    /// Position of each word in `entries`, so re-learning a known word is a weight bump.
+    private var indexByWord: [String: Int] = [:]
 
     public init() {}
 
     /// Number of distinct words learned so far.
-    public var wordCount: Int { vocabulary.count }
+    public var wordCount: Int { entries.count }
 
     // MARK: Learning
 
@@ -29,7 +46,17 @@ public struct CatalogAutocorrect: Sendable {
     public mutating func learn(phrases: [String], weight: Int = 1) {
         for phrase in phrases {
             for word in Self.words(in: phrase) {
-                vocabulary[word, default: 0] += weight
+                if let index = indexByWord[word] {
+                    entries[index].weight += weight
+                } else {
+                    indexByWord[word] = entries.count
+                    entries.append(Entry(
+                        word: word,
+                        scalars: Array(word.unicodeScalars),
+                        characterCount: word.count,
+                        weight: weight
+                    ))
+                }
             }
         }
     }
@@ -60,14 +87,19 @@ public struct CatalogAutocorrect: Sendable {
         let typed = partial.lowercased()
         guard typed.count >= 2, limit > 0 else { return [] }
 
+        let typedScalars = Array(typed.unicodeScalars)
+        var previous = [Int](repeating: 0, count: typedScalars.count + 1)
+        var current = previous
+
         var scored: [(word: String, tier: Int, weight: Int)] = []
         let maxDistance = typed.count <= 4 ? 1 : 2
-        for (word, weight) in vocabulary where word != typed {
-            if word.hasPrefix(typed) {
-                scored.append((word, 0, weight))
-            } else if abs(word.count - typed.count) <= maxDistance,
-                      Self.editDistance(word, typed, limit: maxDistance) <= maxDistance {
-                scored.append((word, 1, weight))
+        for entry in entries where entry.word != typed {
+            if entry.word.hasPrefix(typed) {
+                scored.append((entry.word, 0, entry.weight))
+            } else if abs(entry.characterCount - typed.count) <= maxDistance,
+                      Self.editDistance(entry.scalars, typedScalars, limit: maxDistance,
+                                        previous: &previous, current: &current) <= maxDistance {
+                scored.append((entry.word, 1, entry.weight))
             }
         }
         return scored
@@ -81,11 +113,25 @@ public struct CatalogAutocorrect: Sendable {
     /// known words (however weird; this is music) must never be "corrected".
     public func correction(for word: String) -> String? {
         let typed = word.lowercased()
-        guard typed.count >= 3, vocabulary[typed] == nil else { return nil }
-        return vocabulary
-            .filter { abs($0.key.count - typed.count) <= 1 && Self.editDistance($0.key, typed, limit: 1) <= 1 }
-            .max { ($0.value, $1.key) < ($1.value, $0.key) }?  // heaviest wins; ties break alphabetically
-            .key
+        guard typed.count >= 3, indexByWord[typed] == nil else { return nil }
+
+        let typedScalars = Array(typed.unicodeScalars)
+        var previous = [Int](repeating: 0, count: typedScalars.count + 1)
+        var current = previous
+
+        // Heaviest wins; ties break alphabetically.
+        var best: (word: String, weight: Int)?
+        for entry in entries where abs(entry.characterCount - typed.count) <= 1 {
+            guard Self.editDistance(entry.scalars, typedScalars, limit: 1,
+                                    previous: &previous, current: &current) <= 1 else { continue }
+            if let incumbent = best,
+               entry.weight < incumbent.weight
+                || (entry.weight == incumbent.weight && entry.word > incumbent.word) {
+                continue
+            }
+            best = (entry.word, entry.weight)
+        }
+        return best?.word
     }
 
     // MARK: Edit distance
@@ -94,9 +140,18 @@ public struct CatalogAutocorrect: Sendable {
     /// distance provably exceeds `limit` (the callers only care about "≤ limit").
     static func editDistance(_ a: String, _ b: String, limit: Int) -> Int {
         let s = Array(a.unicodeScalars), t = Array(b.unicodeScalars)
+        var previous = [Int](repeating: 0, count: t.count + 1)
+        var current = previous
+        return editDistance(s, t, limit: limit, previous: &previous, current: &current)
+    }
+
+    /// Scanning variant: takes pre-derived scalars and caller-owned matrix rows, so a scan over
+    /// thousands of vocabulary words allocates nothing per word. `previous` and `current` must
+    /// each have at least `t.count + 1` elements; their contents on entry are irrelevant.
+    static func editDistance(_ s: [Unicode.Scalar], _ t: [Unicode.Scalar], limit: Int,
+                             previous: inout [Int], current: inout [Int]) -> Int {
         if abs(s.count - t.count) > limit { return limit + 1 }
-        var previous = Array(0...t.count)
-        var current = [Int](repeating: 0, count: t.count + 1)
+        for j in 0...t.count { previous[j] = j }
         for i in 1...max(s.count, 1) where !s.isEmpty {
             current[0] = i
             var rowMin = i

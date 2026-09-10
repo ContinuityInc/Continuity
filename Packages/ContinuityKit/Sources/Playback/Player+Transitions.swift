@@ -44,6 +44,7 @@ extension Player {
         incoming.volume = 0
         incoming.rate = 1
         incomingStartOffset = 0
+        incomingDeckElapsed = 0
 
         // Beatmatch: when both tracks have a detected tempo and the stretch is modest, retempo the
         // incoming deck to the outgoing track so they beat together through the blend. Otherwise
@@ -214,6 +215,7 @@ extension Player {
         activeTransitionDurationSeconds = 0
         isUserInitiatedSkipTransition = false
         incomingStartOffset = 0
+        incomingDeckElapsed = 0
         incomingPitchShiftSemitones = 0
         incomingRate = 1
         transitionProgress = 0

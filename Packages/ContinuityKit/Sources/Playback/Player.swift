@@ -99,7 +99,11 @@ public final class Player {
         let incomingDuration = audio.idle.loadedDuration > 0
             ? audio.idle.loadedDuration : incoming.durationSeconds
         guard incomingDuration > 0 else { return current }
-        let incomingPosition = incomingStartOffset + audio.idle.elapsed
+        // The tick's snapshot, not a fresh `Deck.elapsed`: every reader of this property is a
+        // 20 Hz leaf, and each `elapsed` call round-trips through AVAudioEngine for a render
+        // timestamp and a player time. Three progress views during a blend meant six of those
+        // per tick for a value that only moves once per tick anyway.
+        let incomingPosition = incomingStartOffset + incomingDeckElapsed
         let incomingFraction = min(max(incomingPosition / incomingDuration, 0), 1)
         let weight = min(max(transitionProgress, 0), 1)
         return current + (incomingFraction - current) * weight
@@ -126,6 +130,10 @@ public final class Player {
     /// Seconds the incoming deck was seeked into its track for beat alignment — becomes the
     /// promoted deck's clock baseline when the transition completes.
     var incomingStartOffset: TimeInterval = 0
+    /// The incoming deck's elapsed time as of the current tick, so the 20 Hz progress leaves
+    /// share one reading instead of each querying the engine's render clock. Bookkeeping only —
+    /// the views that read `displayProgress` are already invalidated by `position`.
+    @ObservationIgnored var incomingDeckElapsed: TimeInterval = 0
     /// Low-shelf cut (dB) applied to the incoming deck's low end at the start of a bass-swap blend,
     /// ramped back to flat over the first part of the transition.
     let bassSwapCutDB: Float = -9
@@ -490,6 +498,7 @@ public final class Player {
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
             // outgoing file drains, so the transition can never get stuck half-faded.
             let incomingElapsed = audio.idle.elapsed
+            incomingDeckElapsed = incomingElapsed
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
             audio.current.volume = Float(gains.outgoing)
             audio.idle.volume = Float(gains.incoming)
