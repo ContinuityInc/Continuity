@@ -84,6 +84,13 @@ targets:
     postBuildScripts:
       - name: Remove embedded static onnxruntime
         basedOnDependencyAnalysis: false
+        # Declare the stub frameworks' signatures as inputs so the build system orders this
+        # delete AFTER "Sign onnxruntime.framework". With no inputs the two tasks can run
+        # concurrently, and the delete landing mid-sign fails the build with
+        # "CodeSign failed ... onnxruntime.framework: No such file or directory".
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/onnxruntime.framework/_CodeSignature/CodeResources
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/onnxruntime_extensions.framework/_CodeSignature/CodeResources
         script: |
           set -euo pipefail
           FRAMEWORKS_PATH="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
