@@ -162,7 +162,12 @@ private struct PagerBackdrop: View {
         .frame(height: pageHeight * 3, alignment: .top)
         .task(id: url) {
             guard let url else { style = nil; return }
-            style = await BackdropRenderer.style(for: url)
+            // Shared with `AlbumBackdrop` (which this view hosts), so one render serves both.
+            // It outlives either view's task, hence the explicit cancellation check before
+            // adopting a result that may now be for the previous track.
+            let resolved = await BackdropRenderer.style(for: url)
+            guard !Task.isCancelled else { return }
+            style = resolved
         }
     }
 }

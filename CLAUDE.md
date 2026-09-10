@@ -101,18 +101,56 @@ playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`). Remaining v1 items
 unless asked): `PrivacyInfo.xcprivacy`, ASC metadata (privacy policy/support URLs,
 screenshots), accessibility-label pass, `DEVELOPMENT_TEAM` removal from project.yml.
 
-## Known issues (noted during the OOM audit, deliberately not fixed)
+## Performance invariants (from the perf + Liquid Glass audit)
 
-1. `LoudnessMeter.integratedLUFS` allocates a full-length `[Double]` buffer (~127 MB / 6 min).
-2. `StreamingStereoDecoder` treats mono sources as dual-mono aliases.
-3. `runStreaming` uses O(n) `removeFirst(n)` per window (CPU churn, memory fine).
-4. `separateStems` pins `@Model track` + `ModelContext` across minutes-long tasks.
-5. `ensureStems` spawns overlapping `enforceBudget` passes on rapid skips.
-6. Manual `syncAll` bypasses auto-sync's failure backoff.
-7. `onQueueExhausted`/`restorePlaybackSession` fetch every Track incl. `beatTimes`.
-8. `SearchResultsView` recomputes matches per keystroke without memoization.
-9. `AudioStack.init` force-unwraps `AVAudioFormat(...)`.
-10. `NowPlayingBridge` can briefly blank lock-screen artwork when a fetch is superseded.
+Each of these was a measured cost, not a style preference. Don't undo them.
+
+- **Nothing on the 20 Hz tick path but leaves.** `position`, `transitionProgress` and anything
+  derived from them (`secondsUntilTransition`, `displayProgress`) may only be read by tiny leaf
+  views: `TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`, `BlendPlayhead`,
+  `TransitionCountdownPill`. The Now Playing transition panel used to read the countdown, so
+  every tick re-ran `TransitionPreview.make`, re-read both tracks' `beatTimes` out of SwiftData
+  and redrew two Canvases. `Player.transitionCountdownSeconds` publishes the countdown at 1 Hz
+  for exactly this reason; `TransitionVisualizationView` resolves beat positions and curve
+  samples once in `init`.
+- **A row's now-playing highlight is read by the row, never passed in.** As a parameter it makes
+  every track change invalidate the list's parent, which re-sorts the whole playlist.
+- **Cache directories are `static let`.** `AudioCache`/`StemCache`/`ArtworkStore.directory` are
+  read per artwork URL, per row, per frame; as computed properties each read ran
+  `createDirectory` + `setResourceValues`.
+- **All artwork goes through `ArtworkImageStore`** (shared bounded decode cache + ImageIO
+  downsampling), never `AsyncImage`, which caches nothing and re-decodes per row. Backdrop
+  renders are coalesced per URL and share one `CIContext`; results are NSCache-bounded, so they
+  can't accumulate the way the old dictionary did. Any load shared this way outlives a single
+  view's task, so check `Task.isCancelled` before assigning the result.
+- **Bulk filesystem work is batched and off the main actor**: one directory listing per cache
+  (`CacheIndex`) instead of per-track `fileExists` probes, cleanup sweeps in detached tasks, and
+  stem-cache budget passes coalesced (`scheduleBudgetPass`) rather than one full scan per skip.
+- **Launch fetches that only need ids use `propertiesToFetch`** — a plain `FetchDescriptor<Track>`
+  hydrates every row's `beatTimes`.
+- **Liquid Glass is the real API, everywhere.** `glassEffect` via `continuityGlass` /
+  `continuityGlassCapsule` — no `Material` stand-ins, no hand-drawn hairlines. Groups of glass
+  elements (the keyboard's key grid, the transition chips) sit in a `GlassEffectContainer` with
+  `spacing: 0` so they composite in one pass without merging into blobs, and glass is never
+  layered directly on glass (the keyboard plane stays an opaque fill).
+- `CatalogAutocorrect` and `LoudnessMeter` are allocation-/division-light on purpose; both have
+  differential checks behind them (identical suggestions over thousands of fuzzed queries;
+  bit-identical LUFS). Re-verify the same way before changing their loops.
+
+## Known issues (noted during the audits, deliberately not fixed)
+
+1. `StreamingStereoDecoder` treats mono sources as dual-mono aliases.
+2. `runStreaming` uses O(n) `removeFirst(n)` per window — ~344 KB memmove per window against a
+   transformer inference, so it stays measurement noise. Memory fine.
+3. `separateStems` pins `@Model track` + `ModelContext` across minutes-long tasks.
+4. Manual `syncAll` bypasses auto-sync's failure backoff (deliberate — it means "now").
+5. `SearchResultsView` still rescans on each keystroke; it no longer sorts, and no longer reruns
+   on track changes, so the remaining cost is one `localizedCaseInsensitiveContains` pass.
+6. `AudioStack.init` force-unwraps `AVAudioFormat(...)` — cannot fail for 44.1 kHz stereo.
+7. `Deck.load` opens `AVAudioFile`s on the main actor at every track change and blend start
+   (a few ms); moving it off would have to keep node scheduling ordered.
+8. `ToneSynth.makeLoop` synthesizes ~1M `sin` calls per demo-track load. Caching the buffers
+   would cost 2.8 MB each — the wrong trade for this app; demo tracks only.
 
 ## Debugging on device (the owner can run these)
 

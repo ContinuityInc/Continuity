@@ -220,7 +220,13 @@ struct AlbumBackdrop: View {
         .ignoresSafeArea()
         .task(id: url) {
             guard let url else { style = nil; return }
-            style = await BackdropRenderer.style(for: url)
+            let resolved = await BackdropRenderer.style(for: url)
+            // The render is shared between backdrops and deliberately outlives any one view's
+            // task, so cancellation doesn't reach it — check here instead. Without this, a slow
+            // fetch for the previous track can land after the next track's (cached, instant)
+            // one and repaint the screen in the wrong song's colors.
+            guard !Task.isCancelled else { return }
+            style = resolved
         }
     }
 }
@@ -449,7 +455,11 @@ struct CachedArtworkImage<Placeholder: View>: View {
                 loaded = hit
                 return
             }
-            loaded = await ArtworkImageStore.shared.image(for: url)
+            let image = await ArtworkImageStore.shared.image(for: url)
+            // Loads are shared across every view asking for this URL, so they outlive this
+            // view's task; a recycled row must not adopt the image its previous track asked for.
+            guard !Task.isCancelled else { return }
+            loaded = image
         }
     }
 }
