@@ -22,25 +22,49 @@ extension PreparationQueue {
     /// many tracks were imported; failures are logged and skipped (partial imports succeed).
     public func importLocalFiles(_ urls: [URL], in context: ModelContext) async -> Int {
         var imported = 0
+        // What "Local Files" already holds, snapshotted once as plain values. The duplicate
+        // check used to re-scan the playlist's SwiftData rows for every file imported — three
+        // managed-property reads per comparison, quadratic over a folder import.
+        var existing = (Self.existingLocalFilesPlaylist(in: context)?.tracks ?? []).map {
+            ImportedSong(title: $0.title, artist: $0.artist, duration: $0.durationSeconds)
+        }
         for url in urls {
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                 // Security scope covers the folder's descendants, so files found by the scan
-                // are readable without their own scoped access.
-                for file in Self.scanForMusic(in: url) {
-                    if await importOne(file, in: context) { imported += 1 }
+                // are readable without their own scoped access. The scan itself is a recursive
+                // enumeration with per-file resource reads — thousands of syscalls for a real
+                // music folder — so it runs off the main actor, or the import spinner freezes
+                // along with the rest of the UI.
+                let files = await Task.detached(priority: .userInitiated) {
+                    Self.scanForMusic(in: url)
+                }.value
+                for file in files {
+                    if let song = await importOne(file, in: context, existing: existing) {
+                        existing.append(song)
+                        imported += 1
+                    }
                 }
-            } else if await importOne(url, in: context) {
+            } else if let song = await importOne(url, in: context, existing: existing) {
+                existing.append(song)
                 imported += 1
             }
         }
         return imported
     }
 
+    /// The identity the duplicate check compares — kept as plain values so a folder import
+    /// doesn't read the growing playlist out of SwiftData once per file.
+    struct ImportedSong {
+        let title: String
+        let artist: String
+        let duration: Double
+    }
+
     /// Recursively lists the music files in a folder: audio extension, not hidden, and large
     /// enough to plausibly be a song. Sorted by path so import order (→ `sortIndex`) is stable.
-    private static func scanForMusic(in folder: URL) -> [URL] {
+    private nonisolated static func scanForMusic(in folder: URL) -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -58,7 +82,10 @@ extension PreparationQueue {
         return files.sorted { $0.path < $1.path }
     }
 
-    private func importOne(_ url: URL, in context: ModelContext) async -> Bool {
+    /// Imports one file, returning its identity on success (nil when it failed or was a
+    /// duplicate of something in `existing`).
+    private func importOne(_ url: URL, in context: ModelContext,
+                           existing: [ImportedSong]) async -> ImportedSong? {
         // Direct file picks carry their own security scope; files inside a scanned folder
         // are covered by the folder's scope (startAccessing then returns false — harmless).
         let accessing = url.startAccessingSecurityScopedResource()
@@ -70,12 +97,18 @@ extension PreparationQueue {
         let trackID = UUID()
         let ext = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
         let destination = AudioCache.fileURL(videoID: trackID.uuidString, container: ext)
-        do {
-            try FileManager.default.copyItem(at: url, to: destination)
-        } catch {
-            Logger.ingest.error("local import copy failed for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
-            return false
-        }
+        // Off the main actor: songs are multi-megabyte files, and a folder import copies
+        // hundreds of them back to back.
+        let copied = await Task.detached(priority: .userInitiated) { () -> Bool in
+            do {
+                try FileManager.default.copyItem(at: url, to: destination)
+                return true
+            } catch {
+                Logger.ingest.error("local import copy failed for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+                return false
+            }
+        }.value
+        guard copied else { return nil }
 
         // Metadata load runs off-main (AVURLAsset touches the file).
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
@@ -106,12 +139,13 @@ extension PreparationQueue {
         let artist = meta.artist?.isEmpty == false ? meta.artist! : "Unknown Artist"
 
         // Re-scanning the same folder must not double-import: same title + artist + length
-        // (±1s) already in Local Files means we've seen this song.
-        if playlist.tracks.contains(where: {
-            $0.title == title && $0.artist == artist && abs($0.durationSeconds - meta.duration) < 1
+        // (±1s) already in Local Files means we've seen this song. Compared against the
+        // caller's snapshot, so this stays plain-value work as the playlist grows.
+        if existing.contains(where: {
+            $0.title == title && $0.artist == artist && abs($0.duration - meta.duration) < 1
         }) {
             try? FileManager.default.removeItem(at: destination)
-            return false
+            return nil
         }
 
         // Embedded artwork → Application Support/Artwork/<id>.jpg (excluded from backup by
@@ -120,7 +154,11 @@ extension PreparationQueue {
         if let data = meta.artwork {
             let name = "\(trackID.uuidString).jpg"
             let artworkURL = ArtworkStore.directory.appendingPathComponent(name)
-            if (try? data.write(to: artworkURL)) != nil { artworkPath = name }
+            // Cover art runs to megabytes; write it off the main actor like the audio copy.
+            let wrote = await Task.detached(priority: .userInitiated) {
+                (try? data.write(to: artworkURL)) != nil
+            }.value
+            if wrote { artworkPath = name }
         }
 
         let track = Track(
@@ -144,17 +182,25 @@ extension PreparationQueue {
 
         // BPM/key/loudness/silence analysis runs post-ready, limiter-gated.
         backfillTrackDetails(track, in: context)
-        return true
+        return ImportedSong(title: title, artist: artist, duration: meta.duration)
+    }
+
+    /// The shared "Local Files" playlist, if one exists. Lookup only: the dedupe snapshot is
+    /// taken before anything is known to import, and picking a folder with no music in it must
+    /// not leave an empty playlist behind.
+    private static func existingLocalFilesPlaylist(in context: ModelContext) -> Playlist? {
+        let title = "Local Files"
+        let descriptor = FetchDescriptor<Playlist>(predicate: #Predicate { $0.title == title })
+        // Skip a demo playlist that happens to share the name — imports go to a real one.
+        return (try? context.fetch(descriptor))?.first(where: { !$0.isDemo })
     }
 
     /// Returns the shared "Local Files" playlist for local imports, creating it if missing.
     private static func findOrCreateLocalFilesPlaylist(in context: ModelContext) -> Playlist {
-        let title = "Local Files"
-        let descriptor = FetchDescriptor<Playlist>(predicate: #Predicate { $0.title == title })
-        // Skip a demo playlist that happens to share the name — imports go to a real one.
-        if let existing = (try? context.fetch(descriptor))?.first(where: { !$0.isDemo }) {
+        if let existing = existingLocalFilesPlaylist(in: context) {
             return existing
         }
+        let title = "Local Files"
         let playlist = Playlist(
             title: title,
             subtitle: "Imported from Files",
