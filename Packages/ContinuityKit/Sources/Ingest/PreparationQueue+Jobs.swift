@@ -6,6 +6,19 @@ extension PreparationQueue {
     static let songPriority = 100
     static let playlistPriority = 50
 
+    /// Drop Downloads rows, priority, and ingest waiters for tracks the UI or sync just deleted.
+    /// Call *before* destroying the `@Model`s so a mid-backoff retry doesn't leave a ghost.
+    public func handleTracksDeleted(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            ingestAttempts[id] = nil
+            ingestPriority[id] = nil
+            retryScheduledTrackIDs.remove(id)
+            removeJob(id)
+        }
+        Task { await ingestLimiter.cancel(ids: ids) }
+    }
+
     /// Jump `track` to the head of the ingest queue. Failed rows are re-enqueued.
     /// Already-ready tracks are a no-op — there's nothing to download.
     public func prioritize(_ track: Track, in context: ModelContext) {
@@ -61,7 +74,7 @@ extension PreparationQueue {
                 isPrioritized: prioritized
             ))
         }
-        sortJobs()
+        if jobSortSuspended == 0 { sortJobs() }
     }
 
     func updateJobProgress(_ id: UUID, bytes: Int, total: Int?) {
@@ -79,13 +92,14 @@ extension PreparationQueue {
     }
 
     /// Active downloads first, then analysis, then the waiting queue. Prioritized rows float up
-    /// within a phase so "Download first" is visible at the top of the screen.
-    private func sortJobs() {
+    /// within a phase so "Download first" is visible at the top of each section — never above an
+    /// in-flight download we can't preempt.
+    func sortJobs() {
         ingestJobs.sort { a, b in
-            if a.isPrioritized != b.isPrioritized { return a.isPrioritized && !b.isPrioritized }
             let pa = Self.phaseOrder(a.phase)
             let pb = Self.phaseOrder(b.phase)
             if pa != pb { return pa < pb }
+            if a.isPrioritized != b.isPrioritized { return a.isPrioritized && !b.isPrioritized }
             return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
         }
     }

@@ -52,6 +52,8 @@ public final class PreparationQueue {
     public internal(set) var ingestJobs: [IngestJob] = []
     /// User-raised ingest priority per track. 100 = one song, 50 = whole playlist/album.
     var ingestPriority: [UUID: Int] = [:]
+    /// When > 0, `upsertJob` skips per-call sorts — resume/import batches sort once at the end.
+    var jobSortSuspended = 0
 
     /// Production wiring — the app constructs the queue with no arguments. The parameterized
     /// initializer stays internal for dependency-injected tests within the module.
@@ -125,7 +127,9 @@ public final class PreparationQueue {
     /// no stems yet. `.failed` tracks are left as-is for an explicit retry.
     ///
     /// Yields every 40 rows so a thousand-track library doesn't occupy the main actor for the
-    /// whole pass before the first frame can land.
+    /// whole pass before the first frame can land. Job-list sorts are suspended for the whole
+    /// walk — otherwise each `enqueue` → `upsertJob` → `sortJobs` is O(n²) during a large
+    /// unfinished import and trips the scene-create watchdog (`0x8BADF00D`).
     public func resumePreparation(in context: ModelContext) async {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
         // One directory listing per cache instead of up to five `fileExists` probes per track:
@@ -134,6 +138,11 @@ public final class PreparationQueue {
         let cacheIndex = CacheIndex.snapshot()
         // Demo healing used to `save()` once per track; batched into a single save at the end.
         var needsSave = false
+        jobSortSuspended += 1
+        defer {
+            jobSortSuspended = max(0, jobSortSuspended - 1)
+            sortJobs()
+        }
         for (i, track) in tracks.enumerated() {
             // Demo tracks have no source and play synthesized audio — there is nothing to ingest
             // or resume. Without this guard they'd be re-enqueued (they have no audio file), fail
@@ -212,11 +221,19 @@ public final class PreparationQueue {
         }
 
         // Stay `.pending` until a limiter slot is actually ours — otherwise a 200-track import
-        // looks like 200 simultaneous downloads. `bump` can reorder this waiter meanwhile.
-        await ingestLimiter.acquire(id: trackID, priority: ingestPriority[trackID] ?? 0)
-        // Deleted while queued.
+        // looks like 200 simultaneous downloads. `bump` can reorder this waiter meanwhile;
+        // `cancel` (delete) resumes with false and no slot — do not `release()` in that case.
+        let acquired = await ingestLimiter.acquire(id: trackID, priority: ingestPriority[trackID] ?? 0)
+        guard acquired else {
+            ingestAttempts[trackID] = nil
+            ingestPriority[trackID] = nil
+            removeJob(trackID)
+            return
+        }
+        // Deleted while queued (or cancelled after a race with `handleTracksDeleted`).
         guard track.modelContext != nil else {
             ingestAttempts[trackID] = nil
+            ingestPriority[trackID] = nil
             removeJob(trackID)
             await ingestLimiter.release()
             return
@@ -395,8 +412,14 @@ public final class PreparationQueue {
             // naturally drops tracks deleted while we waited.
             var descriptor = FetchDescriptor<Track>(predicate: #Predicate { $0.id == trackID })
             descriptor.fetchLimit = 1
-            guard let fresh = try? context.fetch(descriptor).first,
-                  fresh.prepState != .ready else { return }   // healed by a manual retry meanwhile
+            guard let fresh = try? context.fetch(descriptor).first else {
+                // Deleted while sleeping — drop the Downloads ghost and any leftover priority.
+                self.ingestAttempts[trackID] = nil
+                self.ingestPriority[trackID] = nil
+                self.removeJob(trackID)
+                return
+            }
+            guard fresh.prepState != .ready else { return }   // healed by a manual retry meanwhile
             Logger.ingest.notice(
                 "retrying \(label, privacy: .public) (attempt \(attempt + 1)/\(maxAttempts))"
             )

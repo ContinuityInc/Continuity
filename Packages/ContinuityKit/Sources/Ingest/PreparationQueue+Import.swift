@@ -31,6 +31,7 @@ extension PreparationQueue {
         playlist.lastSyncedAt = Date()
         context.insert(playlist)
 
+        jobSortSuspended += 1
         for (index, item) in resolved.items.enumerated() {
             let track = Track(
                 title: item.title ?? "YouTube Video (\(item.videoID.prefix(6)))",
@@ -47,6 +48,8 @@ extension PreparationQueue {
             context.insert(track)
             enqueue(track, in: context, saving: false)
         }
+        jobSortSuspended = max(0, jobSortSuspended - 1)
+        sortJobs()
         playlist.touch()    // creation + initial tracks count as a content change
         try? context.save()
         return playlist
@@ -76,6 +79,7 @@ extension PreparationQueue {
         playlist.lastSyncedAt = Date()
         context.insert(playlist)
 
+        jobSortSuspended += 1
         for (index, spotifyTrack) in resolved.tracks.enumerated() {
             let track = Track(
                 title: spotifyTrack.title,
@@ -92,6 +96,8 @@ extension PreparationQueue {
             context.insert(track)
             enqueue(track, in: context, saving: false)
         }
+        jobSortSuspended = max(0, jobSortSuspended - 1)
+        sortJobs()
         playlist.touch()    // creation + initial tracks count as a content change
         try? context.save()
         return playlist
