@@ -44,6 +44,13 @@ struct PlaylistDetailView: View {
                         } label: {
                             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
+                        if !track.isDemo, track.prepState != .ready {
+                            Button {
+                                prepQueue.prioritize(track, in: modelContext)
+                            } label: {
+                                Label("Download First", systemImage: "arrow.up.to.line")
+                            }
+                        }
                     }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
@@ -89,6 +96,16 @@ struct PlaylistDetailView: View {
             }
             .buttonStyle(.glassProminent)
             .padding(.top, 4)
+
+            if tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
+                Button {
+                    prepQueue.prioritize(playlist: playlist, in: modelContext)
+                } label: {
+                    Label("Download First", systemImage: "arrow.up.to.line")
+                        .frame(maxWidth: 200)
+                }
+                .buttonStyle(.bordered)
+            }
 
             // Source-backed playlists mirror a remote list: manual sync + the auto-sync opt-out.
             if playlist.isSourceBacked {

@@ -43,9 +43,14 @@ public final class PreparationQueue {
     let downloader: AudioFileDownloading
 
     /// Caps simultaneous resolve+download+analyse work (network-bound).
-    private let ingestLimiter = ConcurrencyLimiter(limit: 3)
+    let ingestLimiter = ConcurrencyLimiter(limit: 3)
     /// Caps simultaneous stem separations to one — each is CPU/RAM-heavy, so they queue.
     let stemLimiter = ConcurrencyLimiter(limit: 1)
+
+    /// In-flight ingest work for the Downloads screen. Not persisted; rebuilt by `enqueue`.
+    public private(set) var ingestJobs: [IngestJob] = []
+    /// User-raised ingest priority per track. 100 = one song, 50 = whole playlist/album.
+    var ingestPriority: [UUID: Int] = [:]
 
     /// Production wiring — the app constructs the queue with no arguments. The parameterized
     /// initializer stays internal for dependency-injected tests within the module.
@@ -90,6 +95,7 @@ public final class PreparationQueue {
     /// keeps failing keeps climbing its curve instead of looping at `base` forever.
     func enqueueInternal(_ track: Track, in context: ModelContext, saving: Bool = true) {
         track.prepState = .pending
+        upsertJob(track, phase: .queued)
         if saving { try? context.save() }
         Task { await process(track, in: context) }
     }
@@ -116,7 +122,10 @@ public final class PreparationQueue {
     /// interrupted mid-ingest (e.g. the app was killed partway through a large import) or whose
     /// downloaded audio went missing, and finishes stem separation for tracks that have audio but
     /// no stems yet. `.failed` tracks are left as-is for an explicit retry.
-    public func resumePreparation(in context: ModelContext) {
+    ///
+    /// Yields every 40 rows so a thousand-track library doesn't occupy the main actor for the
+    /// whole pass before the first frame can land.
+    public func resumePreparation(in context: ModelContext) async {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
         // One directory listing per cache instead of up to five `fileExists` probes per track:
         // a thousand-track library meant thousands of stat calls on the main thread, at launch,
@@ -124,7 +133,7 @@ public final class PreparationQueue {
         let cacheIndex = CacheIndex.snapshot()
         // Demo healing used to `save()` once per track; batched into a single save at the end.
         var needsSave = false
-        for track in tracks {
+        for (i, track) in tracks.enumerated() {
             // Demo tracks have no source and play synthesized audio — there is nothing to ingest
             // or resume. Without this guard they'd be re-enqueued (they have no audio file), fail
             // for lack of a source, and show up as retry-able failures. Heal any that already did.
@@ -153,6 +162,7 @@ public final class PreparationQueue {
             case .failed:
                 break
             }
+            if i.isMultiple(of: 40) { await Task.yield() }
         }
         if needsSave { try? context.save() }
     }
@@ -188,19 +198,33 @@ public final class PreparationQueue {
     /// at each stage. Any failure (missing video ID, resolve, or download error) lands the
     /// track in `.failed`; the UI surfaces that as a retry-able badge rather than a crash.
     private func process(_ track: Track, in context: ModelContext) async {
-        track.prepState = .preparing
-        try? context.save()
-        retryScheduledTrackIDs.remove(track.id)
+        let trackID = track.id
+        retryScheduledTrackIDs.remove(trackID)
+        upsertJob(track, phase: .queued)
 
         // A track needs either a direct video ID (YouTube) or a search query (Spotify-sourced).
         guard track.youtubeVideoID != nil || track.searchQuery != nil else {
             track.prepState = .failed
+            removeJob(trackID)
             try? context.save()
             return
         }
 
-        // Gate the network/CPU-heavy stage so a playlist import doesn't run all tracks at once.
-        await ingestLimiter.acquire()
+        // Stay `.pending` until a limiter slot is actually ours — otherwise a 200-track import
+        // looks like 200 simultaneous downloads. `bump` can reorder this waiter meanwhile.
+        await ingestLimiter.acquire(id: trackID, priority: ingestPriority[trackID] ?? 0)
+        // Deleted while queued.
+        guard track.modelContext != nil else {
+            ingestAttempts[trackID] = nil
+            removeJob(trackID)
+            await ingestLimiter.release()
+            return
+        }
+
+        track.prepState = .preparing
+        try? context.save()
+        upsertJob(track, phase: .downloading)
+
         var prepared = false
         var failure: Error?
         do {
@@ -218,14 +242,22 @@ public final class PreparationQueue {
             let resolved = try await resolver.resolveAudio(videoID: id)
             let fileURL: URL
             do {
-                fileURL = try await downloader.downloadAudio(resolved)
+                fileURL = try await downloader.downloadAudio(resolved, progress: { [weak self] done, total in
+                    Task { @MainActor in
+                        self?.updateJobProgress(trackID, bytes: done, total: total)
+                    }
+                })
             } catch let error as IngestError where error.needsFreshStreamURL {
                 // Signed `googlevideo` URLs are short-lived, and a throttled client gets them
                 // invalidated early — so a queued track's URL can be dead by the time its turn
                 // comes. Retrying the dead URL can never work; re-resolve for a fresh one.
                 Logger.ingest.notice("stream URL expired for \(id, privacy: .public) — re-resolving")
                 let refreshed = try await resolver.resolveAudio(videoID: id)
-                fileURL = try await downloader.downloadAudio(refreshed)
+                fileURL = try await downloader.downloadAudio(refreshed, progress: { [weak self] done, total in
+                    Task { @MainActor in
+                        self?.updateJobProgress(trackID, bytes: done, total: total)
+                    }
+                })
             }
             // The track could have been deleted while we were off the main actor; don't write to
             // (or resurrect) a dead model.
@@ -243,6 +275,7 @@ public final class PreparationQueue {
 
                 // Analyse tempo + key off the main actor (full-track FFTs). Non-fatal: if analysis
                 // fails the track still plays, just without BPM/key metadata.
+                upsertJob(track, phase: .analyzing)
                 if let analysis = try? await Task.detached(priority: .utility, operation: {
                     try TrackAnalyzer.analyze(fileURL: fileURL)
                 }).value, track.modelContext != nil {
@@ -269,21 +302,27 @@ public final class PreparationQueue {
 
         // Don't touch a track that was deleted while we worked.
         guard track.modelContext != nil else {
-            ingestAttempts[track.id] = nil
+            ingestAttempts[trackID] = nil
+            removeJob(trackID)
             try? context.save()
             return
         }
 
         if prepared {
-            ingestAttempts[track.id] = nil
+            ingestAttempts[trackID] = nil
+            ingestPriority[trackID] = nil
             track.prepState = .ready
+            removeJob(trackID)
         } else if let failure, scheduleRetry(track, after: failure, in: context) {
             // Stays `.pending`, not `.failed`: the row keeps its in-progress badge, and if the
             // app is killed before the retry fires, `resumePreparation` picks it up at launch.
             track.prepState = .pending
+            upsertJob(track, phase: .queued)
         } else {
-            ingestAttempts[track.id] = nil
+            ingestAttempts[trackID] = nil
+            ingestPriority[trackID] = nil
             track.prepState = .failed
+            removeJob(trackID)
         }
         try? context.save()
 
