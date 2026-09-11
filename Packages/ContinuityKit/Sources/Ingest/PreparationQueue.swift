@@ -48,7 +48,8 @@ public final class PreparationQueue {
     let stemLimiter = ConcurrencyLimiter(limit: 1)
 
     /// In-flight ingest work for the Downloads screen. Not persisted; rebuilt by `enqueue`.
-    public private(set) var ingestJobs: [IngestJob] = []
+    /// `internal(set)` so `PreparationQueue+Jobs` can mutate it from another file in Ingest.
+    public internal(set) var ingestJobs: [IngestJob] = []
     /// User-raised ingest priority per track. 100 = one song, 50 = whole playlist/album.
     var ingestPriority: [UUID: Int] = [:]
 
