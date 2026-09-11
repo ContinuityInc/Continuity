@@ -74,8 +74,19 @@ public final class Playlist {
     /// True when every track is a synthesized demo (the seeded sample albums).
     public var isDemo: Bool { !tracks.isEmpty && tracks.allSatisfy(\.isDemo) }
 
-    /// Cover art for the playlist card: the first track that has real artwork.
+    /// Cover art for the playlist card: the first track (in play order) that has real artwork.
+    ///
+    /// A single pass rather than `orderedTracks`, which sorts and copies the whole relationship
+    /// array. Every playlist card's body reads this, so a grid of N playlists paid N sorts on
+    /// every re-render — and each candidate's `artworkURL` is built at most once.
     public var artworkURL: URL? {
-        orderedTracks.lazy.compactMap(\.artworkURL).first
+        var bestIndex = Int.max
+        var bestURL: URL?
+        for track in tracks {
+            guard track.sortIndex < bestIndex, let url = track.artworkURL else { continue }
+            bestIndex = track.sortIndex
+            bestURL = url
+        }
+        return bestURL
     }
 }

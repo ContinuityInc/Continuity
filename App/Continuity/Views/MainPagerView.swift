@@ -15,7 +15,16 @@ struct MainPagerView: View {
         // insets are re-applied per page below.
         GeometryReader { proxy in
             let insets = proxy.safeAreaInsets
-            let pageHeight = proxy.size.height
+            // The ScrollView below ignores the safe area, so it — and therefore every page's
+            // `containerRelativeFrame(.vertical)` — is the FULL window height. This
+            // GeometryReader is laid out inside the safe area, so `proxy.size.height` is short
+            // by exactly the insets it reports. Measuring the backdrop with the short value
+            // made it three insets' worth shorter than the content it backs; centred as a
+            // `.background`, that left an uncovered band of flat `systemGroupedBackground` at
+            // the top and bottom (black in dark mode) and slid the album gradient out of
+            // register with the Now Playing page. Add the insets back so the backdrop spans
+            // exactly the three pages it is drawing.
+            let pageHeight = proxy.size.height + insets.top + insets.bottom
             ScrollView(.vertical) {
                 // Every page gets HARD insets (the pager hides the window safe area, and
                 // neither NavigationStack bars nor safe-area piercing behave inside scroll
@@ -162,7 +171,12 @@ private struct PagerBackdrop: View {
         .frame(height: pageHeight * 3, alignment: .top)
         .task(id: url) {
             guard let url else { style = nil; return }
-            style = await BackdropRenderer.style(for: url)
+            // Shared with `AlbumBackdrop` (which this view hosts), so one render serves both.
+            // It outlives either view's task, hence the explicit cancellation check before
+            // adopting a result that may now be for the previous track.
+            let resolved = await BackdropRenderer.style(for: url)
+            guard !Task.isCancelled else { return }
+            style = resolved
         }
     }
 }

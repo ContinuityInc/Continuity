@@ -190,6 +190,12 @@ extension Player {
     func configureSession() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default)
+        // Every system interruption stops the engine, and every engine stop is a chance to hit
+        // the check-then-call window where an AVFAudio node call raises an uncatchable ObjC
+        // exception. A media playback app is allowed to opt out of the incidental ones (system
+        // alerts) — fewer interruptions is fewer chances. Best-effort: never worth failing
+        // session setup over.
+        try? session.setPrefersNoInterruptionsFromSystemAlerts(true)
         try? session.setActive(true)
     }
 }

@@ -133,7 +133,7 @@ extension PreparationQueue {
                 )
                 playlist.tracks.append(track)
                 context.insert(track)
-                enqueue(track, in: context)
+                enqueue(track, in: context, saving: false)
                 changed = true
             }
         }
@@ -190,7 +190,7 @@ extension PreparationQueue {
                 )
                 playlist.tracks.append(track)
                 context.insert(track)
-                enqueue(track, in: context)
+                enqueue(track, in: context, saving: false)
                 changed = true
             }
         }

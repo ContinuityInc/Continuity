@@ -282,6 +282,9 @@ extension Player {
     }
 
     public func seek(to seconds: TimeInterval) {
+        // A non-finite scrub target is not a position — ignore it rather than reinterpret it as
+        // zero. `min`/`max` don't sanitize NaN, and everything below feeds a frame conversion.
+        guard seconds.isFinite else { return }
         let clamped = max(0, min(seconds, duration))
         cancelTransition() // re-evaluate the transition window from the new position
         // Paused pre-audio scrub: metadata-only — move the clock and stage the seek for when

@@ -14,23 +14,27 @@ struct PlaylistDetailView: View {
     private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
 
     var body: some View {
-        List {
+        // Resolved once per body evaluation: `orderedTracks` sorts and copies the whole
+        // relationship array, and this body used to call it three times (rows, tap handler,
+        // Play button) — plus once more per tap.
+        let tracks = playlist.orderedTracks
+        return List {
             // The header is a regular row — NOT a pinned section header, which in a plain list
             // floats transparently over the rows and lets them scroll underneath the Play button.
             // As a row it scrolls away with the content, Apple Music-style.
-            header
+            header(tracks)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
 
-            ForEach(Array(playlist.orderedTracks.enumerated()), id: \.element.id) { index, track in
-                TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                TrackRow(track: track)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         // A failed ingest can't be played — tapping it retries instead.
                         if track.prepState == .failed {
                             prepQueue.enqueue(track, in: modelContext)
                         } else {
-                            player.play(tracks: playlist.orderedTracks, startAt: index)
+                            player.play(tracks: tracks, startAt: index)
                             pagerState.goToNowPlaying()
                         }
                     }
@@ -69,7 +73,7 @@ struct PlaylistDetailView: View {
         LibraryCleanup.removeOrphanedFiles(keys: [key], in: modelContext)
     }
 
-    private var header: some View {
+    private func header(_ tracks: [Track]) -> some View {
         VStack(spacing: 12) {
             RemoteArtworkView(url: playlist.artworkURL, symbol: playlist.artworkSymbol, seed: playlist.gradientSeed, cornerRadius: 20)
                 .frame(width: 180, height: 180)
@@ -77,7 +81,7 @@ struct PlaylistDetailView: View {
             Text(playlist.title).font(.title2.bold())
             Text(playlist.subtitle).font(.subheadline).foregroundStyle(.secondary)
             Button {
-                player.play(tracks: playlist.orderedTracks, startAt: 0)
+                player.play(tracks: tracks, startAt: 0)
                 pagerState.goToNowPlaying()
             } label: {
                 Label("Play", systemImage: "play.fill")
@@ -118,9 +122,14 @@ struct PlaylistDetailView: View {
     }
 }
 
+/// One track row. Reads the now-playing highlight itself rather than taking it as a parameter:
+/// as a parameter, every track change invalidated `PlaylistDetailView.body` — which re-sorted
+/// the entire playlist to rebuild the list.
 private struct TrackRow: View {
     let track: Track
-    let isCurrent: Bool
+    @Environment(Player.self) private var player
+
+    private var isCurrent: Bool { player.currentTrack?.id == track.id }
 
     var body: some View {
         HStack(spacing: 12) {

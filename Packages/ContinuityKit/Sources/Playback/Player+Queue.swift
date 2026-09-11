@@ -6,9 +6,19 @@ extension Player {
     // MARK: Queue editing
 
     /// Tracks after the current one, in play order.
+    ///
+    /// Copies the slice, so callers that only need the first element should use
+    /// `nextUpcomingTrack` — a full-queue copy per body evaluation is not what the Now Playing
+    /// panel needs to answer "what blends in next?".
     public var upcomingTracks: [Track] {
         guard queue.indices.contains(currentIndex), currentIndex + 1 < queue.count else { return [] }
         return Array(queue[(currentIndex + 1)...])
+    }
+
+    /// The next track in play order, without materializing the upcoming slice.
+    public var nextUpcomingTrack: Track? {
+        let next = currentIndex + 1
+        return queue.indices.contains(next) ? queue[next] : nil
     }
 
     /// Inserts (or moves, if already upcoming) the track to play immediately after the current one.

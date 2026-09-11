@@ -1,35 +1,44 @@
 import SwiftUI
 import Domain
+import Playback
 import ContinuityCore
 
 /// A compact, at-a-glance picture of what the DJ transition between two tracks does: the
 /// crossfade shape, how the two beat grids line up, and the tempo / key / bass moves being
-/// applied. Shown in the Now Playing sheet both while a blend is live (with a moving playhead)
-/// and just before a scheduled one begins.
+/// applied. Shown on Now Playing both while a blend is live (with a moving playhead) and just
+/// before a scheduled one begins.
 ///
 /// All the musical facts come from `TransitionPreview.make(...)`, so this view never disagrees
 /// with what the audio engine actually does — it only handles presentation.
+///
+/// **Nothing here is a function of the 20 Hz playback clock.** The two moving parts — the
+/// countdown to a scheduled blend and the playhead sweeping a live one — are separate leaf
+/// views that read the player themselves, so a tick invalidates a `Text` or a 1 pt rule rather
+/// than rebuilding the preview, re-reading both tracks' `beatTimes` out of SwiftData, and
+/// redrawing two `Canvas`es twenty times a second.
 struct TransitionVisualizationView: View {
     let settings: TransitionSettings
     let outgoing: Track
     let incoming: Track
     let isLive: Bool
-    let liveProgress: Double
-    let secondsUntil: TimeInterval?
 
     /// Computed once at construction: `body` reads it in several places (graph + chips), and
-    /// as a computed property `TransitionPreview.make` re-ran on every access — 3×+ per frame
-    /// during live blends. Pure function of the init inputs, so a stored value is identical.
+    /// as a computed property `TransitionPreview.make` re-ran on every access.
     private let preview: TransitionPreview
+    /// The crossfade polyline samples — a pure function of the curve, so they never need to be
+    /// recomputed inside the `Canvas` draw closure.
+    private let curveSamples: [CrossfadeGains]
+    /// Beat tick positions on the shared `0...1` blend axis, resolved once. `Track.beatTimes` is
+    /// a SwiftData array property (hundreds to thousands of doubles); reading it per redraw was
+    /// the single most expensive thing on the Now Playing screen.
+    private let outgoingBeats: [Double]
+    private let incomingBeats: [Double]
 
-    init(settings: TransitionSettings, outgoing: Track, incoming: Track,
-         isLive: Bool, liveProgress: Double, secondsUntil: TimeInterval?) {
+    init(settings: TransitionSettings, outgoing: Track, incoming: Track, isLive: Bool) {
         self.settings = settings
         self.outgoing = outgoing
         self.incoming = incoming
         self.isLive = isLive
-        self.liveProgress = liveProgress
-        self.secondsUntil = secondsUntil
         self.preview = TransitionPreview.make(
             curve: settings.curve,
             duration: settings.durationSeconds,
@@ -40,6 +49,17 @@ struct TransitionVisualizationView: View {
             beatmatchEnabled: settings.beatmatchEnabled,
             harmonicEnabled: settings.harmonicMixingEnabled,
             bassSwapEnabled: settings.bassSwapEnabled
+        )
+        self.curveSamples = settings.curve.samples(count: 60)
+        self.outgoingBeats = BeatWindow.outgoingPositions(
+            beats: outgoing.beatTimes,
+            windowEnd: outgoing.audibleEndSeconds ?? outgoing.durationSeconds,
+            duration: settings.durationSeconds
+        )
+        self.incomingBeats = BeatWindow.incomingPositions(
+            beats: incoming.beatTimes,
+            windowStart: incoming.audibleStartSeconds ?? 0,
+            duration: settings.durationSeconds
         )
     }
 
@@ -62,13 +82,8 @@ struct TransitionVisualizationView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-        } else if let secondsUntil {
-            Text("Transition in \(Int(secondsUntil.rounded()))s")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.85))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
+        } else {
+            TransitionCountdownPill()
         }
     }
 
@@ -79,9 +94,8 @@ struct TransitionVisualizationView: View {
     /// While live, a vertical playhead sweeps across at the current transition progress.
     private var crossfadeGraph: some View {
         Canvas { context, size in
-            let samples = preview.curve.samples(count: 60)
-            guard samples.count > 1 else { return }
-            let stepX = size.width / CGFloat(samples.count - 1)
+            guard curveSamples.count > 1 else { return }
+            let stepX = size.width / CGFloat(curveSamples.count - 1)
 
             func point(_ index: Int, _ gain: Double) -> CGPoint {
                 CGPoint(x: CGFloat(index) * stepX, y: (1 - CGFloat(gain)) * size.height)
@@ -89,7 +103,7 @@ struct TransitionVisualizationView: View {
 
             var outgoingPath = Path()
             var incomingPath = Path()
-            for (i, sample) in samples.enumerated() {
+            for (i, sample) in curveSamples.enumerated() {
                 let outPoint = point(i, sample.outgoing)
                 let inPoint = point(i, sample.incoming)
                 if i == 0 {
@@ -102,18 +116,12 @@ struct TransitionVisualizationView: View {
             }
             context.stroke(outgoingPath, with: .color(.white.opacity(0.85)), lineWidth: 2.5)
             context.stroke(incomingPath, with: .color(Color.accentColor), lineWidth: 2.5)
-
-            if isLive {
-                let x = CGFloat(min(max(liveProgress, 0), 1)) * size.width
-                var playhead = Path()
-                playhead.move(to: CGPoint(x: x, y: 0))
-                playhead.addLine(to: CGPoint(x: x, y: size.height))
-                context.stroke(playhead, with: .color(.white.opacity(0.5)), lineWidth: 1)
-            }
         }
         .frame(height: 72)
+        // Leaf overlay: the sweeping playhead is the only part of the graph tied to the blend
+        // clock, so it moves on its own without redrawing the curves underneath it.
+        .overlay { if isLive { BlendPlayhead() } }
         .allowsHitTesting(false)
-        .animation(.linear(duration: 0.25), value: liveProgress)
     }
 
     // MARK: Beat grid
@@ -122,31 +130,27 @@ struct TransitionVisualizationView: View {
     /// incoming track's intro beats (bottom, accent), each mapped into the shared `0...1` blend
     /// axis. A track with no detected beats simply contributes no ticks.
     @ViewBuilder private var beatGrid: some View {
-        if !outgoing.beatTimes.isEmpty || !incoming.beatTimes.isEmpty {
+        if !outgoingBeats.isEmpty || !incomingBeats.isEmpty {
             Canvas { context, size in
-                let duration = settings.durationSeconds
-                let windowEnd = outgoing.audibleEndSeconds ?? outgoing.durationSeconds
-                let windowStart = incoming.audibleStartSeconds ?? 0
-                let outgoingBeats = BeatWindow.outgoingPositions(
-                    beats: outgoing.beatTimes, windowEnd: windowEnd, duration: duration)
-                let incomingBeats = BeatWindow.incomingPositions(
-                    beats: incoming.beatTimes, windowStart: windowStart, duration: duration)
                 let tickHeight = size.height / 2 - 1
 
+                var topTicks = Path()
                 for position in outgoingBeats {
                     let x = CGFloat(position) * size.width
-                    var tick = Path()
-                    tick.move(to: CGPoint(x: x, y: 0))
-                    tick.addLine(to: CGPoint(x: x, y: tickHeight))
-                    context.stroke(tick, with: .color(.white.opacity(0.5)), lineWidth: 1)
+                    topTicks.move(to: CGPoint(x: x, y: 0))
+                    topTicks.addLine(to: CGPoint(x: x, y: tickHeight))
                 }
+                // One stroked path per row rather than one per tick: a dense grid is hundreds of
+                // beats, and each separate stroke is its own draw call.
+                context.stroke(topTicks, with: .color(.white.opacity(0.5)), lineWidth: 1)
+
+                var bottomTicks = Path()
                 for position in incomingBeats {
                     let x = CGFloat(position) * size.width
-                    var tick = Path()
-                    tick.move(to: CGPoint(x: x, y: size.height - tickHeight))
-                    tick.addLine(to: CGPoint(x: x, y: size.height))
-                    context.stroke(tick, with: .color(Color.accentColor.opacity(0.6)), lineWidth: 1)
+                    bottomTicks.move(to: CGPoint(x: x, y: size.height - tickHeight))
+                    bottomTicks.addLine(to: CGPoint(x: x, y: size.height))
                 }
+                context.stroke(bottomTicks, with: .color(Color.accentColor.opacity(0.6)), lineWidth: 1)
             }
             .frame(height: 14)
             .allowsHitTesting(false)
@@ -157,35 +161,41 @@ struct TransitionVisualizationView: View {
 
     /// The applied transition moves as wrapping capsules — tempo nudge, key match, bass swap,
     /// vocal handling (only meaningful when both tracks have stems), and the curve + duration.
+    ///
+    /// Wrapped in a `GlassEffectContainer`: sibling glass elements inside one container are
+    /// composited in a single pass instead of each sampling the backdrop on its own. Spacing 0
+    /// so neighbouring chips stay separate capsules rather than merging into one blob.
     private var chips: some View {
-        ChipFlowLayout(spacing: 8) {
-            if let tempo = preview.tempo {
-                chip {
-                    Text("\(Int(tempo.outgoingBPM))→\(Int(tempo.incomingBPM)) BPM  "
-                         + String(format: "%+.1f%%", tempo.percentAdjust))
+        GlassEffectContainer(spacing: 0) {
+            ChipFlowLayout(spacing: 8) {
+                if let tempo = preview.tempo {
+                    chip {
+                        Text("\(Int(tempo.outgoingBPM))→\(Int(tempo.incomingBPM)) BPM  "
+                             + String(format: "%+.1f%%", tempo.percentAdjust))
+                    }
                 }
-            }
-            if let key = preview.key {
-                chip {
-                    HStack(spacing: 4) {
-                        Text("\(key.outgoingCode)→\(key.incomingCode)")
-                        if key.compatible {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        if key.appliedShiftSemitones != 0 {
-                            Text(String(format: "(%+d st)", key.appliedShiftSemitones))
+                if let key = preview.key {
+                    chip {
+                        HStack(spacing: 4) {
+                            Text("\(key.outgoingCode)→\(key.incomingCode)")
+                            if key.compatible {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            if key.appliedShiftSemitones != 0 {
+                                Text(String(format: "(%+d st)", key.appliedShiftSemitones))
+                            }
                         }
                     }
                 }
+                if settings.bassSwapEnabled {
+                    chip { Label("Bass swap", systemImage: "dial.low.fill") }
+                }
+                if outgoing.hasStems && incoming.hasStems {
+                    chip { Text(settings.vocalMode.label) }
+                }
+                chip { Text("\(curveName(settings.curve)) · \(Int(settings.durationSeconds))s") }
             }
-            if settings.bassSwapEnabled {
-                chip { Label("Bass swap", systemImage: "dial.low.fill") }
-            }
-            if outgoing.hasStems && incoming.hasStems {
-                chip { Text(settings.vocalMode.label) }
-            }
-            chip { Text("\(curveName(settings.curve)) · \(Int(settings.durationSeconds))s") }
         }
     }
 
@@ -195,7 +205,7 @@ struct TransitionVisualizationView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(.ultraThinMaterial, in: Capsule())
+            .continuityGlassCapsule()
     }
 
     /// Local mirror of `TransitionSettingsView`'s private curve-name mapping so the labels match.
@@ -208,7 +218,46 @@ struct TransitionVisualizationView: View {
     }
 }
 
-/// A minimal wrapping layout so the transition chips flow onto multiple lines within the sheet.
+// MARK: - Tick-driven leaves
+
+/// Leaf: the countdown to a scheduled blend. Reads the player's 1 Hz coarse countdown, so it
+/// re-renders about once a second and never invalidates the panel around it.
+private struct TransitionCountdownPill: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        if let seconds = player.transitionCountdownSeconds {
+            Text("Transition in \(seconds)s")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .continuityGlassCapsule()
+        }
+    }
+}
+
+/// Leaf: the playhead sweeping the crossfade graph during a live blend. The only view on the
+/// screen that reads `transitionProgress`.
+private struct BlendPlayhead: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let progress = min(max(player.transitionProgress, 0), 1)
+        GeometryReader { geometry in
+            Rectangle()
+                .fill(.white.opacity(0.5))
+                .frame(width: 1)
+                .offset(x: geometry.size.width * CGFloat(progress))
+        }
+        .animation(.linear(duration: 0.25), value: progress)
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Layout
+
+/// A minimal wrapping layout so the transition chips flow onto multiple lines within the panel.
 private struct ChipFlowLayout: Layout {
     var spacing: CGFloat = 8
 

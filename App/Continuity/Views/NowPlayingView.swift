@@ -205,16 +205,15 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
     }
 
-    /// Remaining forward skips, as a subtle glass pill under Next.
+    /// Remaining forward skips, as a subtle glass pill under Next. Real Liquid Glass — the
+    /// material + hand-drawn hairline it used to fake carries its own edge highlight.
     private var skipBadge: some View {
         Text("\(player.skipsRemaining)")
             .font(.caption.weight(.bold).monospacedDigit())
             .foregroundStyle(.white.opacity(0.9))
             .padding(.vertical, 3)
             .padding(.horizontal, 9)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.15)))
-            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+            .continuityGlassCapsule()
             .accessibilityLabel("\(player.skipsRemaining) skips remaining")
     }
 
@@ -302,7 +301,9 @@ private struct ScrubberBar: View {
         VStack(spacing: 4) {
             Slider(
                 value: Binding(
-                    get: { isEditing ? scrubValue : player.position },
+                    // Clamped into the slider's own range: a value outside it (or a non-finite
+                    // one from a disturbed render clock) is a layout trap, not a visual glitch.
+                    get: { min(max(isEditing ? scrubValue : player.position, 0), max(player.duration, 0.1)) },
                     set: { scrubValue = $0 }
                 ),
                 in: 0...max(player.duration, 0.1),
@@ -329,7 +330,11 @@ private struct ScrubberBar: View {
     }
 }
 
-/// Leaf: the screen's only reader of the 20 Hz-derived blend state.
+/// Chooses which pair the transition panel describes. Deliberately reads only state that
+/// changes at track/blend boundaries — never `position`, `transitionProgress` or
+/// `secondsUntilTransition`. The two moving parts inside the panel are their own leaves, so
+/// this body (and the `TransitionPreview` + beat-grid work in the panel's `init`) runs on
+/// track changes, not twenty times a second.
 private struct TransitionSection: View {
     @Environment(Player.self) private var player
 
@@ -339,19 +344,15 @@ private struct TransitionSection: View {
                 settings: player.transitionSettings,
                 outgoing: current,
                 incoming: next,
-                isLive: true,
-                liveProgress: min(max(player.transitionProgress, 0), 1),
-                secondsUntil: nil
+                isLive: true
             )
             .transition(.opacity)
-        } else if let current = player.currentTrack, let next = player.upcomingTracks.first {
+        } else if let current = player.currentTrack, let next = player.nextUpcomingTrack {
             TransitionVisualizationView(
                 settings: player.transitionSettings,
                 outgoing: current,
                 incoming: next,
-                isLive: false,
-                liveProgress: 0,
-                secondsUntil: player.secondsUntilTransition
+                isLive: false
             )
             .transition(.opacity)
         }

@@ -33,18 +33,38 @@ public enum LoudnessMeter {
         // while analysis runs during playback). Each block's mean-square is summed from the
         // ring in logical order, so the arithmetic — order included — matches the old
         // whole-buffer implementation exactly.
+        //
+        // The index arithmetic is division-free. The obvious form of this loop (`ring[i % block]`
+        // to write, `ring[j % block]` to sum, `(filled - block) % hop` to decide) runs three
+        // integer divisions per sample — tens of millions per track, and integer division is
+        // the slowest thing in the loop by a wide margin. The write cursor wraps by hand, the
+        // next block boundary is counted rather than tested for divisibility, and the sum walks
+        // the ring as two contiguous runs (`base..<block` then `0..<base`), which visits exactly
+        // the same elements in exactly the same order as the modulo form — so the floating-point
+        // result is bit-identical, not merely close.
         var ring = [Double](repeating: 0, count: block)
         var blockLoudness: [Double] = []
         var blockMeanSquare: [Double] = []
+        var writeIndex = 0
+        var nextBlockEnd = block
         for i in 0..<samples.count {
-            ring[i % block] = highPass.process(shelf.process(Double(samples[i])))
+            ring[writeIndex] = highPass.process(shelf.process(Double(samples[i])))
+            writeIndex += 1
+            if writeIndex == block { writeIndex = 0 }
             let filled = i + 1
-            guard filled >= block, (filled - block) % hop == 0 else { continue }
-            let start = filled - block
+            guard filled == nextBlockEnd else { continue }
+            nextBlockEnd += hop
+            let base = (filled - block) % block
             var sum = 0.0
-            for j in start..<filled {
-                let w = ring[j % block]
-                sum += w * w
+            ring.withUnsafeBufferPointer { window in
+                for k in base..<block {
+                    let w = window[k]
+                    sum += w * w
+                }
+                for k in 0..<base {
+                    let w = window[k]
+                    sum += w * w
+                }
             }
             let ms = sum / Double(block)
             blockMeanSquare.append(ms)

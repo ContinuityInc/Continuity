@@ -76,17 +76,21 @@ public final class PreparationQueue {
     ///
     /// User-initiated calls (tapping a failed row) reset the track's backoff — an explicit retry
     /// means "try now", not "resume the curve where it left off".
-    public func enqueue(_ track: Track, in context: ModelContext) {
+    ///
+    /// Bulk callers — playlist import, sync, the launch resume pass — pass `saving: false` and
+    /// save once when they're finished: a `save()` per track froze the main actor for the whole
+    /// length of a 500-track import, and each save costs more as the object graph grows.
+    public func enqueue(_ track: Track, in context: ModelContext, saving: Bool = true) {
         ingestAttempts[track.id] = nil
         retryScheduledTrackIDs.remove(track.id)
-        enqueueInternal(track, in: context)
+        enqueueInternal(track, in: context, saving: saving)
     }
 
     /// Enqueue without clearing the retry budget — used by the automatic backoff so a track that
     /// keeps failing keeps climbing its curve instead of looping at `base` forever.
-    func enqueueInternal(_ track: Track, in context: ModelContext) {
+    func enqueueInternal(_ track: Track, in context: ModelContext, saving: Bool = true) {
         track.prepState = .pending
-        try? context.save()
+        if saving { try? context.save() }
         Task { await process(track, in: context) }
     }
 
@@ -100,9 +104,12 @@ public final class PreparationQueue {
         } else {
             candidates = (try? context.fetch(FetchDescriptor<Track>())) ?? []
         }
+        var enqueued = false
         for track in candidates where track.prepState == .failed && !track.isDemo {
-            enqueue(track, in: context)
+            enqueue(track, in: context, saving: false)
+            enqueued = true
         }
+        if enqueued { try? context.save() }
     }
 
     /// Resumes preparation for a persisted library at launch: re-enqueues tracks that were
@@ -111,33 +118,43 @@ public final class PreparationQueue {
     /// no stems yet. `.failed` tracks are left as-is for an explicit retry.
     public func resumePreparation(in context: ModelContext) {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
+        // One directory listing per cache instead of up to five `fileExists` probes per track:
+        // a thousand-track library meant thousands of stat calls on the main thread, at launch,
+        // before the first frame.
+        let cacheIndex = CacheIndex.snapshot()
+        // Demo healing used to `save()` once per track; batched into a single save at the end.
+        var needsSave = false
         for track in tracks {
             // Demo tracks have no source and play synthesized audio — there is nothing to ingest
             // or resume. Without this guard they'd be re-enqueued (they have no audio file), fail
             // for lack of a source, and show up as retry-able failures. Heal any that already did.
             if track.isDemo {
-                if track.prepState != .ready { track.prepState = .ready; try? context.save() }
+                if track.prepState != .ready {
+                    track.prepState = .ready
+                    needsSave = true
+                }
                 continue
             }
             switch track.prepState {
             case .ready:
-                let hasAudio = track.localRelativePath.map {
-                    FileManager.default.fileExists(atPath: AudioCache.url(forRelativePath: $0).path)
-                } ?? false
+                let hasAudio = track.localRelativePath.map { cacheIndex.hasAudio($0) } ?? false
                 if !hasAudio {
-                    enqueue(track, in: context)          // file lost/evicted → re-fetch end to end
+                    enqueue(track, in: context, saving: false)   // file lost/evicted → re-fetch end to end
+                    needsSave = true
                 } else {
                     // Stems are demand-driven from the play queue (`ensureStems`) — never
                     // separated library-wide at launch. Just true-up links vs the disk.
-                    reconcileStemLinks(track, in: context)
+                    reconcileStemLinks(track, in: context, using: cacheIndex)
                     backfillTrackDetails(track, in: context)
                 }
             case .pending, .preparing:
-                enqueue(track, in: context)              // interrupted before finishing → pick back up
+                enqueue(track, in: context, saving: false)   // interrupted before finishing → pick back up
+                needsSave = true
             case .failed:
                 break
             }
         }
+        if needsSave { try? context.save() }
     }
 
     // MARK: - Source sync
@@ -445,6 +462,15 @@ public final class PreparationQueue {
     var separationAllowedAt: Date?
     /// At most one pending post-hold retry (ensureStems also re-fires on every track change).
     var stemsRetryScheduled = false
+    /// True while a stem-cache budget pass is running. `ensureStems` fires on every queue move
+    /// and each pass enumerates the whole stem directory with per-file sizes and dates, so
+    /// rapid skips used to stack one full scan per skip.
+    var budgetPassInFlight = false
+    /// A pass was asked for while one was running — run exactly one more when it finishes.
+    var budgetPassRequested = false
+    /// Keys a queued pass must protect on top of the play-queue neighborhood (a stem written
+    /// after the queue moved on), drained into the next pass.
+    var budgetExtraProtectedKeys: Set<String> = []
 
 
 }

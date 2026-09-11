@@ -47,6 +47,26 @@ branch: require the render clock to be *fresh* (host-time-valid, ≤ now, within
 anchor at `mach_absolute_time()+0.03s`, else fall back to plain `play()` calls. Any new
 `play(at:)` usage must follow the same freshness rule.
 
+### Non-finite playback clock (resolved)
+Transient crashes that clustered "when the phone is moving". The app uses **no** motion,
+altimeter or location APIs, so no sensor was involved — movement is a proxy for **audio route
+churn** (AirPods connecting/dropping, car stereos, a jostled cable) and network path changes.
+Around a route or `AVAudioEngineConfigurationChange`, `AVAudioPlayerNode`'s time base can report
+an unset sample rate, and `sampleTime / 0` is `.infinity` in Swift, not an error. That value flowed
+out of `Deck.elapsed` into `Player.position` and from there into:
+- `AVAudioFramePosition(seconds * sampleRate)` in `Deck.scheduleSegment` — **traps** on a
+  non-finite double, and `scheduleSegment` raises an uncatchable ObjC exception on a negative
+  start frame;
+- SwiftUI `frame`/`Shape.trim`/`Slider` — all of which trap on a non-finite number.
+
+Fixes (keep all): `Deck.elapsed` requires sample-time validity + a positive sample rate and
+returns 0 otherwise; `scheduleSegment` clamps into the file before converting; `Player.duration`
+and every published fraction go through `Player.fraction` (**`min`/`max` do NOT sanitize NaN —
+`min(NaN, 1)` is NaN**); `seek` rejects non-finite targets; the 1 Hz countdown clamps before
+`Int(_:)`. Pinned by `PlaybackTests/PlayerClockSafetyTests`. Also: the session opts out of system
+alert interruptions, and the stem model download is size-validated before being cached (a cut-off
+transfer or a captive-portal page used to be cached as "the model" forever).
+
 ### UI architecture decisions
 - **20 Hz `position` writes must not reach heavy views**: only leaf views
   (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`) read `player.position` /
@@ -60,6 +80,12 @@ anchor at `mach_absolute_time()+0.03s`, else fall back to plain `play()` calls. 
   padding, and full-bleed surfaces are page `.background`s behind that padding.
   NavigationStack bars and `safeAreaPadding` do NOT behave inside scroll content — that's why
   it's built this way (black bars / status-bar overlap regressions otherwise).
+  **The pager's `GeometryReader` sits INSIDE the safe area while its ScrollView ignores it**, so
+  `proxy.size.height` is short by exactly the insets it reports, and every page's
+  `containerRelativeFrame(.vertical)` is the full window height. `pageHeight` must therefore be
+  `proxy.size.height + insets.top + insets.bottom`. Measuring the shared backdrop with the short
+  value is what put flat `systemGroupedBackground` (black in dark mode) bands at the top and
+  bottom and slid the album gradient out of register with Now Playing.
 - **Transitions**: skip button starts a 5s blend (`Player.skipTransitionDurationSeconds`),
   clamped to remaining audio (`effectiveEndSeconds - position`; hard-advance under 1s) so short
   tracks don't end in an audible cut. `isUserInitiatedSkipTransition` prevents double-spend.
@@ -101,18 +127,56 @@ playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`). Remaining v1 items
 unless asked): `PrivacyInfo.xcprivacy`, ASC metadata (privacy policy/support URLs,
 screenshots), accessibility-label pass, `DEVELOPMENT_TEAM` removal from project.yml.
 
-## Known issues (noted during the OOM audit, deliberately not fixed)
+## Performance invariants (from the perf + Liquid Glass audit)
 
-1. `LoudnessMeter.integratedLUFS` allocates a full-length `[Double]` buffer (~127 MB / 6 min).
-2. `StreamingStereoDecoder` treats mono sources as dual-mono aliases.
-3. `runStreaming` uses O(n) `removeFirst(n)` per window (CPU churn, memory fine).
-4. `separateStems` pins `@Model track` + `ModelContext` across minutes-long tasks.
-5. `ensureStems` spawns overlapping `enforceBudget` passes on rapid skips.
-6. Manual `syncAll` bypasses auto-sync's failure backoff.
-7. `onQueueExhausted`/`restorePlaybackSession` fetch every Track incl. `beatTimes`.
-8. `SearchResultsView` recomputes matches per keystroke without memoization.
-9. `AudioStack.init` force-unwraps `AVAudioFormat(...)`.
-10. `NowPlayingBridge` can briefly blank lock-screen artwork when a fetch is superseded.
+Each of these was a measured cost, not a style preference. Don't undo them.
+
+- **Nothing on the 20 Hz tick path but leaves.** `position`, `transitionProgress` and anything
+  derived from them (`secondsUntilTransition`, `displayProgress`) may only be read by tiny leaf
+  views: `TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`, `BlendPlayhead`,
+  `TransitionCountdownPill`. The Now Playing transition panel used to read the countdown, so
+  every tick re-ran `TransitionPreview.make`, re-read both tracks' `beatTimes` out of SwiftData
+  and redrew two Canvases. `Player.transitionCountdownSeconds` publishes the countdown at 1 Hz
+  for exactly this reason; `TransitionVisualizationView` resolves beat positions and curve
+  samples once in `init`.
+- **A row's now-playing highlight is read by the row, never passed in.** As a parameter it makes
+  every track change invalidate the list's parent, which re-sorts the whole playlist.
+- **Cache directories are `static let`.** `AudioCache`/`StemCache`/`ArtworkStore.directory` are
+  read per artwork URL, per row, per frame; as computed properties each read ran
+  `createDirectory` + `setResourceValues`.
+- **All artwork goes through `ArtworkImageStore`** (shared bounded decode cache + ImageIO
+  downsampling), never `AsyncImage`, which caches nothing and re-decodes per row. Backdrop
+  renders are coalesced per URL and share one `CIContext`; results are NSCache-bounded, so they
+  can't accumulate the way the old dictionary did. Any load shared this way outlives a single
+  view's task, so check `Task.isCancelled` before assigning the result.
+- **Bulk filesystem work is batched and off the main actor**: one directory listing per cache
+  (`CacheIndex`) instead of per-track `fileExists` probes, cleanup sweeps in detached tasks, and
+  stem-cache budget passes coalesced (`scheduleBudgetPass`) rather than one full scan per skip.
+- **Launch fetches that only need ids use `propertiesToFetch`** — a plain `FetchDescriptor<Track>`
+  hydrates every row's `beatTimes`.
+- **Liquid Glass is the real API, everywhere.** `glassEffect` via `continuityGlass` /
+  `continuityGlassCapsule` — no `Material` stand-ins, no hand-drawn hairlines. Groups of glass
+  elements (the keyboard's key grid, the transition chips) sit in a `GlassEffectContainer` with
+  `spacing: 0` so they composite in one pass without merging into blobs, and glass is never
+  layered directly on glass (the keyboard plane stays an opaque fill).
+- `CatalogAutocorrect` and `LoudnessMeter` are allocation-/division-light on purpose; both have
+  differential checks behind them (identical suggestions over thousands of fuzzed queries;
+  bit-identical LUFS). Re-verify the same way before changing their loops.
+
+## Known issues (noted during the audits, deliberately not fixed)
+
+1. `StreamingStereoDecoder` treats mono sources as dual-mono aliases.
+2. `runStreaming` uses O(n) `removeFirst(n)` per window — ~344 KB memmove per window against a
+   transformer inference, so it stays measurement noise. Memory fine.
+3. `separateStems` pins `@Model track` + `ModelContext` across minutes-long tasks.
+4. Manual `syncAll` bypasses auto-sync's failure backoff (deliberate — it means "now").
+5. `SearchResultsView` still rescans on each keystroke; it no longer sorts, and no longer reruns
+   on track changes, so the remaining cost is one `localizedCaseInsensitiveContains` pass.
+6. `AudioStack.init` force-unwraps `AVAudioFormat(...)` — cannot fail for 44.1 kHz stereo.
+7. `Deck.load` opens `AVAudioFile`s on the main actor at every track change and blend start
+   (a few ms); moving it off would have to keep node scheduling ordered.
+8. `ToneSynth.makeLoop` synthesizes ~1M `sin` calls per demo-track load. Caching the buffers
+   would cost 2.8 MB each — the wrong trade for this app; demo tracks only.
 
 ## Debugging on device (the owner can run these)
 

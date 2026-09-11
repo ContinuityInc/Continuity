@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 import CoreImage
 
 /// Lightweight visual helpers: deterministic artwork gradients from a seed, time formatting,
@@ -32,14 +33,136 @@ enum Theme {
     }
 }
 
+// MARK: - Liquid Glass
+
 extension View {
     /// Continuity's standard Liquid Glass surface. Centralised so the exact iOS 26
     /// `glassEffect` API is touched in one spot.
+    ///
+    /// Everything glass-looking in the app goes through this (or `continuityGlassCapsule`) —
+    /// no `Material` stand-ins. A material is a static blur+vibrancy layer; Liquid Glass is a
+    /// real system effect that refracts what's behind it, reacts to motion, and — inside a
+    /// `GlassEffectContainer` — is composited for the whole group in one pass.
     func continuityGlass(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
         self.glassEffect(interactive ? .regular.interactive() : .regular,
                          in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
+
+    /// Capsule-shaped Liquid Glass — the pill/badge/chip form of `continuityGlass`.
+    func continuityGlassCapsule(interactive: Bool = false) -> some View {
+        self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+    }
 }
+
+// MARK: - Image decoding
+
+/// Shared image decode helpers. Every artwork path in the app funnels through here so nothing
+/// ever decodes a full-resolution bitmap for a 44 pt row (a 1400 px embedded cover is ~7.8 MB
+/// of RAM; the thumbnail it's drawn at is ~70 KB).
+enum ArtworkDecoder {
+    /// Decodes `data` directly at a bounded size via ImageIO, rather than decoding full-size
+    /// and letting the compositor scale it down.
+    static func image(from data: Data, maxPixel: CGFloat) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            // Decode now, on this background thread — not lazily on the main thread at draw time.
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cgImage)
+    }
+
+    /// Loads bytes for a remote or on-disk artwork URL.
+    static func data(for url: URL) async -> Data? {
+        if url.isFileURL {
+            return try? Data(contentsOf: url, options: .mappedIfSafe)
+        }
+        guard let (data, response) = try? await URLSession.shared.data(from: url) else { return nil }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
+        return data
+    }
+
+    /// Rough decoded-bitmap size, for NSCache cost accounting.
+    static func byteCost(_ image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else { return 1 }
+        return max(1, cgImage.bytesPerRow * cgImage.height)
+    }
+}
+
+/// Process-wide CoreImage context. Building one per render compiles the filter kernels and
+/// allocates its backing resources every time — hundreds of milliseconds of setup to run a
+/// 160 px blur. `CIContext` is documented as thread-safe, so one instance serves every caller.
+enum SharedCIContext {
+    static let shared = CIContext(options: [.workingColorSpace: NSNull()])
+}
+
+/// Bounded, shared, decoded-artwork cache behind every artwork view in the app.
+///
+/// This replaces `AsyncImage`, which caches nothing of its own: each row that scrolled back
+/// into view re-hit the network stack and re-decoded the JPEG, and the same cover shown in a
+/// list row, the mini player and Now Playing decoded three times over. Here one decode per URL
+/// is shared by every view, bounded by count and bytes, and dropped automatically under memory
+/// pressure (NSCache) so it can never contribute to a jetsam.
+@MainActor
+final class ArtworkImageStore {
+    static let shared = ArtworkImageStore()
+
+    /// Artwork is drawn at most at Now Playing's 280 pt (≈840 px on a 3× screen); anything
+    /// larger is bytes we pay for and never see.
+    private static let maxPixelSize: CGFloat = 900
+
+    private let cache: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 180
+        // ~45 YouTube thumbnails' worth of decoded bitmap. Deliberately modest: this app has a
+        // jetsam history and gates stem separation on 1.4 GB of headroom, so the artwork cache
+        // must stay a rounding error against that. NSCache also drops it under memory pressure.
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
+
+    /// One load per URL even when several views ask at once (a track's cover is typically
+    /// requested by a row, the mini player and Now Playing in the same frame).
+    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+
+    private init() {}
+
+    /// Synchronous cache hit, so a re-created row draws its art immediately instead of
+    /// flashing the placeholder for a frame.
+    func cachedImage(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func image(for url: URL) async -> UIImage? {
+        if let hit = cachedImage(for: url) { return hit }
+        if let existing = inFlight[url] { return await existing.value }
+
+        let maxPixel = Self.maxPixelSize
+        // Detached: fetching and decoding must not run on the main actor, and this load is
+        // shared, so it must not inherit (or be cancelled with) whichever view asked first.
+        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = await ArtworkDecoder.data(for: url) else { return nil }
+            return ArtworkDecoder.image(from: data, maxPixel: maxPixel)
+        }
+        inFlight[url] = task
+        let image = await task.value
+        inFlight[url] = nil
+        if let image {
+            cache.setObject(image, forKey: url as NSURL, cost: ArtworkDecoder.byteCost(image))
+        }
+        return image
+    }
+}
+
+// MARK: - Backdrop
 
 /// Immersive full-bleed backdrop built from the current track's album art — a hybrid of the
 /// Apple Music and Spotify treatments: a smooth vertical gradient sampled from the artwork's
@@ -100,7 +223,13 @@ struct AlbumBackdrop: View {
         .ignoresSafeArea()
         .task(id: url) {
             guard let url else { style = nil; return }
-            style = await BackdropRenderer.style(for: url)
+            let resolved = await BackdropRenderer.style(for: url)
+            // The render is shared between backdrops and deliberately outlives any one view's
+            // task, so cancellation doesn't reach it — check here instead. Without this, a slow
+            // fetch for the previous track can land after the next track's (cached, instant)
+            // one and repaint the screen in the wrong song's colors.
+            guard !Task.isCancelled else { return }
+            style = resolved
         }
     }
 }
@@ -111,6 +240,13 @@ struct BackdropStyle: Equatable {
     let colors: [Color]
     /// Small gaussian-blurred render of the art (compositor-upscaled full-screen).
     let blurredArt: UIImage
+
+    /// Identity comparison on the image: styles are cached per URL and handed out as the same
+    /// instance, so pointer equality is exact here — and it avoids `UIImage.isEqual`, which can
+    /// fall through to comparing pixel data on every SwiftUI diff.
+    static func == (lhs: BackdropStyle, rhs: BackdropStyle) -> Bool {
+        lhs.colors == rhs.colors && lhs.blurredArt === rhs.blurredArt
+    }
 }
 
 /// Samples and caches the backdrop gradient palette for `AlbumBackdrop`: fetch the sharpest
@@ -119,18 +255,45 @@ struct BackdropStyle: Equatable {
 /// brightness pinned so white text always reads.
 @MainActor
 enum BackdropRenderer {
-    private static var cache: [URL: BackdropStyle] = [:]
+    /// Bounded and purgeable. The old plain dictionary held one blurred `UIImage` per artwork
+    /// URL played, for the life of the process, and never gave anything back under memory
+    /// pressure — a slow leak on exactly the resource the jetsam RCA was fighting for.
+    private static let cache: NSCache<NSURL, CachedBackdropStyle> = {
+        let cache = NSCache<NSURL, CachedBackdropStyle>()
+        cache.countLimit = 32
+        return cache
+    }()
+
+    /// Renders in flight, keyed by URL. `AlbumBackdrop` and `PagerBackdrop` request the SAME
+    /// url in the same frame (the pager hosts one inside the other), so without coalescing
+    /// every track change ran two artwork downloads and two gaussian renders to throw one away.
+    private static var inFlight: [URL: Task<BackdropStyle?, Never>] = [:]
 
     static func style(for url: URL) async -> BackdropStyle? {
-        if let hit = cache[url] { return hit }
-        guard let source = await fetchBestArtwork(url) else { return nil }
-        let style = await Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
-            guard let colors = samplePalette(source) else { return nil }
-            return BackdropStyle(colors: colors, blurredArt: blurredRender(source))
-        }.value
+        if let hit = cache.object(forKey: url as NSURL) { return hit.style }
+        if let existing = inFlight[url] { return await existing.value }
+
+        // One detached task for the whole render: fetch, decode, palette sample and gaussian
+        // all belong off the main actor, and this work is shared between backdrops, so it must
+        // not be cancelled along with whichever view happened to ask for it first.
+        let task = Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
+            guard let source = await Self.fetchBestArtwork(url) else { return nil }
+            guard let colors = Self.samplePalette(source) else { return nil }
+            return BackdropStyle(colors: colors, blurredArt: Self.blurredRender(source))
+        }
+        inFlight[url] = task
+        let style = await task.value
+        inFlight[url] = nil
+
         guard let style else { return nil }
-        cache[url] = style
+        cache.setObject(CachedBackdropStyle(style), forKey: url as NSURL)
         return style
+    }
+
+    /// NSCache stores objects, so the value struct rides in a box.
+    private final class CachedBackdropStyle {
+        let style: BackdropStyle
+        init(_ style: BackdropStyle) { self.style = style }
     }
 
     /// Scale-fill into a 160 px square, then a real gaussian (clamped so edges don't darken) —
@@ -150,14 +313,13 @@ enum BackdropRenderer {
         let blurred = ci.clampedToExtent()
             .applyingGaussianBlur(sigma: 16)
             .cropped(to: ci.extent)
-        let context = CIContext(options: nil)
-        guard let cg = context.createCGImage(blurred, from: blurred.extent) else { return small }
+        guard let cg = SharedCIContext.shared.createCGImage(blurred, from: blurred.extent) else { return small }
         return UIImage(cgImage: cg)
     }
 
     /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
     /// some videos), falling back to the stored URL.
-    private static func fetchBestArtwork(_ url: URL) async -> UIImage? {
+    private nonisolated static func fetchBestArtwork(_ url: URL) async -> UIImage? {
         var candidates: [URL] = []
         let raw = url.absoluteString
         if raw.contains("/hqdefault") {
@@ -169,9 +331,10 @@ enum BackdropRenderer {
         }
         candidates.append(url)
         for candidate in candidates {
-            guard let (data, response) = try? await URLSession.shared.data(from: candidate) else { continue }
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
-            if let image = UIImage(data: data) { return image }
+            guard let data = await ArtworkDecoder.data(for: candidate) else { continue }
+            // Bounded decode: the palette is an area average and the blur renders at 160 px, so
+            // fully decoding a 1280×720 maxres frame (≈3.7 MB of bitmap) buys nothing.
+            if let image = ArtworkDecoder.image(from: data, maxPixel: 512) { return image }
         }
         return nil
     }
@@ -194,10 +357,9 @@ enum BackdropRenderer {
             kCIInputExtentKey: CIVector(cgRect: rect),
         ]), let output = filter.outputImage else { return nil }
         var bitmap = [UInt8](repeating: 0, count: 4)
-        let context = CIContext(options: [.workingColorSpace: NSNull()])
-        context.render(output, toBitmap: &bitmap, rowBytes: 4,
-                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        SharedCIContext.shared.render(output, toBitmap: &bitmap, rowBytes: 4,
+                                      bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                      format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         return UIColor(red: CGFloat(bitmap[0]) / 255, green: CGFloat(bitmap[1]) / 255,
                        blue: CGFloat(bitmap[2]) / 255, alpha: 1)
     }
@@ -211,6 +373,8 @@ enum BackdropRenderer {
         return Color(hue: hue, saturation: min(saturation * 0.9, 0.55), brightness: brightness)
     }
 }
+
+// MARK: - Artwork tiles
 
 /// Reusable square artwork tile (gradient + SF Symbol) used by cards, rows and Now Playing.
 struct ArtworkView: View {
@@ -230,40 +394,76 @@ struct ArtworkView: View {
     }
 }
 
-/// Artwork tile that shows real remote cover art when available (YouTube thumbnail), falling
-/// back to the gradient `ArtworkView` while loading or when there is none (demo tracks).
+/// Artwork tile that shows real cover art when available (a YouTube thumbnail, or artwork
+/// extracted from an imported file), falling back to the gradient `ArtworkView` while loading
+/// or when there is none (demo tracks).
 struct RemoteArtworkView: View {
     let url: URL?
     let symbol: String
     let seed: Int
     var cornerRadius: CGFloat = 16
-    /// Every remote thumbnail we use is YouTube's hqdefault: a 4:3 frame with the 16:9 video
-    /// letterboxed inside (baked black bars, 12.5% top + bottom). Zooming the image by 4/3 pushes
-    /// those bars outside the clip so tiles show only the picture — on by default because it's true
-    /// of all our art. Aspect ratio is preserved (uniform scale). The gradient/symbol fallback
-    /// (no URL / still loading) is a real square and is unaffected.
+    /// Remote thumbnails are YouTube's hqdefault: a 4:3 frame with the 16:9 video letterboxed
+    /// inside (baked black bars, 12.5% top + bottom). Zooming the image by 4/3 pushes those bars
+    /// outside the clip so tiles show only the picture. Aspect ratio is preserved (uniform
+    /// scale). Artwork extracted from an imported file is a real cover, not a video frame, so
+    /// the zoom is applied to remote thumbnails only — cropping 12.5% off a real album cover
+    /// loses picture. The gradient/symbol fallback is a real square and is unaffected.
     var cropsLetterbox: Bool = true
 
     var body: some View {
         if let url {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    // YouTube thumbs are 4:3 with letterboxing; fill the square tile.
-                    Color.clear.overlay(
-                        image.resizable().scaledToFill()
-                            .scaleEffect(cropsLetterbox ? 4.0 / 3.0 : 1)
-                    )
-                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                        // clipShape trims pixels but NOT hit-testing: the scaledToFill (and
-                        // letterbox-zoom) overflow would otherwise extend the enclosing
-                        // button/row's tap area far past the visible tile.
-                        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                } else {
-                    ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
-                }
+            CachedArtworkImage(
+                url: url,
+                cornerRadius: cornerRadius,
+                // A file URL is embedded cover art, never a letterboxed video frame.
+                cropsLetterbox: cropsLetterbox && !url.isFileURL
+            ) {
+                ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
             }
         } else {
             ArtworkView(symbol: symbol, seed: seed, cornerRadius: cornerRadius)
+        }
+    }
+}
+
+/// Draws one artwork URL through `ArtworkImageStore` — a shared decode, a bounded cache, and a
+/// synchronous cache hit so recycled rows never flash their placeholder.
+struct CachedArtworkImage<Placeholder: View>: View {
+    let url: URL
+    let cornerRadius: CGFloat
+    let cropsLetterbox: Bool
+    @ViewBuilder let placeholder: Placeholder
+
+    @State private var loaded: UIImage?
+
+    var body: some View {
+        Group {
+            if let image = loaded ?? ArtworkImageStore.shared.cachedImage(for: url) {
+                Color.clear.overlay(
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(cropsLetterbox ? 4.0 / 3.0 : 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                // clipShape trims pixels but NOT hit-testing: the scaledToFill (and
+                // letterbox-zoom) overflow would otherwise extend the enclosing button/row's
+                // tap area far past the visible tile.
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            } else {
+                placeholder
+            }
+        }
+        .task(id: url) {
+            if let hit = ArtworkImageStore.shared.cachedImage(for: url) {
+                loaded = hit
+                return
+            }
+            let image = await ArtworkImageStore.shared.image(for: url)
+            // Loads are shared across every view asking for this URL, so they outlive this
+            // view's task; a recycled row must not adopt the image its previous track asked for.
+            guard !Task.isCancelled else { return }
+            loaded = image
         }
     }
 }

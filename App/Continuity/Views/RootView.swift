@@ -88,8 +88,16 @@ struct RootView: View {
                 // Natural queue exhaustion loops playback into the listening history — resolve
                 // the persisted IDs to live tracks in order; deleted tracks simply drop out.
                 player.onQueueExhausted = { ids in
-                    let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
-                    let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+                    // Only the id → Track mapping is needed; a bare fetch hydrates every row's
+                    // `beatTimes` array (hundreds of doubles each) to build a dictionary of
+                    // UUIDs. The rest of each surviving track faults in when it's played.
+                    var descriptor = FetchDescriptor<Track>()
+                    descriptor.propertiesToFetch = [\.id]
+                    let tracks = (try? modelContext.fetch(descriptor)) ?? []
+                    // `uniquingKeysWith`, not `uniqueKeysWithValues`: the latter traps on a
+                    // duplicate key, and trapping is not the right answer to a store that
+                    // handed back the same row twice.
+                    let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                     return ids.compactMap { byID[$0] }
                 }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
@@ -236,10 +244,16 @@ struct RootView: View {
     /// fresh install, stages COMË N GO paused at the start of its playlist.
     private func restorePlaybackSession() {
         guard player.currentTrack == nil else { return }   // already playing (e.g. state restore re-entry)
-        let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
 
         if let state = PlaybackStateStore.load() {
-            let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+            // The common launch path only resolves ids to rows. Fetching whole tracks here
+            // hydrated every one of them — `beatTimes` arrays included — on the launch path,
+            // to build a dictionary of UUIDs.
+            var descriptor = FetchDescriptor<Track>()
+            descriptor.propertiesToFetch = [\.id]
+            let stored = (try? modelContext.fetch(descriptor)) ?? []
+            // Never trap on a duplicate id here — this is the cold-launch path.
+            let byID = Dictionary(stored.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             player.restore(state, resolving: byID)
             if player.currentTrack != nil { return }
             // Every persisted track was deleted — fall through to the first-run seed.
@@ -247,6 +261,7 @@ struct RootView: View {
 
         // First launch (or an emptied library): COMË N GO is always the first song. Prefer the
         // real ingested track over the demo of the same name; queue its whole playlist from there.
+        let tracks = (try? modelContext.fetch(FetchDescriptor<Track>())) ?? []
         let candidates = tracks.filter { $0.title.localizedCaseInsensitiveContains("COMË N GO") }
         guard let seed = candidates.first(where: { !$0.isDemo }) ?? candidates.first,
               let playlist = seed.playlist else { return }

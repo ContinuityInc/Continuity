@@ -67,7 +67,7 @@ extension PreparationQueue {
             )
             playlist.tracks.append(track)
             context.insert(track)
-            enqueue(track, in: context)
+            enqueue(track, in: context, saving: false)
         }
         playlist.touch()    // creation + initial tracks count as a content change
         try? context.save()

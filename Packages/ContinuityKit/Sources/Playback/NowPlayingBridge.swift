@@ -1,5 +1,6 @@
 import Foundation
 import Domain
+import ImageIO
 import MediaPlayer
 import UIKit
 
@@ -92,16 +93,51 @@ final class NowPlayingBridge {
         // Lock-screen art is eventually-visible, not latency-critical — utility priority keeps
         // the fetch from competing with blend/tick work under load.
         artworkTask = Task(priority: .utility) { [weak self] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let image = UIImage(data: data), !Task.isCancelled else { return }
+            let image = await Self.loadArtwork(url)
+            guard !Task.isCancelled, let self, self.artworkURL == url else { return }
+            guard let image else {
+                // A failed load used to leave `artworkURL` latched at this track's URL, so the
+                // periodic updates all took the "already have it" branch and the lock screen
+                // stayed blank for the rest of the song. Clearing it lets the next update retry.
+                self.artworkURL = nil
+                return
+            }
             let art = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            guard let self, self.artworkURL == url else { return }
             self.artwork = art
             // Merge rather than rebuild — playback state may have moved on since the fetch began.
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             info[MPMediaItemPropertyArtwork] = art
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
+    }
+
+    /// Reads and decodes one artwork URL at a bounded size, off the main actor.
+    ///
+    /// Bounded because this image is retained for as long as the track is playing: artwork
+    /// extracted from an imported file is routinely 1400 px square, which is ~7.8 MB of
+    /// resident bitmap to feed a lock-screen thumbnail. Local files are read directly rather
+    /// than pushed through the URL loading system.
+    private nonisolated static func loadArtwork(_ url: URL) async -> UIImage? {
+        let data: Data?
+        if url.isFileURL {
+            data = try? Data(contentsOf: url, options: .mappedIfSafe)
+        } else {
+            data = try? await URLSession.shared.data(from: url).0
+        }
+        guard let data else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 600,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: thumbnail)
     }
 
     /// Runs a Player call on the main actor from a (possibly off-main) command callback.

@@ -11,7 +11,11 @@ public enum PrepState: String, Codable, Sendable {
 /// On-disk store for artwork extracted from imported files' embedded metadata. Mirrors
 /// `StemCache`: flat files in one Application Support directory, excluded from backup.
 public enum ArtworkStore {
-    public static var directory: URL {
+    /// Memoized (`static let`, lazily initialized once per process). `Track.artworkURL` reads
+    /// this, and that runs in every artwork view body — i.e. per row, per frame of a scroll —
+    /// so a computed property meant two filesystem syscalls (`createDirectory` +
+    /// `setResourceValues`) on the main thread for every visible row.
+    public static let directory: URL = {
         var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Artwork", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -19,7 +23,7 @@ public enum ArtworkStore {
         values.isExcludedFromBackup = true
         try? dir.setResourceValues(values)
         return dir
-    }
+    }()
 }
 
 @Model
