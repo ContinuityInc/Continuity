@@ -1,4 +1,5 @@
 import SwiftUI
+import Ingest
 import Playback
 import Domain
 
@@ -12,6 +13,7 @@ struct NowPlayingView: View {
     @Environment(MainPagerState.self) private var pagerState
 
     @State private var showingTransitionSettings = false
+    @State private var showingDownloads = false
 
     var body: some View {
         // No backdrop here: MainPagerView supplies AlbumBackdrop as the page BACKGROUND
@@ -57,6 +59,16 @@ struct NowPlayingView: View {
                 pagerState.go(to: .library)
             }
             .padding(.top, 8)
+        }
+        // Same control as the library toolbar, hidden when idle so it doesn't sit under
+        // the Dynamic Island. Isolated: job-count ticks don't rebuild this page.
+        .overlay(alignment: .topLeading) {
+            DownloadQueueButton(showingDownloads: $showingDownloads, showsWhenEmpty: false)
+                .padding(.leading, 16)
+                .padding(.top, 8)
+        }
+        .sheet(isPresented: $showingDownloads) {
+            DownloadsView()
         }
         .overlay(alignment: .bottom) {
             pageChevron(
