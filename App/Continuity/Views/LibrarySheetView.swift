@@ -24,7 +24,7 @@ struct LibrarySheetView: View {
                 .navigationTitle("Continuity")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        DownloadsToolbarButton(showingDownloads: $showingDownloads)
+                        DownloadQueueButton(showingDownloads: $showingDownloads)
                     }
                     // Every action is a primaryAction so nothing collapses into a dead "…"
                     // overflow menu (secondaryAction items did, and looked broken).
@@ -119,30 +119,3 @@ private struct AddBadgeIcon: View {
     }
 }
 
-/// Isolated so byte-level download progress only invalidates this control, not the library grid.
-private struct DownloadsToolbarButton: View {
-    @Environment(PreparationQueue.self) private var prepQueue
-    @Binding var showingDownloads: Bool
-
-    var body: some View {
-        let count = prepQueue.ingestJobs.count
-        return Button {
-            showingDownloads = true
-        } label: {
-            Image(systemName: count == 0 ? "arrow.down.circle" : "arrow.down.circle.fill")
-        }
-        .accessibilityLabel("Downloads")
-        .overlay(alignment: .topTrailing) {
-            if count > 0 {
-                Text("\(count)")
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(.tint, in: Capsule())
-                    .foregroundStyle(.white)
-                    .offset(x: 8, y: -8)
-                    .accessibilityHidden(true)
-            }
-        }
-    }
-}
