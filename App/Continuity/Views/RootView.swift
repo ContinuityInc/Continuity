@@ -105,6 +105,11 @@ struct RootView: View {
                 // a large unfinished import occupies the main actor until the first frame.
                 restorePlaybackSession()
                 await Task.yield()
+                // Scene-create watchdog is 10s wall-clock (`0x8BADF00D`). A large `.pending`
+                // library used to keep `resumePreparation` on the main actor through that
+                // window (enqueue → SwiftData notify per track). Give the scene a beat to
+                // finish creating, then resume in chunks that yield.
+                try? await Task.sleep(for: .milliseconds(300))
                 await prepQueue.resumePreparation(in: modelContext)
                 // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
                 prepQueue.autoSyncIfNeeded(in: modelContext)

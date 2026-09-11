@@ -5,7 +5,8 @@ import Foundation
 ///
 /// Waiters are FIFO among equal `priority` values. A later `bump` reorders still-waiting
 /// acquirers so a user-prioritized track jumps the ingest queue without cancelling anyone
-/// already downloading.
+/// already downloading. `cancel` drops waiters without granting a slot (returns `false` from
+/// `acquire`) so a deleted track can leave the queue without inflating concurrency.
 ///
 /// Used by `PreparationQueue` so importing a large playlist doesn't fire dozens of simultaneous
 /// resolves/downloads (network throttling) or stem separations (each loads a ~158 MB model and
@@ -15,7 +16,7 @@ actor ConcurrencyLimiter {
         let id: UUID
         var priority: Int
         let sequence: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let continuation: CheckedContinuation<Bool, Never>
     }
 
     private let limit: Int
@@ -27,18 +28,22 @@ actor ConcurrencyLimiter {
         self.limit = max(1, limit)
     }
 
-    /// Suspends until a slot is available, then claims it. Pair with exactly one `release()`.
-    func acquire() async {
+    /// Suspends until a slot is available, then claims it. Pair with exactly one `release()`
+    /// when the return value is `true`. A `false` return means `cancel` dropped this waiter —
+    /// do not call `release()`.
+    @discardableResult
+    func acquire() async -> Bool {
         await acquire(id: UUID(), priority: 0)
     }
 
-    /// Identified acquire so a later `bump` can move this waiter ahead of equal/lower priority.
-    func acquire(id: UUID, priority: Int) async {
+    /// Identified acquire so a later `bump` / `cancel` can target this waiter.
+    @discardableResult
+    func acquire(id: UUID, priority: Int) async -> Bool {
         if active < limit {
             active += 1
-            return
+            return true
         }
-        await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { continuation in
             waiters.append(Waiter(
                 id: id,
                 priority: priority,
@@ -48,7 +53,7 @@ actor ConcurrencyLimiter {
             nextSequence += 1
             sortWaiters()
         }
-        // Resumed by `release()`, which hands over its slot without touching `active`.
+        // Resumed by `release()` with `true` (slot handoff) or `cancel` with `false`.
     }
 
     /// Raises still-waiting acquirers in `ids` to at least `priority`. No-op for holders
@@ -65,13 +70,30 @@ actor ConcurrencyLimiter {
         if changed { sortWaiters() }
     }
 
+    /// Drops still-waiting acquirers in `ids` without granting a slot. Holders already running
+    /// finish normally; their callers should stop after seeing the model is gone.
+    func cancel(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        var cancelled: [Waiter] = []
+        waiters.removeAll { waiter in
+            if ids.contains(waiter.id) {
+                cancelled.append(waiter)
+                return true
+            }
+            return false
+        }
+        for waiter in cancelled {
+            waiter.continuation.resume(returning: false)
+        }
+    }
+
     /// Frees a slot, waking the highest-priority waiter (FIFO among ties).
     func release() {
         if waiters.isEmpty {
             active = max(0, active - 1)
         } else {
             let next = waiters.removeFirst()
-            next.continuation.resume()
+            next.continuation.resume(returning: true)
         }
     }
 

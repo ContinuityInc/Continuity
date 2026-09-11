@@ -203,7 +203,9 @@ extension PreparationQueue {
     /// dead model), then the models, then share-aware file cleanup.
     private func removeTracks(_ tracks: [Track], in context: ModelContext) {
         guard !tracks.isEmpty else { return }
-        onTracksDeleted?(Set(tracks.map(\.id)))
+        let ids = Set(tracks.map(\.id))
+        handleTracksDeleted(ids)
+        onTracksDeleted?(ids)
         let keys = tracks.map(\.stemKey)
         for track in tracks { context.delete(track) }
         LibraryCleanup.removeOrphanedFiles(keys: keys, in: context)
