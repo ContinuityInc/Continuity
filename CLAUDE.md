@@ -94,6 +94,16 @@ transfer or a captive-portal page used to be cached as "the model" forever).
 - `Player.prepare`/`restore` stay **metadata-only** (no engine build, no `notifyUpcoming()`)
   — see AGENTS.md jetsam gotcha.
 
+### Playlist import "spins forever, then orange retry" (Sept 2026, resolved)
+Every imported track resolved fine, then every ranged download got HTTP 403 → mapped to
+`streamURLExpired` → re-resolve → 403 again → `scheduleRetry` kept the row `.pending` through
+5 whole-track attempts (minutes of spinner) → `.failed`. Root cause: the pinned YouTubeKit
+(7cc8190, July) fetched stream URLs via the ANDROID_VR InnerTube client, which YouTube stopped
+serving past the first chunk in mid-August 2026. Fix: pin YouTubeKit `exact: "0.4.9"`
+(visionOS/web clients + embed fallback). Verified with the opt-in live probe test on the
+simulator: 0/8 tracks ready before, 8/8 after (full files, BPM analysed). See the AGENTS.md
+gotcha for the diagnosis recipe.
+
 ### Catalog search (PR #108)
 iTunes Search API (no key) for songs/albums; custom in-app keyboard with
 `CatalogAutocorrect` (ContinuityCore, Linux-tested) learning vocabulary from results + the
@@ -114,7 +124,9 @@ existing `searchQuery` → YouTube ingest path.
   automatically after processing.
 - Known failure modes already hit: App-Manager-role key (fixed — Admin key created);
   empty/placeholder secrets from copy-pasted commands; **ITMS error 90382 "Upload limit
-  reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix.
+  reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix;
+  **Archive step exits 65 after ~30s** = no `Continuity` scheme in the generated project
+  (see the AGENTS.md scheme gotcha) — `project.yml` must keep the target-level `scheme:`.
 - App Store Connect still has a legacy **Xcode Cloud "Archive – iOS"** workflow producing
   `action_required` checks on PRs; it's ASC-side, unrelated to code, and competes for upload
   quota — worth disabling in ASC.

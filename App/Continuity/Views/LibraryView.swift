@@ -10,6 +10,7 @@ struct LibraryView: View {
     @Query(sort: \Playlist.createdAt) private var playlists: [Playlist]
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
+    @Environment(PreparationQueue.self) private var prepQueue
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
     @State private var playlistPendingDelete: Playlist?
@@ -69,6 +70,13 @@ struct LibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        if playlist.tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
+                            Button {
+                                prepQueue.prioritize(playlist: playlist, in: modelContext)
+                            } label: {
+                                Label("Download First", systemImage: "arrow.up.to.line")
+                            }
+                        }
                         Button(role: .destructive) {
                             playlistPendingDelete = playlist
                         } label: {
@@ -101,6 +109,8 @@ private struct SearchResultsView: View {
     let playlists: [Playlist]
     let query: String
     @Environment(Player.self) private var player
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
     @Environment(MainPagerState.self) private var pagerState
 
     private var matchingPlaylists: [Playlist] {
@@ -148,6 +158,15 @@ private struct SearchResultsView: View {
                                 }
                             }
                         }
+                        .contextMenu {
+                            if playlist.tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
+                                Button {
+                                    prepQueue.prioritize(playlist: playlist, in: modelContext)
+                                } label: {
+                                    Label("Download First", systemImage: "arrow.up.to.line")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -184,6 +203,8 @@ private struct SearchSongRow: View {
     let track: Track
     let play: () -> Void
     @Environment(Player.self) private var player
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         Button(action: play) {
@@ -210,6 +231,13 @@ private struct SearchSongRow: View {
                 player.playNext(track)
             } label: {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            if !track.isDemo, track.prepState != .ready {
+                Button {
+                    prepQueue.prioritize(track, in: modelContext)
+                } label: {
+                    Label("Download First", systemImage: "arrow.up.to.line")
+                }
             }
         }
     }

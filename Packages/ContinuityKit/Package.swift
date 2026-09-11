@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ContinuityCore"),
-        .package(url: "https://github.com/alexeichhorn/YouTubeKit", branch: "main"),
+        .package(url: "https://github.com/alexeichhorn/YouTubeKit", exact: "0.4.9"),
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", exact: "1.20.0"),
     ],
     targets: [

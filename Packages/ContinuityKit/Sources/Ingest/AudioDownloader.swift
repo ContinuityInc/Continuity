@@ -21,11 +21,15 @@ final class AudioDownloader: AudioFileDownloading {
         self.maxRetriesPerChunk = maxRetriesPerChunk
     }
 
-    func downloadAudio(_ resolved: ResolvedAudio) async throws -> URL {
+    func downloadAudio(
+        _ resolved: ResolvedAudio,
+        progress: (@Sendable (Int, Int?) -> Void)?
+    ) async throws -> URL {
         let destination = AudioCache.fileURL(videoID: resolved.videoID, container: resolved.container)
 
         // Cache hit: already on disk.
         if FileManager.default.fileExists(atPath: destination.path) {
+            progress?(1, 1)
             return destination
         }
 
@@ -34,7 +38,7 @@ final class AudioDownloader: AudioFileDownloading {
             .appendingPathComponent("continuity-\(resolved.videoID)-\(UUID().uuidString).\(resolved.container)")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        try await downloadRanged(from: resolved.url, to: tempURL)
+        try await downloadRanged(from: resolved.url, to: tempURL, progress: progress)
 
         // Publish. Move (rename) is atomic on the same volume; if a concurrent download already
         // won the race and the file now exists, treat that as success rather than corrupting it.
@@ -42,6 +46,7 @@ final class AudioDownloader: AudioFileDownloading {
             try FileManager.default.moveItem(at: tempURL, to: destination)
         } catch {
             if FileManager.default.fileExists(atPath: destination.path) {
+                progress?(1, 1)
                 return destination
             }
             throw IngestError.downloadFailed(String(describing: error))
@@ -50,7 +55,11 @@ final class AudioDownloader: AudioFileDownloading {
     }
 
     /// Streams `url` into `fileURL` using sequential `Range` requests until the whole file is fetched.
-    private func downloadRanged(from url: URL, to fileURL: URL) async throws {
+    private func downloadRanged(
+        from url: URL,
+        to fileURL: URL,
+        progress: (@Sendable (Int, Int?) -> Void)?
+    ) async throws {
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: fileURL)
         do {
@@ -70,6 +79,7 @@ final class AudioDownloader: AudioFileDownloading {
                 }
                 try handle.write(contentsOf: data)
                 offset += data.count
+                progress?(offset, totalSize)
             } while totalSize == nil || offset < totalSize!
 
             try handle.close()

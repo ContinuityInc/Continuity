@@ -101,8 +101,11 @@ struct RootView: View {
                     return ids.compactMap { byID[$0] }
                 }
                 LibraryCleanup.sweepOrphanedFiles(in: modelContext)
-                prepQueue.resumePreparation(in: modelContext)
+                // Restore the last song before walking the library for resume/sync — otherwise
+                // a large unfinished import occupies the main actor until the first frame.
                 restorePlaybackSession()
+                await Task.yield()
+                await prepQueue.resumePreparation(in: modelContext)
                 // Launch-time polling pass over source-backed playlists (per-playlist opt-out).
                 prepQueue.autoSyncIfNeeded(in: modelContext)
             }

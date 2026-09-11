@@ -81,6 +81,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 - **New files need `xcodegen generate`** before `xcodebuild`, or you get "cannot find X in
   scope." XcodeGen uses explicit file lists.
+- **Schemes come only from `project.yml`.** XcodeGen emits no scheme unless a target declares
+  `scheme:` (the Continuity target does — keep it). `xcodebuild` on Xcode 26.x does **not**
+  auto-create schemes the way the Xcode GUI does, so without it `-scheme Continuity` fails in
+  ~30s with exit 65 "does not contain a scheme named" — which is exactly how every TestFlight
+  run from PR #127 to #137 died.
 - **onnxruntime is a static `.framework` (ar archive), not a dylib.** Xcode still embeds a
   broken ~50 KB stub into `Continuity.app/Frameworks`. Never "fix" that stub by patching
   `MinimumOSVersion` and re-signing — that cured ITMS upload checks while leaving a poison
@@ -104,6 +109,17 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 - **Stem separation on the Simulator** is also CPU-only (and slow). Do not "fix" perceived
   hangs by enabling CoreML on sim — sim CoreML has no ANE/GPU and routes through a ~100×
   slower serial CPU queue.
+- **YouTubeKit is pinned `exact:` on purpose — bump it deliberately, never float on `main`.**
+  Stream URLs come from whichever InnerTube client the pinned YouTubeKit asks; YouTube retires
+  clients without notice (Aug 2026: ANDROID_VR URLs started 403-ing after the first ~1 MB, so
+  every 1 MiB ranged download died on chunk #2 → `streamURLExpired` on every track → minutes of
+  spinner, then the orange retry badge). The signature of "YouTube changed again" is *every*
+  imported track failing with `prep failed for …: streamURLExpired` (or `.network`) in Console;
+  playlist/search scrapes still succeed. First response: check upstream YouTubeKit for a newer
+  tag, bump `exact:` in `Packages/ContinuityKit/Package.swift`, and re-run the opt-in probe
+  `CONTINUITY_LIVE_PROBE=1 … -only-testing:IngestTests/LiveIngestProbeTests` (simulator) —
+  it prints the failing stage and exact error per track. Beware: a scratch SwiftPM harness
+  that depends on `branch: "main"` silently resolves upstream HEAD, not the app's pin.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures

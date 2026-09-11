@@ -128,8 +128,51 @@ protocol VideoMetadataResolving: Sendable {
     func metadata(videoID: String) async throws -> VideoMetadata
 }
 
+/// One track currently in the ingest pipeline. Surfaced by `PreparationQueue.ingestJobs` so
+/// the Downloads screen can show queued vs in-flight work without walking every SwiftData row.
+public struct IngestJob: Identifiable, Equatable, Sendable {
+    public enum Phase: String, Sendable {
+        case queued, downloading, analyzing
+    }
+
+    public let id: UUID
+    public var title: String
+    public var artist: String
+    public var phase: Phase
+    /// 0...1 while `phase == .downloading` and the server reported a size; nil otherwise.
+    public var fraction: Double?
+    public var isPrioritized: Bool
+
+    public init(
+        id: UUID,
+        title: String,
+        artist: String,
+        phase: Phase,
+        fraction: Double?,
+        isPrioritized: Bool
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.phase = phase
+        self.fraction = fraction
+        self.isPrioritized = isPrioritized
+    }
+}
+
 /// Downloads a resolved stream to local storage and returns the on-disk file URL.
 /// Implemented by `AudioDownloader`.
 protocol AudioFileDownloading: Sendable {
-    func downloadAudio(_ resolved: ResolvedAudio) async throws -> URL
+    /// `progress` reports `(bytesWritten, totalBytes?)` as ranged chunks land. `totalBytes` is
+    /// nil until the first `Content-Range` (or a whole-file 200) arrives.
+    func downloadAudio(
+        _ resolved: ResolvedAudio,
+        progress: (@Sendable (Int, Int?) -> Void)?
+    ) async throws -> URL
+}
+
+extension AudioFileDownloading {
+    func downloadAudio(_ resolved: ResolvedAudio) async throws -> URL {
+        try await downloadAudio(resolved, progress: nil)
+    }
 }
