@@ -1,0 +1,9 @@
+{
+  "name": "Continuity",
+  "mcpServerAllowlist": [
+    {
+      "name": "Robinhood Trading",
+      "serverUrl": "https://agent.robinhood.com/mcp/trading"
+    }
+  ]
+}
