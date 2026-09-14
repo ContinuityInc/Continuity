@@ -19,6 +19,12 @@ settings:
     CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
+  configs:
+    # Release archives must use Distribution. Automatic + Development on ephemeral
+    # CI runners minted a new Apple Development cert every TestFlight run until the
+    # account hit the cap ("Choose a certificate to revoke").
+    Release:
+      CODE_SIGN_IDENTITY: Apple Distribution
 
 targets:
   Continuity:
@@ -70,6 +76,8 @@ targets:
     # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
     scheme:
       gatherCoverageData: false
+      archive:
+        config: Release
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity

@@ -10,9 +10,15 @@
 #                                                           "App Manager" role)
 #   base64 encode:  base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 #
-# The build number is the workflow run number (monotonic per repo), so TestFlight never
-# rejects a duplicate CFBundleVersion. Uploads become available to INTERNAL testers
-# automatically once App Store Connect finishes processing — no extra distribution step.
+# Archive uses Apple Distribution (not Apple Development). Ephemeral GitHub runners have an
+# empty keychain, so Automatic+Development minted a new development cert every run until
+# the account hit Apple's cap and every archive died with "Choose a certificate to revoke"
+# plus "No profiles for com.sanylax.continuity" (development profiles).
+#
+# CFBundleVersion is 1000 + github.run_number. TestFlight already has build 130 (Xcode Cloud,
+# Jul 18) while run_number is still in the 30s — a raw run_number would be rejected as older.
+# Uploads become available to INTERNAL testers automatically once App Store Connect finishes
+# processing — no extra distribution step.
 name: TestFlight
 
 on:
@@ -58,20 +64,34 @@ jobs:
           echo "$ASC_KEY_P8" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 
       - name: Archive
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          set -eu
+          BUILD_NUMBER=$((1000 + ${{ github.run_number }}))
+          echo "CFBundleVersion=${BUILD_NUMBER}"
           xcodebuild archive \
             -project Continuity.xcodeproj \
             -scheme Continuity \
+            -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/Continuity.xcarchive \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            DEVELOPMENT_TEAM=KP832RV67A \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
-            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          set -eu
           cat > ExportOptions.plist <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -83,6 +103,8 @@ jobs:
               <string>upload</string>
               <key>signingStyle</key>
               <string>automatic</string>
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
               <key>teamID</key>
               <string>KP832RV67A</string>
               <key>manageAppVersionAndBuildNumber</key>
@@ -95,6 +117,6 @@ jobs:
             -exportOptionsPlist ExportOptions.plist \
             -exportPath build/export \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$HOME/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8" \
-            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
