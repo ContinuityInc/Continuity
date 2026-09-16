@@ -8,7 +8,7 @@ import SwiftData
 struct ContinuityApp: App {
     let container: ModelContainer
     @State private var player = Player()
-    /// Drives YouTube ingestion (resolve → download → ready) for newly added tracks.
+    /// Local-file import, launch-time healing, analysis, and demand-driven stem separation.
     @State private var prepQueue = PreparationQueue()
 
     init() {

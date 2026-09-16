@@ -120,6 +120,7 @@ struct TransitionSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .accessibilityLabel("Done")
                 }
             }
         }

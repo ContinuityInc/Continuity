@@ -140,12 +140,12 @@ struct NowPlayingView: View {
     private var transport: some View {
         HStack(spacing: 48) {
             // Previous — unlimited, so no counter.
-            controlGlyph("backward.fill") { player.previous() }
+            controlGlyph("backward.fill", accessibility: "Previous") { player.previous() }
 
             playButton
 
             // Next — spends one of the limited forward skips; the remaining count rides below it.
-            skipGated(controlGlyph("forward.fill") { player.next() }, disabledOpacity: 0.3)
+            skipGated(controlGlyph("forward.fill", accessibility: "Next") { player.next() }, disabledOpacity: 0.3)
                 .overlay(alignment: .bottom) { skipBadge.offset(y: 30) }
         }
         .foregroundStyle(.white)
@@ -195,7 +195,7 @@ struct NowPlayingView: View {
     }
 
     /// A plain white transport glyph with a comfortable tap target.
-    private func controlGlyph(_ system: String, action: @escaping () -> Void) -> some View {
+    private func controlGlyph(_ system: String, accessibility: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
                 .font(.system(size: 30, weight: .medium))
@@ -203,6 +203,7 @@ struct NowPlayingView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibility)
     }
 
     /// Remaining forward skips, as a subtle glass pill under Next. Real Liquid Glass — the
@@ -318,6 +319,8 @@ private struct ScrubberBar: View {
                 }
             )
             .tint(.white)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(Theme.time(isEditing ? scrubValue : player.position))
             HStack {
                 Text(Theme.time(isEditing ? scrubValue : player.position))
                 Spacer()
