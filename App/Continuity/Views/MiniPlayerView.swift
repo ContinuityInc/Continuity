@@ -15,6 +15,7 @@ struct MiniPlayerView: View {
             barContent
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(player.currentTrack.map { "\($0.title) by \($0.artist)" } ?? "Now Playing")
         .accessibilityHint("Opens Now Playing")
     }
 
@@ -36,6 +37,7 @@ struct MiniPlayerView: View {
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 Button {
                     player.next()
                 } label: {
@@ -44,6 +46,7 @@ struct MiniPlayerView: View {
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Next")
                 .disabled(player.skipsRemaining == 0)
                 .opacity(player.skipsRemaining == 0 ? 0.35 : 1)
             }
