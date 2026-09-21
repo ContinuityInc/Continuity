@@ -1,0 +1,77 @@
+# Fills the App Store Connect listing fields that block "Add for Review":
+# content rights, Music category, privacy policy URL, support URL, review
+# contact (and turns OFF "sign-in required"), and a 1.0.x build if one exists.
+#
+# Uses the same ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 secrets as TestFlight.
+# The key must be Admin — App Manager cannot write App Information.
+#
+# Screenshots are left alone (phone uploads in progress 409 if we race them).
+# The App Privacy *questionnaire* still has to be published once in the UI
+# ("No, we do not collect data" → Publish).
+name: App Store Connect listing
+
+on:
+  workflow_dispatch:
+    inputs:
+      contact_phone:
+        description: "App Review contact phone (E.164). Optional if TestFlight already has one."
+        required: false
+        type: string
+      privacy_url:
+        description: "Override privacy policy URL"
+        required: false
+        type: string
+      support_url:
+        description: "Override support URL"
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - Scripts/fill_asc_metadata.py
+      - docs/site/**
+      - PRIVACY.md
+      - .github/workflows/asc-metadata.yml
+
+concurrency:
+  group: asc-metadata
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install JWT deps
+        run: pip install --disable-pip-version-check PyJWT cryptography
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -eu
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ]; then
+            echo "::error::ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 secrets are not configured — see TestFlight workflow header."
+            exit 1
+          fi
+          mkdir -p "$HOME/private_keys"
+          echo "$ASC_KEY_P8" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Fill listing
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_CONTACT_PHONE: ${{ github.event.inputs.contact_phone || '' }}
+          PRIVACY_URL: ${{ github.event.inputs.privacy_url || '' }}
+          SUPPORT_URL: ${{ github.event.inputs.support_url || '' }}
+        run: |
+          set -eu
+          export ASC_KEY_P8_PATH="$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          python3 Scripts/fill_asc_metadata.py
