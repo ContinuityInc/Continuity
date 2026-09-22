@@ -96,6 +96,7 @@ struct LibraryView: View {
     private func delete(_ playlist: Playlist) {
         let trackIDs = Set(playlist.tracks.map(\.id))
         let keys = playlist.tracks.map(\.stemKey)
+        prepQueue.handleTracksDeleted(trackIDs)
         player.handleDeleted(trackIDs: trackIDs)
         modelContext.delete(playlist)   // cascade deletes its tracks
         try? modelContext.save()

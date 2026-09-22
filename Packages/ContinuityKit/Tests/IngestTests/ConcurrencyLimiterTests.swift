@@ -13,14 +13,14 @@ final class ConcurrencyLimiterTests: XCTestCase {
         await limiter.acquire(id: UUID(), priority: 0)
 
         let first = Task {
-            await limiter.acquire(id: firstID, priority: 0)
+            XCTAssertTrue(await limiter.acquire(id: firstID, priority: 0))
             order.append(firstID)
             await limiter.release()
         }
         await waitUntil(limiter, pending: 1)
 
         let second = Task {
-            await limiter.acquire(id: secondID, priority: 0)
+            XCTAssertTrue(await limiter.acquire(id: secondID, priority: 0))
             order.append(secondID)
             await limiter.release()
         }
@@ -43,14 +43,14 @@ final class ConcurrencyLimiterTests: XCTestCase {
         await limiter.acquire()
 
         let first = Task {
-            await limiter.acquire(id: firstID, priority: 0)
+            XCTAssertTrue(await limiter.acquire(id: firstID, priority: 0))
             order.append(firstID)
             await limiter.release()
         }
         await waitUntil(limiter, pending: 1)
 
         let second = Task {
-            await limiter.acquire(id: secondID, priority: 0)
+            XCTAssertTrue(await limiter.acquire(id: secondID, priority: 0))
             order.append(secondID)
             await limiter.release()
         }
@@ -60,6 +60,32 @@ final class ConcurrencyLimiterTests: XCTestCase {
         _ = await first.result
         _ = await second.result
         XCTAssertEqual(order, [firstID, secondID])
+    }
+
+    /// Cancelled waiters wake with `false` and do not consume a slot.
+    func testCancelDropsWaiterWithoutGrantingSlot() async {
+        let limiter = ConcurrencyLimiter(limit: 1)
+        let cancelledID = UUID()
+        let survivorID = UUID()
+
+        await limiter.acquire(id: UUID(), priority: 0)
+
+        let cancelled = Task {
+            await limiter.acquire(id: cancelledID, priority: 0)
+        }
+        await waitUntil(limiter, pending: 1)
+
+        let survivor = Task {
+            await limiter.acquire(id: survivorID, priority: 0)
+        }
+        await waitUntil(limiter, pending: 2)
+
+        await limiter.cancel(ids: [cancelledID])
+        XCTAssertFalse(await cancelled.value)
+
+        await limiter.release()
+        XCTAssertTrue(await survivor.value)
+        await limiter.release()
     }
 
     private func waitUntil(_ limiter: ConcurrencyLimiter, pending: Int) async {

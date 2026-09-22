@@ -20,3 +20,4 @@ xcuserdata/
 /Cache/
 *.m4a
 *.caf
+.debug-logs/

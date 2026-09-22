@@ -73,7 +73,10 @@ struct PlaylistDetailView: View {
     /// model goes, then any cached files no other track shares.
     private func delete(_ track: Track) {
         let key = track.stemKey
-        player.handleDeleted(trackIDs: [track.id])
+        let id = track.id
+        // Prep queue first — clears Downloads ghosts / ingest waiters before the model dies.
+        prepQueue.handleTracksDeleted([id])
+        player.handleDeleted(trackIDs: [id])
         modelContext.delete(track)
         playlist.touch()    // membership changed → resort the library
         try? modelContext.save()
