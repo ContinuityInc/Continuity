@@ -10,10 +10,12 @@
 #                                                           "App Manager" role)
 #   base64 encode:  base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 #
-# Archive uses Apple Distribution (not Apple Development). Ephemeral GitHub runners have an
-# empty keychain, so Automatic+Development minted a new development cert every run until
-# the account hit Apple's cap and every archive died with "Choose a certificate to revoke"
-# plus "No profiles for com.sanylax.continuity" (development profiles).
+# Archive signing is per-target (Continuity + ContinuityShare: Manual + Apple Distribution
+# in project.yml Release). Do NOT pass CODE_SIGN_IDENTITY / CODE_SIGN_STYLE as xcodebuild
+# xcargs — Xcode applies those to every target, including YouTubeKit's resource bundle,
+# and Xcode 26 treats Automatic + a forced Distribution identity as a hard error
+# ("conflicting provisioning settings"). Cloud signing (-allowProvisioningUpdates +
+# the ASC API key) mints the App Store profiles. The export step re-signs the IPA.
 #
 # CFBundleVersion is 1000 + github.run_number. TestFlight already has build 130 (Xcode Cloud,
 # Jul 18) while run_number is still in the 30s — a raw run_number would be rejected as older.
@@ -79,8 +81,6 @@ jobs:
             -archivePath build/Continuity.xcarchive \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             DEVELOPMENT_TEAM=KP832RV67A \
-            CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
