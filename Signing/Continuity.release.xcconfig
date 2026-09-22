@@ -1,0 +1,3 @@
+// Local archives stay on Automatic signing from project.yml.
+// The TestFlight workflow overwrites this file with Manual signing and an
+// App Store profile name before it runs xcodegen.

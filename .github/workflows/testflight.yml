@@ -1,21 +1,21 @@
 # Publishes every merge to main to internal TestFlight.
 #
-# Signing is CLOUD-MANAGED: xcodebuild -allowProvisioningUpdates + an App Store Connect API
-# key mints/updates certificates and profiles on the fly — no certificates or provisioning
-# profiles are stored in the repo or in secrets. Three repository secrets are required:
+# Signing uses the App Store Connect API key (Admin role) to install one Apple
+# Distribution certificate and two App Store profiles that include the app group.
+# No certificates or profiles are stored in the repo. Three repository secrets:
 #
 #   ASC_KEY_ID     App Store Connect API key ID            (App Store Connect → Users and
 #   ASC_ISSUER_ID  App Store Connect API issuer ID          Access → Integrations → App Store
 #   ASC_KEY_P8     the .p8 private key, base64-encoded      Connect API → create a key with
-#                                                           "App Manager" role)
+#                                                           Admin role)
 #   base64 encode:  base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 #
-# Archive signing is per-target (Continuity + ContinuityShare: Manual + Apple Distribution
-# in project.yml Release). Do NOT pass CODE_SIGN_IDENTITY / CODE_SIGN_STYLE as xcodebuild
-# xcargs — Xcode applies those to every target, including YouTubeKit's resource bundle,
-# and Xcode 26 treats Automatic + a forced Distribution identity as a hard error
-# ("conflicting provisioning settings"). Cloud signing (-allowProvisioningUpdates +
-# the ASC API key) mints the App Store profiles. The export step re-signs the IPA.
+# Do NOT pass CODE_SIGN_IDENTITY / CODE_SIGN_STYLE as xcodebuild xcargs — Xcode applies
+# those to every target, including YouTubeKit's resource bundle, and Xcode 26 treats
+# Automatic + a forced Distribution identity as a hard error. The install script writes
+# Manual signing into the two app targets' Release xcconfigs only. Plain Automatic
+# signing is also wrong here: ephemeral runners minted a new Apple Development
+# certificate every run until the account hit the cap.
 #
 # CFBundleVersion is 1000 + github.run_number. TestFlight already has build 130 (Xcode Cloud,
 # Jul 18) while run_number is still in the 30s — a raw run_number would be rejected as older.
@@ -40,6 +40,9 @@ jobs:
     if: ${{ vars.TESTFLIGHT_ENABLED != 'false' }}
     runs-on: macos-26
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -48,9 +51,6 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
-
-      - name: Generate project
-        run: xcodegen generate
 
       - name: Write App Store Connect API key
         env:
@@ -65,26 +65,49 @@ jobs:
           mkdir -p "$HOME/private_keys"
           echo "$ASC_KEY_P8" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
 
-      - name: Archive
+      - name: Restore distribution certificate
+        uses: actions/cache/restore@v4
+        with:
+          path: .signing/distribution.p12
+          key: continuity-distribution-${{ github.run_id }}
+          restore-keys: continuity-distribution-
+
+      - name: Install App Store signing
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: python3 .github/scripts/install_distribution_signing.py
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Archive
         run: |
-          set -eu
+          set -euo pipefail
           BUILD_NUMBER=$((1000 + ${{ github.run_number }}))
           echo "CFBundleVersion=${BUILD_NUMBER}"
+          xcodebuild -showBuildSettings \
+            -project Continuity.xcodeproj \
+            -scheme Continuity \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            | tee /tmp/continuity-settings.txt
+          xcodebuild -showBuildSettings \
+            -project Continuity.xcodeproj \
+            -target ContinuityShare \
+            -configuration Release \
+            | tee /tmp/share-settings.txt
+          grep -E "CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE_SPECIFIER" /tmp/continuity-settings.txt /tmp/share-settings.txt
+          grep -q "CODE_SIGN_STYLE = Manual" /tmp/continuity-settings.txt
+          grep -q "PROVISIONING_PROFILE_SPECIFIER = ContinuityCIStore" /tmp/continuity-settings.txt
+          grep -q "PROVISIONING_PROFILE_SPECIFIER = ContinuityShareCIStore" /tmp/share-settings.txt
           xcodebuild archive \
             -project Continuity.xcodeproj \
             -scheme Continuity \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/Continuity.xcarchive \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            DEVELOPMENT_TEAM=KP832RV67A \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
       - name: Upload to TestFlight
         env:
@@ -92,31 +115,18 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -eu
-          cat > ExportOptions.plist <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store-connect</string>
-              <key>destination</key>
-              <string>upload</string>
-              <key>signingStyle</key>
-              <string>automatic</string>
-              <key>signingCertificate</key>
-              <string>Apple Distribution</string>
-              <key>teamID</key>
-              <string>KP832RV67A</string>
-              <key>manageAppVersionAndBuildNumber</key>
-              <false/>
-          </dict>
-          </plist>
-          EOF
           xcodebuild -exportArchive \
             -archivePath build/Continuity.xcarchive \
-            -exportOptionsPlist ExportOptions.plist \
+            -exportOptionsPlist Signing/ExportOptions.plist \
             -exportPath build/export \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Save distribution certificate
+        if: always() && hashFiles('.signing/created-new') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .signing/distribution.p12
+          key: continuity-distribution-${{ github.run_id }}

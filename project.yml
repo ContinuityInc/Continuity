@@ -72,6 +72,11 @@ targets:
       gatherCoverageData: false
       archive:
         config: Release
+    # Release signing lives in this xcconfig so it does not land on YouTubeKit.
+    # The committed file is empty (local archives stay Automatic). TestFlight
+    # overwrites it with Manual + an App Store profile before xcodegen.
+    configFiles:
+      Release: Signing/Continuity.release.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity
@@ -81,13 +86,6 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
-      configs:
-        # Per-target so Distribution does not leak onto YouTubeKit's resource bundle.
-        # Automatic + "Apple Distribution" is a hard error in Xcode 26
-        # ("conflicting provisioning settings").
-        Release:
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Apple Distribution
     # onnxruntime SPM ships a *static* .framework (Mach-O archive, not a dylib). Xcode still
     # copies a broken ~50 KB stub into Continuity.app/Frameworks. That stub:
     #   - fails code-sign / ITMS MinimumOSVersion checks (microsoft/onnxruntime#27396)
@@ -145,13 +143,11 @@ targets:
             # WebURL miss Spotify/YouTube shares that also attach image/text. Runtime still
             # rejects non-music links via ContinuityCore before showing success.
             NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
+    configFiles:
+      Release: Signing/ContinuityShare.release.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity.share
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
-      configs:
-        Release:
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Apple Distribution
