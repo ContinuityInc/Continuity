@@ -19,12 +19,6 @@ settings:
     CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
-  configs:
-    # Release archives must use Distribution. Automatic + Development on ephemeral
-    # CI runners minted a new Apple Development cert every TestFlight run until the
-    # account hit the cap ("Choose a certificate to revoke").
-    Release:
-      CODE_SIGN_IDENTITY: Apple Distribution
 
 targets:
   Continuity:
@@ -87,6 +81,13 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+      configs:
+        # Per-target so Distribution does not leak onto YouTubeKit's resource bundle.
+        # Automatic + "Apple Distribution" is a hard error in Xcode 26
+        # ("conflicting provisioning settings").
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
     # onnxruntime SPM ships a *static* .framework (Mach-O archive, not a dylib). Xcode still
     # copies a broken ~50 KB stub into Continuity.app/Frameworks. That stub:
     #   - fails code-sign / ITMS MinimumOSVersion checks (microsoft/onnxruntime#27396)
@@ -150,3 +151,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
