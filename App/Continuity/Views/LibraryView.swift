@@ -184,7 +184,10 @@ private struct SearchResultsView: View {
                 ContentUnavailableView.search(text: query)
             }
         }
-        .listStyle(.insetGrouped)
+        // Same edge-to-edge treatment as Up Next / playlist detail — no insetGrouped
+        // card margins that read as a seam against the pager backdrop.
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     /// Plays the tapped track in its playlist context, so what follows is its real neighbors.

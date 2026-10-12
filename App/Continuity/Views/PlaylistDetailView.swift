@@ -62,6 +62,9 @@ struct PlaylistDetailView: View {
             }
         }
         .listStyle(.plain)
+        // Match the library root: let the shared pager backdrop show through empty chrome
+        // so pushed playlists don't reintroduce an opaque card seam.
+        .scrollContentBackground(.hidden)
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
         // Pushed destinations don't inherit insets added outside the NavigationStack, so the

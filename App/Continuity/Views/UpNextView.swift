@@ -29,6 +29,10 @@ struct UpNextView: View {
             }
             .navigationTitle("Up Next")
             .navigationBarTitleDisplayMode(.inline)
+            // Same as Library: visible bar so its fill extends under the status bar once
+            // the pager restores safe-area insets on this full-bleed page.
+            .toolbarBackground(.visible, for: .navigationBar)
+            .restorePagerSafeArea()
             .toolbar {
                 if pagerState.page == .upNext {
                     ToolbarItem(placement: .topBarLeading) {
@@ -67,9 +71,9 @@ struct UpNextView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .listStyle(.insetGrouped)
-        // Let the shared pager backdrop (the gradient bleeding up from Now Playing) show through
-        // the list; the inset rows stay opaque so queue content remains legible.
+        // Plain + hidden scroll background: edge-to-edge rows over the shared pager
+        // backdrop (no insetGrouped card margins / rounded seam against Now Playing).
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
     }
 
