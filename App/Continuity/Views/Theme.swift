@@ -28,7 +28,9 @@ enum Theme {
     /// mm:ss formatting for the transport clock.
     static func time(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds.rounded())
+        // Cap before `Int(_:)`: a corrupt multi-day duration is still finite and used to trap.
+        let capped = min(seconds, 86_400 * 7)
+        let total = Int(capped.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

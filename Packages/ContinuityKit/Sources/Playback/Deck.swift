@@ -261,9 +261,19 @@ final class Deck {
     }
 
     private func resolveDuration(_ track: Track, file: AVAudioFile) -> TimeInterval {
-        let fileDuration = Double(file.length) / file.processingFormat.sampleRate
-        if track.durationSeconds <= 0 { track.durationSeconds = fileDuration }
-        return track.durationSeconds > 0 ? track.durationSeconds : fileDuration
+        // Mirror `scheduleSegment`'s sample-rate floor: an unset rate yields infinity, which
+        // used to land on `Track.durationSeconds` and trap `Theme.time` / scrubber layout.
+        let sampleRate = file.processingFormat.sampleRate
+        let fileDuration: TimeInterval
+        if sampleRate > 0 {
+            let seconds = Double(file.length) / sampleRate
+            fileDuration = seconds.isFinite && seconds > 0 ? seconds : 0
+        } else {
+            fileDuration = 0
+        }
+        if track.durationSeconds <= 0, fileDuration > 0 { track.durationSeconds = fileDuration }
+        let resolved = track.durationSeconds > 0 ? track.durationSeconds : fileDuration
+        return resolved.isFinite && resolved > 0 ? resolved : 0
     }
 
     private func stemURL(_ relativePath: String?) -> URL? {

@@ -243,7 +243,7 @@ private struct BlendPlayhead: View {
     @Environment(Player.self) private var player
 
     var body: some View {
-        let progress = min(max(player.transitionProgress, 0), 1)
+        let progress = Player.fraction(player.transitionProgress)
         GeometryReader { geometry in
             Rectangle()
                 .fill(.white.opacity(0.5))

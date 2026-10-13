@@ -301,16 +301,20 @@ private struct ScrubberBar: View {
         VStack(spacing: 4) {
             Slider(
                 value: Binding(
-                    // Clamped into the slider's own range: a value outside it (or a non-finite
-                    // one from a disturbed render clock) is a layout trap, not a visual glitch.
-                    get: { min(max(isEditing ? scrubValue : player.position, 0), max(player.duration, 0.1)) },
-                    set: { scrubValue = $0 }
+                    // `min`/`max` do NOT clear NaN — route through Player helpers so a disturbed
+                    // render clock is a zero scrubber, not a layout trap.
+                    get: {
+                        let upper = max(Player.finite(player.duration), 0.1)
+                        return Player.clampedSeconds(isEditing ? scrubValue : player.position,
+                                                     upperBound: upper)
+                    },
+                    set: { scrubValue = Player.finite($0) }
                 ),
-                in: 0...max(player.duration, 0.1),
+                in: 0...max(Player.finite(player.duration), 0.1),
                 onEditingChanged: { editing in
                     if editing {
                         isEditing = true
-                        scrubValue = player.position
+                        scrubValue = Player.finite(player.position)
                     } else {
                         player.seek(to: scrubValue)
                         isEditing = false
@@ -319,7 +323,7 @@ private struct ScrubberBar: View {
             )
             .tint(.white)
             HStack {
-                Text(Theme.time(isEditing ? scrubValue : player.position))
+                Text(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
                 Spacer()
                 Text(Theme.time(player.duration))
             }

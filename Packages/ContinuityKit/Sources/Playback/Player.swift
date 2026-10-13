@@ -101,9 +101,23 @@ public final class Player {
     /// `min`/`max` do NOT sanitize NaN — `min(NaN, 1)` is NaN — so every fraction this type
     /// publishes goes through here. A NaN reaching `Shape.trim` or a SwiftUI `frame(width:)`
     /// is a hard crash, not a visual glitch.
-    static func fraction(_ value: Double) -> Double {
+    public static func fraction(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
+    }
+
+    /// Maps non-finite doubles to `fallback`. Use before any `min`/`max` clamp or `Int(_:)` —
+    /// those do not clear NaN and will trap (or poison SwiftUI layout) downstream.
+    public static func finite(_ value: Double, fallback: Double = 0) -> Double {
+        value.isFinite ? value : fallback
+    }
+
+    /// Clamps a time into `0...upperBound`, mapping non-finite inputs (either side) to 0.
+    public static func clampedSeconds(_ value: Double, upperBound: Double) -> Double {
+        let upper = finite(upperBound)
+        let raw = finite(value)
+        guard upper > 0 else { return max(0, raw) }
+        return min(max(0, raw), upper)
     }
 
     /// Progress fraction (0…1) for UI rings/bars. During a blend it MORPHS from the outgoing
@@ -224,8 +238,16 @@ public final class Player {
     /// tracks of lead time keeps the next blend's stems ready even right after a skip.
     private static let upcomingStemWindow = 3
 
+    /// Armed the first time this process actually starts audio (`ensureCurrentLoaded` /
+    /// `startCurrentFresh`). Pre-play queue edits still call `notifyUpcoming`, but must not
+    /// open the ORT session — that jetsammed cold launches at the per-process limit.
+    var audioHasStartedThisProcess = false
+
     /// Reports the play-position neighborhood to `onUpcomingTracks`.
     func notifyUpcoming() {
+        // Queue bookkeeping (Up Next / Flow / delete) runs before the first play; only the
+        // first real audio need is allowed to kick stem separation.
+        guard audioHasStartedThisProcess else { return }
         guard !queue.isEmpty, queue.indices.contains(currentIndex) else { return }
         let count = min(Player.upcomingStemWindow, queue.count)
         let tracks = (0..<count).map { queue[(currentIndex + $0) % queue.count] }
@@ -320,6 +342,7 @@ public final class Player {
         }
         // First real audio need (play from a prepare/restore staging) — start JIT stems here,
         // not at launch. prepare() deliberately skips notifyUpcoming to avoid ORT jetsam.
+        audioHasStartedThisProcess = true
         notifyUpcoming()
         return true
     }
@@ -404,6 +427,7 @@ public final class Player {
         isPlaying = true
         resumeAfterInterruption = false   // an explicit (re)start supersedes any pending auto-resume
         startTimer()
+        audioHasStartedThisProcess = true
         notifyUpcoming()
     }
 
@@ -469,8 +493,14 @@ public final class Player {
     /// Republishes the coarse countdown. Called from `tick()` and from `persistState()` (the
     /// funnel every playback discontinuity already goes through), so it can never go stale.
     func refreshTransitionCountdown() {
-        // `Int(_: Double)` traps on infinity and NaN; a day is far past any real countdown.
-        let seconds = secondsUntilTransition.map { Int(min(max(0, $0), 86_400).rounded()) }
+        // `Int(_: Double)` traps on infinity and NaN; `min`/`max` do not clear NaN, so a
+        // poisoned `position` used to blow up here. Non-finite → nil (no countdown), not a trap.
+        let seconds: Int?
+        if let until = secondsUntilTransition, until.isFinite {
+            seconds = Int(min(max(0, until), 86_400).rounded())
+        } else {
+            seconds = nil
+        }
         if transitionCountdownSeconds != seconds { transitionCountdownSeconds = seconds }
     }
 

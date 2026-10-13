@@ -63,11 +63,16 @@ extension Player {
         prepare(tracks: tracks, startAt: index)
 
         // Stage the saved spot; ensureCurrentLoaded() applies it when audio first materializes.
-        let target = max(0, min(state.positionSeconds, duration > 0 ? duration : state.positionSeconds))
-        if target > 0 {
-            baselineSeconds = target
-            position = target
-            pendingSeekSeconds = target
+        // `min`/`max` do not sanitize NaN — a corrupt persisted Double must not poison `position`.
+        let raw = state.positionSeconds
+        if raw.isFinite {
+            let upper = duration > 0 ? duration : raw
+            let target = Player.clampedSeconds(raw, upperBound: upper)
+            if target > 0 {
+                baselineSeconds = target
+                position = target
+                pendingSeekSeconds = target
+            }
         }
         persistState()
     }
