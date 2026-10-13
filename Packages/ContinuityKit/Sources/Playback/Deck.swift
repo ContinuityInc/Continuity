@@ -1,5 +1,7 @@
 import AVFoundation
+import ContinuityCore
 import Domain
+import os
 
 /// One playback deck. Plays a track as **two stems** (vocals + accompaniment) when they've been
 /// separated, or as a single file / synth loop otherwise — through a shared per-deck chain:
@@ -11,6 +13,11 @@ import Domain
 /// Per-stem gains (`vocalsGain` / `accompanimentGain`) let a transition duck the outgoing vocals
 /// under the incoming instrumental — the M4 flagship move. For a non-stem track the whole mix plays
 /// on `accompPlayer` and `vocalsPlayer` stays silent.
+///
+/// Every AVFAudio node call goes through `AVFAudioGuard` (see that file): the engine can stop
+/// between any `isRunning` check and the call that follows it, and AVFAudio reports that with
+/// an Objective-C exception Swift cannot catch. Methods here therefore report success as a
+/// `Bool` instead of assuming it, and the `Player` treats `false` like an engine stop.
 @MainActor
 final class Deck {
     private let vocalsPlayer = AVAudioPlayerNode()
@@ -44,20 +51,21 @@ final class Deck {
         self.engine = engine
         self.synthFormat = synthFormat
         self.accompFormat = synthFormat
-        for node in [vocalsPlayer, accompPlayer] as [AVAudioNode] { engine.attach(node) }
-        engine.attach(stemMixer); engine.attach(timePitch); engine.attach(eq); engine.attach(deckMixer)
-        engine.connect(vocalsPlayer, to: stemMixer, format: synthFormat)
-        engine.connect(accompPlayer, to: stemMixer, format: synthFormat)
-        engine.connect(stemMixer, to: timePitch, format: synthFormat)
+        for node in [vocalsPlayer, accompPlayer, stemMixer, timePitch, eq, deckMixer] as [AVAudioNode] {
+            engine.guardedAttach(node)
+        }
+        engine.guardedConnect(vocalsPlayer, to: stemMixer, format: synthFormat)
+        engine.guardedConnect(accompPlayer, to: stemMixer, format: synthFormat)
+        engine.guardedConnect(stemMixer, to: timePitch, format: synthFormat)
         // Low-shelf EQ sits after the tempo unit; its gain is ramped during a blend to swap bass.
         let low = eq.bands[0]
         low.filterType = .lowShelf
         low.frequency = 120
         low.gain = 0
         low.bypass = false
-        engine.connect(timePitch, to: eq, format: synthFormat)
-        engine.connect(eq, to: deckMixer, format: synthFormat)
-        engine.connect(deckMixer, to: mainMixer, format: synthFormat) // fixed; never reconnected
+        engine.guardedConnect(timePitch, to: eq, format: synthFormat)
+        engine.guardedConnect(eq, to: deckMixer, format: synthFormat)
+        engine.guardedConnect(deckMixer, to: mainMixer, format: synthFormat) // fixed; never reconnected
     }
 
     func markEngineStarted(at hostTime: UInt64) {
@@ -68,41 +76,52 @@ final class Deck {
     /// Overall deck output gain — the crossfade ramps this.
     var volume: Float {
         get { deckMixer.outputVolume }
-        set { deckMixer.outputVolume = newValue }
+        set { deckMixer.outputVolume = Deck.gain(newValue) }
     }
     /// Vocals-stem gain (for ducking). No effect on a non-stem deck.
     var vocalsGain: Float {
         get { vocalsPlayer.volume }
-        set { vocalsPlayer.volume = newValue }
+        set { vocalsPlayer.volume = Deck.gain(newValue) }
     }
     /// Accompaniment-stem gain (also the whole-mix gain for a non-stem deck).
     var accompanimentGain: Float {
         get { accompPlayer.volume }
-        set { accompPlayer.volume = newValue }
+        set { accompPlayer.volume = Deck.gain(newValue) }
     }
-    /// Tempo multiplier for beatmatching (pitch preserved).
+    /// Tempo multiplier for beatmatching (pitch preserved). Clamped: the time-pitch unit
+    /// raises on values outside its range, and a NaN ratio from a bad BPM pair is not a tempo.
     var rate: Float {
         get { timePitch.rate }
-        set { timePitch.rate = newValue }
+        set { timePitch.rate = TimePitchLimits.clampRate(newValue) }
     }
     /// Pitch offset in cents (100 = one semitone), for harmonic mixing. Tempo is unaffected.
     var pitchCents: Float {
         get { timePitch.pitch }
-        set { timePitch.pitch = newValue }
+        set { timePitch.pitch = TimePitchLimits.clampPitchCents(newValue) }
     }
     /// Low-shelf gain (dB) on this deck's low end. 0 = flat; negative cuts bass. Ramped during a
     /// blend so the incoming bassline fades in instead of stacking on the outgoing one.
     var bassGainDB: Float {
         get { eq.bands[0].gain }
-        set { eq.bands[0].gain = newValue }
+        set { eq.bands[0].gain = newValue.isFinite ? min(max(newValue, -96), 24) : 0 }
     }
     /// Loudness-leveling makeup gain (linear). Lives on the stem mixer so it stacks independently
     /// of the crossfade (deck mixer) and vocal ducking (player nodes). 1 = no leveling.
     var loudnessGain: Float {
         get { stemMixer.outputVolume }
-        set { stemMixer.outputVolume = newValue }
+        set { stemMixer.outputVolume = Deck.gain(newValue, upperBound: 4) }
     }
 
+    /// Mixer/player volumes accept 0…1 (players and mixers clamp silently, but a NaN passes
+    /// through to the render thread). Loudness makeup may exceed unity, hence the bound.
+    private static func gain(_ value: Float, upperBound: Float = 1) -> Float {
+        guard value.isFinite else { return upperBound >= 1 ? 1 : upperBound }
+        return min(max(value, 0), upperBound)
+    }
+
+    /// Loads `track` and schedules it from the start. Returns the resolved duration (0 when
+    /// nothing could be scheduled — the caller must not `play()` an unscheduled deck as if it
+    /// were playing; `needsRescheduleAfterEngineStart` is left set so recovery retries).
     @discardableResult
     func load(_ track: Track) -> TimeInterval {
         stop()
@@ -111,6 +130,7 @@ final class Deck {
         timePitch.pitch = 0
         volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0; loudnessGain = 1
 
+        let scheduled: Bool
         if track.hasStems,
            let vURL = stemURL(track.vocalsRelativePath), let aURL = stemURL(track.accompanimentRelativePath),
            let vFile = try? AVAudioFile(forReading: vURL), let aFile = try? AVAudioFile(forReading: aURL) {
@@ -118,32 +138,39 @@ final class Deck {
             hasStems = true
             vocalsFile = vFile; accompFile = aFile
             setAccompFormat(aFile.processingFormat) // stems are 44.1k float → matches synthFormat
-            vocalsPlayer.scheduleFile(vFile, at: nil)
-            accompPlayer.scheduleFile(aFile, at: nil)
+            let v = vocalsPlayer.guardedScheduleFile(vFile)
+            let a = accompPlayer.guardedScheduleFile(aFile)
+            scheduled = v && a
             loadedDuration = resolveDuration(track, file: aFile)
         } else if let url = readyFileURL(for: track), let file = try? AVAudioFile(forReading: url) {
             hasStems = false
             accompFile = file; vocalsFile = nil
             setAccompFormat(file.processingFormat)
-            accompPlayer.scheduleFile(file, at: nil)
+            scheduled = accompPlayer.guardedScheduleFile(file)
             loadedDuration = resolveDuration(track, file: file)
         } else {
             hasStems = false
             accompFile = nil; vocalsFile = nil
             setAccompFormat(synthFormat)
             let buffer = ToneSynth.makeLoop(seed: track.gradientSeed, format: synthFormat)
-            accompPlayer.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+            scheduled = accompPlayer.guardedScheduleLoopingBuffer(buffer)
             loadedDuration = track.durationSeconds > 0 ? track.durationSeconds : 30
         }
-        needsRescheduleAfterEngineStart = false
-        return loadedDuration
+        // A failed schedule means the engine died under us; flag it exactly like an engine
+        // stop so `ensureCurrentLoaded` reschedules before the next play.
+        needsRescheduleAfterEngineStart = !scheduled
+        return scheduled ? loadedDuration : 0
     }
 
-    func play() {
-        // AVAudioPlayerNode.play() throws an ObjC exception ("_engine->IsRunning()") when the
-        // engine was stopped out from under us — interruptions, route changes, config resets.
-        // No-op instead; the Player's audio-environment recovery reschedules and replays.
-        guard engine.isRunning else { return }
+    /// Starts (or resumes) the scheduled audio. Returns false when AVFAudio refused — the engine
+    /// stopped between the caller's check and this call — in which case nothing is playing and
+    /// the caller must stage its position and pause instead of reporting `isPlaying`.
+    @discardableResult
+    func play() -> Bool {
+        // AVAudioPlayerNode.play() raises ("_engine->IsRunning()") when the engine was stopped
+        // out from under us — interruptions, route changes, config resets. Fail fast here; the
+        // guard below catches the race where it stops after this line.
+        guard engine.isRunning else { return false }
         if hasStems {
             // Two bare play() calls can land on different render quanta, starting the stems
             // several ms apart — and nothing ever re-aligns them. Anchor both to one shared
@@ -151,49 +178,48 @@ final class Deck {
             //
             // Only when the render clock is FRESH, not merely host-time-valid. Two traps here:
             // - A node that hasn't seen an IO cycle yet (first start after engine build) has no
-            //   render time → play(at:) throws the AVFAudio start-time exception.
+            //   render time → play(at:) raises the AVFAudio start-time exception.
             // - After a stop → engine-restart (Siri/interruption recovery, route or config
             //   changes), lastRenderTime can be *valid but stale* — a host timestamp from the
             //   pre-interruption timeline. Anchoring to it puts the start time in the PAST,
-            //   which raises the same uncatchable exception → SIGABRT mid-song whenever the
-            //   system pokes the audio environment.
-            // So: require a render cycle from THIS engine run, within the last second, and anchor
-            // to NOW rather than to the render timestamp. A quick stop/restart can leave the old
-            // timestamp less than a second old, so recency alone is not proof of freshness.
+            //   which raises the same exception mid-song whenever the system pokes the audio
+            //   environment. `PlaybackClock.isRenderClockUsable` encodes the rule (Core-tested).
             // Otherwise fall back to two bare play() calls — on a freshly (re)started engine they
-            // land on the same quantum in practice.
+            // land on the same quantum in practice. Should the anchored start still be refused,
+            // the guard reports it and we fall back the same way instead of dying.
             let now = mach_absolute_time()
             if let render = accompPlayer.lastRenderTime, render.isHostTimeValid,
-               Deck.isRenderClockUsable(
+               PlaybackClock.isRenderClockUsable(
                    renderHostTime: render.hostTime,
                    engineStartedAtHostTime: engineStartedAtHostTime,
                    now: now,
                    maximumAge: AVAudioTime.hostTime(forSeconds: 1.0)
                ) {
                 let start = AVAudioTime(hostTime: now + AVAudioTime.hostTime(forSeconds: 0.03))
-                accompPlayer.play(at: start)
-                vocalsPlayer.play(at: start)
-            } else {
-                accompPlayer.play()
-                vocalsPlayer.play()
+                if accompPlayer.guardedPlay(at: start), vocalsPlayer.guardedPlay(at: start) {
+                    return true
+                }
+                Logger.audio.error("anchored stem start refused — falling back to immediate start")
             }
-        } else {
-            accompPlayer.play()
+            let a = accompPlayer.guardedPlay()
+            let v = vocalsPlayer.guardedPlay()
+            return a && v
         }
+        return accompPlayer.guardedPlay()
     }
 
     func pause() {
         guard engine.isRunning else { return }
-        accompPlayer.pause()
-        if hasStems { vocalsPlayer.pause() }
+        accompPlayer.guardedPause()
+        if hasStems { vocalsPlayer.guardedPause() }
     }
 
     func stop() {
         // A system configuration change can stop the engine after its notification was delivered.
-        // AVAudioPlayerNode.stop() may raise an uncatchable ObjC exception in that window.
+        // `stop()` on a node of a stopped engine raises; the guard absorbs the race the check misses.
         if engine.isRunning {
-            accompPlayer.stop()
-            vocalsPlayer.stop()
+            accompPlayer.guardedStop()
+            vocalsPlayer.guardedStop()
         }
         accompFile = nil; vocalsFile = nil; track = nil
         loadedDuration = 0; hasStems = false
@@ -212,65 +238,48 @@ final class Deck {
     ///
     /// That is the crash class that clusters "when the phone is moving": moving is when routes
     /// change. An unusable clock now reads as 0 — the position simply doesn't advance for a
-    /// tick — instead of poisoning everything downstream.
+    /// tick — instead of poisoning everything downstream (`PlaybackClock.elapsedSeconds`).
     var elapsed: TimeInterval {
         guard let nodeTime = accompPlayer.lastRenderTime, nodeTime.isSampleTimeValid,
               let playerTime = accompPlayer.playerTime(forNodeTime: nodeTime),
-              playerTime.isSampleTimeValid, playerTime.sampleRate > 0 else { return 0 }
-        let seconds = Double(playerTime.sampleTime) / playerTime.sampleRate
-        guard seconds.isFinite, seconds >= 0 else { return 0 }
-        return seconds
+              playerTime.isSampleTimeValid else { return 0 }
+        return PlaybackClock.elapsedSeconds(sampleTime: playerTime.sampleTime, sampleRate: playerTime.sampleRate)
     }
 
-    /// Frame-accurate seek for a real-file (or stem) deck. Returns `false` for a synth deck.
+    /// Frame-accurate seek for a real-file (or stem) deck. Returns `false` for a synth deck or
+    /// when the engine refused the schedule.
     func seekRealFile(to seconds: TimeInterval) -> Bool {
         guard engine.isRunning, let aFile = accompFile else { return false }
-        scheduleSegment(accompPlayer, file: aFile, from: seconds)
+        var ok = scheduleSegment(accompPlayer, file: aFile, from: seconds)
         if hasStems, let vFile = vocalsFile {
-            scheduleSegment(vocalsPlayer, file: vFile, from: seconds)
+            ok = scheduleSegment(vocalsPlayer, file: vFile, from: seconds) && ok
         }
-        needsRescheduleAfterEngineStart = false
-        return true
+        needsRescheduleAfterEngineStart = !ok
+        return ok
     }
 
-    private func scheduleSegment(_ player: AVAudioPlayerNode, file: AVAudioFile, from seconds: TimeInterval) {
-        // Clamp into the file before converting. `Double` → `AVAudioFramePosition` traps on
-        // infinity, NaN, or anything outside Int64, and `scheduleSegment` raises an uncatchable
-        // ObjC exception on a negative start frame. Both are reachable from a disturbed render
-        // clock (see `elapsed`) or a negative clock baseline, and neither is worth dying for:
-        // an offset that isn't a real position in this file starts it from the beginning.
-        let sampleRate = file.processingFormat.sampleRate
-        let fileSeconds = sampleRate > 0 ? Double(file.length) / sampleRate : 0
-        let safeSeconds = seconds.isFinite ? min(max(0, seconds), fileSeconds) : 0
-        let startFrame = AVAudioFramePosition(safeSeconds * sampleRate)
-        player.stop()
-        guard startFrame >= 0, startFrame < file.length else { return }
-        player.scheduleSegment(file, startingFrame: startFrame,
-                               frameCount: AVAudioFrameCount(file.length - startFrame), at: nil)
-    }
-
-    nonisolated static func isRenderClockUsable(
-        renderHostTime: UInt64,
-        engineStartedAtHostTime: UInt64,
-        now: UInt64,
-        maximumAge: UInt64
-    ) -> Bool {
-        renderHostTime >= engineStartedAtHostTime
-            && renderHostTime <= now
-            && now - renderHostTime < maximumAge
+    private func scheduleSegment(_ player: AVAudioPlayerNode, file: AVAudioFile, from seconds: TimeInterval) -> Bool {
+        // `PlaybackClock.segment` clamps into the file before converting (Double →
+        // AVAudioFramePosition traps on infinity/NaN/out of range; scheduleSegment raises on a
+        // negative start or empty range). A request that isn't a real position in this file
+        // starts it from the beginning; one past the end schedules nothing but is not an error.
+        guard player.guardedStop() else { return false }
+        guard let segment = PlaybackClock.segment(
+            seconds: seconds,
+            sampleRate: file.processingFormat.sampleRate,
+            frameLength: file.length
+        ) else { return true }
+        return player.guardedScheduleSegment(
+            file, startingFrame: segment.startFrame, frameCount: segment.frameCount
+        )
     }
 
     private func resolveDuration(_ track: Track, file: AVAudioFile) -> TimeInterval {
         // Mirror `scheduleSegment`'s sample-rate floor: an unset rate yields infinity, which
         // used to land on `Track.durationSeconds` and trap `Theme.time` / scrubber layout.
-        let sampleRate = file.processingFormat.sampleRate
-        let fileDuration: TimeInterval
-        if sampleRate > 0 {
-            let seconds = Double(file.length) / sampleRate
-            fileDuration = seconds.isFinite && seconds > 0 ? seconds : 0
-        } else {
-            fileDuration = 0
-        }
+        let fileDuration = PlaybackClock.durationSeconds(
+            frameLength: file.length, sampleRate: file.processingFormat.sampleRate
+        )
         if track.durationSeconds <= 0, fileDuration > 0 { track.durationSeconds = fileDuration }
         let resolved = track.durationSeconds > 0 ? track.durationSeconds : fileDuration
         return resolved.isFinite && resolved > 0 ? resolved : 0
@@ -290,10 +299,15 @@ final class Deck {
 
     /// Re-points `accompPlayer → stemMixer` at `format` when it changes — isolated to this deck's
     /// submix (mixers convert their inputs), so it never disturbs the other deck mid-crossfade.
+    /// A refused reconnect keeps the previous format: the mixer still converts, so the file
+    /// plays (possibly resampled) instead of the app dying on a format assertion.
     private func setAccompFormat(_ format: AVAudioFormat) {
         guard format != accompFormat else { return }
-        engine.disconnectNodeOutput(accompPlayer)
-        engine.connect(accompPlayer, to: stemMixer, format: format)
-        accompFormat = format
+        guard engine.guardedDisconnectNodeOutput(accompPlayer) else { return }
+        if engine.guardedConnect(accompPlayer, to: stemMixer, format: format) {
+            accompFormat = format
+        } else if engine.guardedConnect(accompPlayer, to: stemMixer, format: accompFormat) {
+            Logger.audio.error("accompaniment format change refused — kept previous connection format")
+        }
     }
 }

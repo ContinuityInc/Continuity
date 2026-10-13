@@ -196,6 +196,10 @@ public final class Player {
     /// system says the coast is clear.
     var resumeAfterInterruption = false
 
+    /// Refused deck starts since the current track was (re)started by the user — bounds the
+    /// automatic retries in `Player+DeckFailure`. Reset by `startCurrentFresh` and user play.
+    @ObservationIgnored var deckStartFailures = 0
+
     /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
     /// can drop the old registrations instead of stacking duplicate handlers.
     var audioEnvironmentObservers: [NSObjectProtocol] = []
@@ -395,15 +399,13 @@ public final class Player {
         let audio = ensureAudioStack()
         if audio.engine.isRunning { return true }
         try? AVAudioSession.sharedInstance().setActive(true)
-        do {
-            try audio.engine.start()
-            let start = mach_absolute_time()
-            audio.deckA.markEngineStarted(at: start)
-            audio.deckB.markEngineStarted(at: start)
-            return true
-        } catch {
-            return false
-        }
+        // Guarded: besides its thrown errors, start() RAISES when the output hardware format
+        // is momentarily invalid (a Bluetooth route dropping mid-restart) — see AVFAudioGuard.
+        guard audio.engine.guardedStart() else { return false }
+        let start = mach_absolute_time()
+        audio.deckA.markEngineStarted(at: start)
+        audio.deckB.markEngineStarted(at: start)
+        return true
     }
 
     /// Starts the current track from scratch on the current deck (play / next / previous / restart).
@@ -423,10 +425,14 @@ public final class Player {
         queueRefillAttempted = false   // new current track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
-        audio.current.play()
-        isPlaying = true
+        deckStartFailures = 0          // a user-driven (re)start earns a fresh retry budget
         resumeAfterInterruption = false   // an explicit (re)start supersedes any pending auto-resume
-        startTimer()
+        // A refused start leaves the transport paused at 0 with a deferred retry staged
+        // (Player+DeckFailure) instead of claiming to play — or, before the shim, aborting.
+        if startCurrentDeck(context: "startCurrentFresh") {
+            isPlaying = true
+            startTimer()
+        }
         audioHasStartedThisProcess = true
         notifyUpcoming()
     }
@@ -586,12 +592,16 @@ public final class Player {
                 duration: adapted.durationSeconds
             )
             if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
-                beginTransition(
+                // A blend the incoming deck refused to start is not retried every tick (each
+                // attempt reopens the files and logs a fault); the track hard-advances instead.
+                if !beginTransition(
                     toIndex: next,
                     outgoingPosition: elapsed,
                     duration: adapted.durationSeconds,
                     isUserInitiatedSkip: false
-                )
+                ) {
+                    hardAdvance(toIndex: next)
+                }
             } else if dur > 0 && elapsed >= dur - 0.05 {
                 // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
                 hardAdvance(toIndex: next)
