@@ -1,5 +1,6 @@
 import SwiftUI
 import Playback
+import ContinuityCore
 
 /// Compact Liquid Glass now-playing bar docked above the bottom safe area.
 /// The whole bar is one button that jumps the pager home to Now Playing; play/pause and
@@ -50,7 +51,7 @@ struct MiniPlayerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .continuityGlass(cornerRadius: 18, interactive: true)
+        .continuityGlass(cornerRadius: 18, interactive: true, reduceUnderPressure: true)
         // The glass shape is the tap target — without this, only the bar's subviews hit-test.
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         // Thin play-progress line hugging the bottom edge of the glass bar.

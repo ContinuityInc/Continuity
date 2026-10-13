@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import ImageIO
 import CoreImage
+import ContinuityCore
 
 /// Lightweight visual helpers: deterministic artwork gradients from a seed, time formatting,
 /// and a centralised Liquid Glass modifier so the iOS 26 API lives in exactly one place.
@@ -28,7 +29,9 @@ enum Theme {
     /// mm:ss formatting for the transport clock.
     static func time(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds.rounded())
+        // Cap before `Int(_:)`: a corrupt multi-day duration is still finite and used to trap.
+        let capped = min(seconds, 86_400 * 7)
+        let total = Int(capped.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
@@ -43,14 +46,39 @@ extension View {
     /// no `Material` stand-ins. A material is a static blur+vibrancy layer; Liquid Glass is a
     /// real system effect that refracts what's behind it, reacts to motion, and — inside a
     /// `GlassEffectContainer` — is composited for the whole group in one pass.
-    func continuityGlass(cornerRadius: CGFloat = 22, interactive: Bool = false) -> some View {
-        self.glassEffect(interactive ? .regular.interactive() : .regular,
-                         in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    ///
+    /// Large surfaces pass `reduceUnderPressure: true` so balanced/constrained tiers swap to an
+    /// opaque fill (still not Material) and shed continuous refraction cost on Air-class devices.
+    @ViewBuilder
+    func continuityGlass(
+        cornerRadius: CGFloat = 22,
+        interactive: Bool = false,
+        reduceUnderPressure: Bool = false
+    ) -> some View {
+        if reduceUnderPressure && AdaptiveQuality.prefersOpaqueChrome() {
+            self.background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(uiColor: .systemBackground).opacity(0.82))
+            }
+        } else {
+            self.glassEffect(interactive ? .regular.interactive() : .regular,
+                             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
     }
 
     /// Capsule-shaped Liquid Glass — the pill/badge/chip form of `continuityGlass`.
-    func continuityGlassCapsule(interactive: Bool = false) -> some View {
-        self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+    @ViewBuilder
+    func continuityGlassCapsule(
+        interactive: Bool = false,
+        reduceUnderPressure: Bool = false
+    ) -> some View {
+        if reduceUnderPressure && AdaptiveQuality.prefersOpaqueChrome() {
+            self.background {
+                Capsule().fill(Color(uiColor: .systemBackground).opacity(0.82))
+            }
+        } else {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+        }
     }
 }
 
@@ -115,12 +143,8 @@ enum SharedCIContext {
 final class ArtworkImageStore {
     static let shared = ArtworkImageStore()
 
-    /// Artwork is drawn at most at Now Playing's 280 pt (≈840 px on a 3× screen); anything
-    /// larger is bytes we pay for and never see.
-    private static let maxPixelSize: CGFloat = 900
-
-    private let cache: NSCache<NSURL, UIImage> = {
-        let cache = NSCache<NSURL, UIImage>()
+    private let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 180
         // ~45 YouTube thumbnails' worth of decoded bitmap. Deliberately modest: this app has a
         // jetsam history and gates stem separation on 1.4 GB of headroom, so the artwork cache
@@ -129,34 +153,38 @@ final class ArtworkImageStore {
         return cache
     }()
 
-    /// One load per URL even when several views ask at once (a track's cover is typically
-    /// requested by a row, the mini player and Now Playing in the same frame).
-    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+    /// One load per URL+pixel-budget even when several views ask at once.
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
 
     private init() {}
 
-    /// Synchronous cache hit, so a re-created row draws its art immediately instead of
-    /// flashing the placeholder for a frame.
-    func cachedImage(for url: URL) -> UIImage? {
-        cache.object(forKey: url as NSURL)
+    private func cacheKey(url: URL, maxPixel: CGFloat) -> NSString {
+        "\(url.absoluteString)#p=\(Int(maxPixel))" as NSString
     }
 
-    func image(for url: URL) async -> UIImage? {
-        if let hit = cachedImage(for: url) { return hit }
-        if let existing = inFlight[url] { return await existing.value }
+    /// Synchronous cache hit, so a re-created row draws its art immediately instead of
+    /// flashing the placeholder for a frame.
+    func cachedImage(for url: URL, maxPixel: CGFloat) -> UIImage? {
+        cache.object(forKey: cacheKey(url: url, maxPixel: maxPixel))
+    }
 
-        let maxPixel = Self.maxPixelSize
+    func image(for url: URL, maxPixel: CGFloat) async -> UIImage? {
+        let key = cacheKey(url: url, maxPixel: maxPixel)
+        if let hit = cache.object(forKey: key) { return hit }
+        let flightKey = key as String
+        if let existing = inFlight[flightKey] { return await existing.value }
+
         // Detached: fetching and decoding must not run on the main actor, and this load is
         // shared, so it must not inherit (or be cancelled with) whichever view asked first.
         let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
             guard let data = await ArtworkDecoder.data(for: url) else { return nil }
             return ArtworkDecoder.image(from: data, maxPixel: maxPixel)
         }
-        inFlight[url] = task
+        inFlight[flightKey] = task
         let image = await task.value
-        inFlight[url] = nil
+        inFlight[flightKey] = nil
         if let image {
-            cache.setObject(image, forKey: url as NSURL, cost: ArtworkDecoder.byteCost(image))
+            cache.setObject(image, forKey: key, cost: ArtworkDecoder.byteCost(image))
         }
         return image
     }
@@ -402,6 +430,8 @@ struct RemoteArtworkView: View {
     let symbol: String
     let seed: Int
     var cornerRadius: CGFloat = 16
+    /// Decode budget. Rows/mini use the small tier; Now Playing passes the hero tier.
+    var maxPixel: CGFloat = CGFloat(AdaptiveQuality.rowArtworkMaxPixel())
     /// Remote thumbnails are YouTube's hqdefault: a 4:3 frame with the 16:9 video letterboxed
     /// inside (baked black bars, 12.5% top + bottom). Zooming the image by 4/3 pushes those bars
     /// outside the clip so tiles show only the picture. Aspect ratio is preserved (uniform
@@ -415,6 +445,7 @@ struct RemoteArtworkView: View {
             CachedArtworkImage(
                 url: url,
                 cornerRadius: cornerRadius,
+                maxPixel: maxPixel,
                 // A file URL is embedded cover art, never a letterboxed video frame.
                 cropsLetterbox: cropsLetterbox && !url.isFileURL
             ) {
@@ -431,6 +462,7 @@ struct RemoteArtworkView: View {
 struct CachedArtworkImage<Placeholder: View>: View {
     let url: URL
     let cornerRadius: CGFloat
+    var maxPixel: CGFloat = CGFloat(AdaptiveQuality.rowArtworkMaxPixel())
     let cropsLetterbox: Bool
     @ViewBuilder let placeholder: Placeholder
 
@@ -438,7 +470,7 @@ struct CachedArtworkImage<Placeholder: View>: View {
 
     var body: some View {
         Group {
-            if let image = loaded ?? ArtworkImageStore.shared.cachedImage(for: url) {
+            if let image = loaded ?? ArtworkImageStore.shared.cachedImage(for: url, maxPixel: maxPixel) {
                 Color.clear.overlay(
                     Image(uiImage: image)
                         .resizable()
@@ -454,12 +486,12 @@ struct CachedArtworkImage<Placeholder: View>: View {
                 placeholder
             }
         }
-        .task(id: url) {
-            if let hit = ArtworkImageStore.shared.cachedImage(for: url) {
+        .task(id: "\(url.absoluteString)#\(Int(maxPixel))") {
+            if let hit = ArtworkImageStore.shared.cachedImage(for: url, maxPixel: maxPixel) {
                 loaded = hit
                 return
             }
-            let image = await ArtworkImageStore.shared.image(for: url)
+            let image = await ArtworkImageStore.shared.image(for: url, maxPixel: maxPixel)
             // Loads are shared across every view asking for this URL, so they outlive this
             // view's task; a recycled row must not adopt the image its previous track asked for.
             guard !Task.isCancelled else { return }

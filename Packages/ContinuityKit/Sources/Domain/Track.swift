@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ContinuityCore
 
 /// Where a track is in the ingest/preparation pipeline. In M0 everything is `.ready`
 /// (synthesised audio); from M1 on this reflects download → analyse → separate progress
@@ -98,7 +99,7 @@ public final class Track {
     /// Real cover art: embedded artwork extracted at import, else the YouTube thumbnail for
     /// YouTube-sourced tracks. nil → gradient placeholder artwork.
     public var artworkURL: URL? {
-        if let artworkPath {
+        if let artworkPath, CachePath.isSafeFileName(artworkPath) {
             return ArtworkStore.directory.appendingPathComponent(artworkPath)
         }
         return youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }

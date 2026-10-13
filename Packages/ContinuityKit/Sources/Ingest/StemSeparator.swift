@@ -16,7 +16,8 @@ struct StemPaths: Sendable, Equatable {
 /// tune against the mem[] breadcrumbs from a real device run.
 enum StemSeparationBudget {
     /// Headroom required to START a separation (session load + first-window peak + margin).
-    static let requiredStartMB = 1_400
+    /// Scales up on low-RAM / thermal tiers so Air-class devices don't open ORT into a hitch.
+    static var requiredStartMB: Int { AdaptiveQuality.stemRequiredStartMB() }
     /// Mid-track floor: abort before the next window if headroom falls below this.
     static let windowFloorMB = 600
 }
@@ -119,6 +120,13 @@ final class OnnxStemSeparator: StemSeparating {
         sessionLock.lock()
         defer { sessionLock.unlock() }
         if let cached = cachedSession, cached.path == modelURL.path { return cached.session }
+        // Last-chance gate immediately before the load peak — callers also check, but download
+        // / queue wait can leave headroom far below requiredStartMB by the time we get here.
+        let headroom = MemoryFootprint.headroomMB
+        guard headroom > StemSeparationBudget.requiredStartMB else {
+            throw StemSeparationError.inference(
+                "session load deferred: \(headroom) MB headroom < \(StemSeparationBudget.requiredStartMB) MB")
+        }
         do {
             MemoryFootprint.breadcrumb("ort session load begin")
             let env = try ORTEnv(loggingLevel: .warning)
@@ -300,11 +308,17 @@ final class OnnxStemSeparator: StemSeparating {
                 let outputs = try session.run(withInputs: ["mix": inputValue],
                                               outputNames: ["stems"], runOptions: runOptions)
                 guard let out = outputs["stems"] else { throw StemSeparationError.inference("no 'stems' output") }
-                let outData = try out.tensorData()
+                let outData = try out.tensorData() as Data
                 let vocBase = (vocalsIndex * channels) * segment
                 let count = channels * segment
-                return (outData as Data).withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                let neededBytes = (vocBase + count) * MemoryLayout<Float>.size
+                guard outData.count >= neededBytes else {
+                    throw StemSeparationError.inference(
+                        "short stems tensor: \(outData.count) bytes, need \(neededBytes)")
+                }
+                return outData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                     let f = raw.bindMemory(to: Float.self)
+                    // Count was checked above; baseAddress is non-nil for a non-empty buffer.
                     return Array(UnsafeBufferPointer(start: f.baseAddress! + vocBase, count: count))
                 }
             } catch let e as StemSeparationError {

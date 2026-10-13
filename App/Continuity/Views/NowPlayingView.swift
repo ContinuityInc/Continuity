@@ -1,6 +1,7 @@
 import SwiftUI
 import Playback
 import Domain
+import ContinuityCore
 
 /// THE Now Playing screen — the app's home page in `MainPagerView` and the only now-playing
 /// surface (the old mini-player-expanded sheet is gone; the mini player jumps here instead).
@@ -83,15 +84,23 @@ struct NowPlayingView: View {
     // MARK: Artwork
 
     private func artworkTile(for track: Track) -> some View {
-        RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28, cropsLetterbox: true)
+        let soft = AdaptiveQuality.prefersOpaqueChrome()
+        return RemoteArtworkView(
+            url: track.artworkURL,
+            symbol: track.artworkSymbol,
+            seed: track.gradientSeed,
+            cornerRadius: 28,
+            maxPixel: CGFloat(AdaptiveQuality.heroArtworkMaxPixel()),
+            cropsLetterbox: true
+        )
             .frame(maxWidth: 280)
             .aspectRatio(1, contentMode: .fit)
             // Playing = full size with a lifted shadow; paused = drawn back, like a record
-            // easing off the platter. The signature "is it playing?" glance cue.
+            // easing off the platter. Softened on constrained tiers — large soft shadows are GPU-heavy.
             .scaleEffect(player.isPlaying ? 1 : 0.84)
-            .shadow(color: .black.opacity(0.45),
-                    radius: player.isPlaying ? 32 : 16,
-                    y: player.isPlaying ? 18 : 8)
+            .shadow(color: .black.opacity(soft ? 0.28 : 0.45),
+                    radius: player.isPlaying ? (soft ? 16 : 32) : (soft ? 8 : 16),
+                    y: player.isPlaying ? (soft ? 10 : 18) : (soft ? 4 : 8))
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: player.isPlaying)
             .padding(.horizontal, 32)
             .padding(.vertical, 6)
@@ -119,7 +128,8 @@ struct NowPlayingView: View {
         }
         .lineLimit(1)
         .multilineTextAlignment(.center)
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 3)
+        .shadow(color: .black.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.2 : 0.4),
+                radius: AdaptiveQuality.prefersOpaqueChrome() ? 4 : 10, y: 3)
         .animation(.easeInOut(duration: 0.3), value: player.currentTrack?.id)
     }
 
@@ -149,7 +159,8 @@ struct NowPlayingView: View {
                 .overlay(alignment: .bottom) { skipBadge.offset(y: 30) }
         }
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+        .shadow(color: .black.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.2 : 0.4),
+                radius: AdaptiveQuality.prefersOpaqueChrome() ? 6 : 14, y: 4)
     }
 
     /// Shared forward-skip budget wiring: Next greys out and locks once the budget is spent.
@@ -185,7 +196,8 @@ struct NowPlayingView: View {
                 Circle()
                     .fill(discGradient)
                     .padding(9)
-                    .shadow(color: Color.accentColor.opacity(0.55), radius: 18, y: 6)
+                    .shadow(color: Color.accentColor.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.3 : 0.55),
+                            radius: AdaptiveQuality.prefersOpaqueChrome() ? 8 : 18, y: 4)
                 playPauseGlyph(size: 34)
             }
             .frame(width: 108, height: 108)
@@ -213,7 +225,7 @@ struct NowPlayingView: View {
             .foregroundStyle(.white.opacity(0.9))
             .padding(.vertical, 3)
             .padding(.horizontal, 9)
-            .continuityGlassCapsule()
+            .continuityGlassCapsule(reduceUnderPressure: true)
             .accessibilityLabel("\(player.skipsRemaining) skips remaining")
     }
 
@@ -233,7 +245,7 @@ struct NowPlayingView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .frame(height: 34)
-            .continuityGlass(cornerRadius: 20, interactive: true)
+            .continuityGlass(cornerRadius: 20, interactive: true, reduceUnderPressure: true)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Transition settings")
@@ -298,28 +310,39 @@ private struct ScrubberBar: View {
     @State private var scrubValue: Double = 0
 
     var body: some View {
+        let upper = max(Player.finite(player.duration), 0.1)
+        let pos = Player.clampedSeconds(isEditing ? scrubValue : player.position, upperBound: upper)
+        let fraction = CGFloat(pos / upper)
         VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    // Clamped into the slider's own range: a value outside it (or a non-finite
-                    // one from a disturbed render clock) is a layout trap, not a visual glitch.
-                    get: { min(max(isEditing ? scrubValue : player.position, 0), max(player.duration, 0.1)) },
-                    set: { scrubValue = $0 }
-                ),
-                in: 0...max(player.duration, 0.1),
-                onEditingChanged: { editing in
-                    if editing {
-                        isEditing = true
-                        scrubValue = player.position
-                    } else {
-                        player.seek(to: scrubValue)
-                        isEditing = false
-                    }
+            // Custom bar instead of Slider: UISlider's continuous layout work at 10–20 Hz was a
+            // measurable hitch on Air-class devices. Drag still seeks; idle ticks only resize a capsule.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(0.22))
+                        .frame(height: 4)
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: max(0, geo.size.width * fraction), height: 4)
                 }
-            )
-            .tint(.white)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            isEditing = true
+                            let t = Double(min(max(0, value.location.x / max(geo.size.width, 1)), 1))
+                            scrubValue = upper * t
+                        }
+                        .onEnded { _ in
+                            player.seek(to: scrubValue)
+                            isEditing = false
+                        }
+                )
+            }
+            .frame(height: 28)
             HStack {
-                Text(Theme.time(isEditing ? scrubValue : player.position))
+                Text(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
                 Spacer()
                 Text(Theme.time(player.duration))
             }
