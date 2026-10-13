@@ -71,8 +71,8 @@ struct RootView: View {
                     }
                 }
                 // Stems are prepared just-in-time for the play-queue neighborhood, not eagerly
-                // for the whole library (CPU-hours + gigabytes). Wire before restore so the
-                // restored session's tracks get their stems going immediately.
+                // for the whole library (CPU-hours + gigabytes). `notifyUpcoming` stays inert
+                // until the first real play so restore/queue edits cannot open ORT at launch.
                 player.onUpcomingTracks = { [weak prepQueue] tracks in
                     prepQueue?.ensureStems(for: tracks, in: modelContext)
                 }
