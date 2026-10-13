@@ -1,5 +1,6 @@
 import SwiftUI
 import Playback
+import ContinuityCore
 
 /// Vertical three-page shell: Library ↑, Now Playing (home), Up Next ↓.
 /// Sticky paging — one full screen at a time via `scrollTargetBehavior(.paging)`.
@@ -37,21 +38,12 @@ struct MainPagerView: View {
                     // bleeding halfway into each neighbor). Because that one layer scrolls with the
                     // content, the gradient is continuous across page boundaries — no per-page
                     // seam, no per-frame crossfade state.
-                    LibrarySheetView()
-                        .padding(.top, insets.top)
-                        .padding(.bottom, insets.bottom)
-                        .containerRelativeFrame(.vertical)
-                        .id(MainPagerState.Page.library)
-                    NowPlayingView()
-                        .padding(.top, insets.top)
-                        .padding(.bottom, insets.bottom)
-                        .containerRelativeFrame(.vertical)
-                        .id(MainPagerState.Page.nowPlaying)
-                    UpNextView()
-                        .padding(.top, insets.top)
-                        .padding(.bottom, insets.bottom)
-                        .containerRelativeFrame(.vertical)
-                        .id(MainPagerState.Page.upNext)
+                    //
+                    // On balanced/constrained tiers only the current page + neighbors mount their
+                    // heavy chrome, so offscreen MiniProgressLine / glass / @Query work tears down.
+                    pagerPage(.library, insets: insets) { LibrarySheetView() }
+                    pagerPage(.nowPlaying, insets: insets) { NowPlayingView() }
+                    pagerPage(.upNext, insets: insets) { UpNextView() }
                 }
                 .scrollTargetLayout()
                 // One shared backdrop behind all three pages, sized to the full content height
@@ -85,6 +77,27 @@ struct MainPagerView: View {
                 }
             }
         )
+    }
+
+    /// Keeps the page's scroll frame always, but only mounts heavy content when the page is
+    /// current or adjacent (or when the device tier mounts everything).
+    @ViewBuilder
+    private func pagerPage<Content: View>(
+        _ page: MainPagerState.Page,
+        insets: EdgeInsets,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        Group {
+            if pagerState.shouldMount(page) {
+                content()
+            } else {
+                Color.clear
+            }
+        }
+        .padding(.top, insets.top)
+        .padding(.bottom, insets.bottom)
+        .containerRelativeFrame(.vertical)
+        .id(page)
     }
 }
 
@@ -205,6 +218,12 @@ final class MainPagerState {
     }
 
     var page: Page = .nowPlaying
+
+    /// Current page plus immediate neighbors on constrained tiers; everything on `.full`.
+    func shouldMount(_ candidate: Page) -> Bool {
+        if AdaptiveQuality.mountsAllPagerPages() { return true }
+        return abs(candidate.rawValue - page.rawValue) <= 1
+    }
 
     func goToNowPlaying() {
         withAnimation(.snappy(duration: 0.35)) {

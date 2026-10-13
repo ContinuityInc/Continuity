@@ -71,7 +71,8 @@ struct TransitionVisualizationView: View {
             chips
         }
         .padding(16)
-        .continuityGlass(cornerRadius: 20)
+        // Large glass over the album backdrop is the top GPU cost on Air-class devices.
+        .continuityGlass(cornerRadius: 20, reduceUnderPressure: true)
     }
 
     // MARK: Header
