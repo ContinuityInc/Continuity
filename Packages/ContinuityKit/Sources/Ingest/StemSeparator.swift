@@ -16,7 +16,8 @@ struct StemPaths: Sendable, Equatable {
 /// tune against the mem[] breadcrumbs from a real device run.
 enum StemSeparationBudget {
     /// Headroom required to START a separation (session load + first-window peak + margin).
-    static let requiredStartMB = 1_400
+    /// Scales up on low-RAM / thermal tiers so Air-class devices don't open ORT into a hitch.
+    static var requiredStartMB: Int { AdaptiveQuality.stemRequiredStartMB() }
     /// Mid-track floor: abort before the next window if headroom falls below this.
     static let windowFloorMB = 600
 }
