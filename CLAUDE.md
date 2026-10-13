@@ -67,6 +67,40 @@ and every published fraction go through `Player.fraction` (**`min`/`max` do NOT 
 alert interruptions, and the stem model download is size-validated before being cached (a cut-off
 transfer or a captive-portal page used to be cached as "the model" forever).
 
+### AVFAudio exception boundary (Oct 2026 — the structural fix for "transient" crashes)
+After the three fixes above, crashes still happened "sometimes". Root cause of the residue:
+**every AVFAudio node call is a latent SIGABRT.** `AVAudioPlayerNode.play()/stop()/pause()/
+scheduleSegment()`, `AVAudioEngine.connect()/start()` report precondition failures as ObjC
+`NSException`s (`_engine->IsRunning()`, start time in the past, bad frame range,
+`IsFormatSampleRateAndChannelCountValid(outputHWFormat)`), and Swift cannot catch those — the
+runtime calls `abort()`. The `engine.isRunning` checks shrink the window but can't close it
+(the engine stops between the check and the call during route churn), so point fixes could
+never finish the job. Fixes (keep all):
+- `Packages/ContinuityKit/Sources/AVFAudioShim` — pure-ObjC `AVFAudioShimTry(block, &error)`
+ (`@try/@catch`). `Playback/AVFAudioGuard.swift` wraps each node/engine call as
+ `guardedPlay()/guardedStop()/guardedScheduleSegment()/guardedConnect()/guardedStart()…`
+ returning `Bool`, logging the exception reason (`audio` category, level fault) and counting
+ it (`AVFAudioGuard.caughtExceptionCount`). **It is the only file allowed to call those
+ methods raw** — `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+- `Deck.play()`/`load()`/`seekRealFile()` report refusal instead of assuming success;
+ `Player+DeckFailure.startCurrentDeck(context:)` is the funnel every `play()` goes through:
+ refusal → stage `position`, pause, persist, one bounded deferred retry via
+ `ensureCurrentLoaded()`. `beginTransition` returns `Bool`; a refused blend hard-advances.
+- `Deck.rate`/`pitchCents` clamp through `TimePitchLimits`; gains sanitize NaN.
+- The clock arithmetic is `ContinuityCore.PlaybackClock` (elapsed, duration, segment framing,
+ render-clock freshness), pinned by `PlaybackClockTests` on Linux CI. Adding that suite caught
+ a real trap in its first run (`Double(Int64.max)` rounds up → `Int64(_:)` overflow), which is
+ the point: crash-class math must be testable without a phone.
+- Field evidence: `App/Continuity/Library/CrashDiagnostics.swift` subscribes to MetricKit
+ (crash signal/exception type/termination reason/ObjC exception message → `crash` log
+ category + JSON in Application Support/Diagnostics) and keeps a dirty-session marker
+ (unclean foreground exits counted even without a payload). Transition settings →
+ Diagnostics → "Export Diagnostics Report" shares it. **Ask for that report before reasoning
+ about a crash from symptoms.**
+- Stacked-PR trap: #158/#159 were merged into their *base branches* after #157 had merged
+ into main, so GitHub showed them merged while main never got the code (re-landed in #161).
+ Merge stacks top-down, or delete head branches on merge so GitHub retargets.
+
 ### UI architecture decisions
 - **20 Hz `position` writes must not reach heavy views**: only leaf views
   (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`) read `player.position` /

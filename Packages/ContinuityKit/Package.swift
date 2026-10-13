@@ -48,11 +48,25 @@ let package = Package(
             dependencies: ["Ingest"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // AVFAudioShim: one Objective-C function, `AVFAudioShimTry`, that runs a block inside
+        // `@try/@catch`. AVFAudio reports precondition failures (play() on a stopped engine, a
+        // past start time, a bad frame range) as NSExceptions, which Swift cannot catch — the
+        // runtime aborts the process. Routing every node call through this shim turns that
+        // SIGABRT into a Bool the Player can recover from. Pure ObjC; no Swift in this target.
+        .target(
+            name: "AVFAudioShim",
+            path: "Sources/AVFAudioShim",
+            publicHeadersPath: "include"
+        ),
         // Playback: AVAudioEngine decks, player state machine, now-playing bridge.
         // Sibling of Ingest — depends on Domain + ContinuityCore only, never on Ingest.
         .target(
             name: "Playback",
-            dependencies: ["Domain", .product(name: "ContinuityCore", package: "ContinuityCore")],
+            dependencies: [
+                "Domain",
+                "AVFAudioShim",
+                .product(name: "ContinuityCore", package: "ContinuityCore"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

@@ -6,13 +6,16 @@ import os
 
 extension Player {
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
+    /// Returns false when the blend could not start — the incoming deck's schedule or start
+    /// was refused by AVFAudio — leaving the current deck untouched so callers can hard-advance.
+    @discardableResult
     func beginTransition(
         toIndex index: Int,
         outgoingPosition: Double,
         duration: TimeInterval,
         isUserInitiatedSkip: Bool
-    ) {
-        guard queue.indices.contains(index), duration > 0 else { return }
+    ) -> Bool {
+        guard queue.indices.contains(index), duration > 0 else { return false }
         // Automatic blends arrive from tick(); skip blends may materialize a staged session first.
         // Funnel both through the same lazy stack accessor.
         let audio = ensureAudioStack()
@@ -118,11 +121,25 @@ extension Player {
         // (avoids a low-end blip before the first tick).
         if blend.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
 
-        incoming.play()
+        // `needsRescheduleAfterEngineStart` here means load()/seek couldn't schedule; play()
+        // false means AVFAudio refused the start. Either way there is no incoming audio: undo
+        // the staging and report it rather than ramp a blend into silence.
+        guard !incoming.needsRescheduleAfterEngineStart, incoming.play() else {
+            Logger.audio.error("incoming deck refused to start — blend not started")
+            incoming.stop()
+            incoming.volume = 1; incoming.vocalsGain = 1; incoming.bassGainDB = 0
+            incoming.rate = 1; incoming.pitchCents = 0
+            incomingStartOffset = 0; incomingDeckElapsed = 0
+            incomingRate = 1; incomingPitchShiftSemitones = 0
+            activeBlendSettings = nil
+            votableTransition = nil
+            return false
+        }
         transitionTargetIndex = index
         activeTransitionDurationSeconds = duration
         isUserInitiatedSkipTransition = isUserInitiatedSkip
         isTransitioning = true
+        return true
     }
 
     /// Shapes the per-stem vocal gains during a blend per the chosen vocal mode. Only called when

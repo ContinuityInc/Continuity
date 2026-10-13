@@ -100,8 +100,15 @@ extension Player {
             if !isTransitioning, effectiveEndSeconds > 0, position >= effectiveEndSeconds - 0.05 {
                 startCurrentFresh()
             } else {
-                audio.current.play()
-                if isTransitioning { audio.idle.play() }
+                deckStartFailures = 0   // explicit user play: fresh retry budget
+                // Refusal is handled (staged + paused + deferred retry) by the failure funnel.
+                guard startCurrentDeck(context: "togglePlayPause") else { return }
+                if isTransitioning, !audio.idle.play() {
+                    // The outgoing deck is sounding; a blend whose incoming deck won't start
+                    // is dropped rather than left half-faded with a silent partner.
+                    Logger.audio.error("incoming deck refused to resume — discarding paused blend")
+                    cancelTransition()
+                }
                 isPlaying = true
                 startTimer()
             }
@@ -129,8 +136,15 @@ extension Player {
             persistState()
             return
         }
+        // A refused start of the outgoing deck gets the same hard-advance fallback as a dead
+        // engine: there is no audio to fade, so just go to the target.
+        if !isPlaying, !audio.current.play() {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
         if !isPlaying {
-            audio.current.play()
             isPlaying = true
             startTimer()
         }
@@ -146,12 +160,16 @@ extension Player {
             persistState()
             return
         }
-        beginTransition(
+        // The incoming deck refusing to start is a hard-advance too — the skip must still land.
+        if !beginTransition(
             toIndex: targetIndex,
             outgoingPosition: position,
             duration: min(Player.skipTransitionDurationSeconds, remaining),
             isUserInitiatedSkip: true
-        )
+        ) {
+            currentIndex = targetIndex
+            startCurrentFresh()
+        }
         persistState()
     }
 
@@ -205,8 +223,13 @@ extension Player {
             persistState()
             return
         }
+        if !isPlaying, !audio.current.play() {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
         if !isPlaying {
-            audio.current.play()
             isPlaying = true
             startTimer()
         }
@@ -220,12 +243,15 @@ extension Player {
             persistState()
             return
         }
-        beginTransition(
+        if !beginTransition(
             toIndex: targetIndex,
             outgoingPosition: position,
             duration: min(Player.skipTransitionDurationSeconds, remaining),
             isUserInitiatedSkip: true
-        )
+        ) {
+            currentIndex = targetIndex
+            startCurrentFresh()
+        }
         persistState()
     }
 
@@ -317,17 +343,9 @@ extension Player {
         if audio.current.seekRealFile(to: clamped) {
             baselineSeconds = clamped
             position = clamped
-            if isPlaying {
-                guard audio.engine.isRunning else {
-                    pendingSeekSeconds = clamped
-                    audio.current.stop()
-                    isPlaying = false
-                    stopTimer()
-                    persistState()
-                    return
-                }
-                audio.current.play()
-            }
+            // A refusal here (engine stopped after the reschedule) stages `clamped`, pauses
+            // and persists via the failure funnel — nothing left to do in this call.
+            if isPlaying, !startCurrentDeck(context: "seek") { return }
         } else if audio.current.hasRealFile {
             // The engine stopped between the initial check and segment scheduling.
             pendingSeekSeconds = clamped
