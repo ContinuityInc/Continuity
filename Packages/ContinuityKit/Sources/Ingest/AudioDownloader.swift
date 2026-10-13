@@ -25,7 +25,12 @@ final class AudioDownloader: AudioFileDownloading {
         _ resolved: ResolvedAudio,
         progress: (@Sendable (Int, Int?) -> Void)?
     ) async throws -> URL {
-        let destination = AudioCache.fileURL(videoID: resolved.videoID, container: resolved.container)
+        // YouTubeKit's URL is untrusted input — never fetch an arbitrary HTTPS host into the cache.
+        guard MediaDownloadPolicy.isAllowedStreamURL(resolved.url) else {
+            throw IngestError.downloadFailed("disallowed stream host")
+        }
+        let container = CachePath.coercedContainer(resolved.container)
+        let destination = AudioCache.fileURL(videoID: resolved.videoID, container: container)
 
         // Cache hit: already on disk.
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -35,7 +40,7 @@ final class AudioDownloader: AudioFileDownloading {
 
         // Assemble into a unique temp file, guaranteed cleaned up on every exit path.
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("continuity-\(resolved.videoID)-\(UUID().uuidString).\(resolved.container)")
+            .appendingPathComponent("continuity-\(resolved.videoID)-\(UUID().uuidString).\(container)")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         try await downloadRanged(from: resolved.url, to: tempURL, progress: progress)
@@ -68,7 +73,13 @@ final class AudioDownloader: AudioFileDownloading {
             repeat {
                 let upperBound = offset + chunkSize - 1
                 let (data, reportedTotal, isWholeFile) = try await fetchChunk(url: url, from: offset, to: upperBound)
-                if let reportedTotal { totalSize = reportedTotal }
+                if let reportedTotal {
+                    totalSize = reportedTotal
+                    if reportedTotal > MediaDownloadPolicy.maxAudioBytes {
+                        throw IngestError.downloadFailed(
+                            "audio exceeds size cap: \(reportedTotal) > \(MediaDownloadPolicy.maxAudioBytes)")
+                    }
+                }
                 if data.isEmpty { break } // nothing more to read
                 if isWholeFile && offset > 0 {
                     // The server ignored Range mid-download and sent the entire file — appending
@@ -79,6 +90,10 @@ final class AudioDownloader: AudioFileDownloading {
                 }
                 try handle.write(contentsOf: data)
                 offset += data.count
+                if offset > MediaDownloadPolicy.maxAudioBytes {
+                    throw IngestError.downloadFailed(
+                        "audio exceeds size cap: \(offset) > \(MediaDownloadPolicy.maxAudioBytes)")
+                }
                 progress?(offset, totalSize)
             } while totalSize == nil || offset < totalSize!
 
