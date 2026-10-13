@@ -172,8 +172,12 @@ extension Player {
         queueRefillAttempted = false   // deck promotion changes the current track sans startCurrentFresh
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
-        baselineSeconds = incomingStartOffset
-        position = baselineSeconds + incoming.elapsed
+        // Hold a finite clock only — a poisoned baseline would republish through `position` and
+        // trap SwiftUI / Int conversion before the next tick can refuse the update.
+        let offset = Player.finite(incomingStartOffset)
+        let nextPosition = offset + incoming.elapsed
+        baselineSeconds = offset
+        position = nextPosition.isFinite && nextPosition >= 0 ? nextPosition : offset
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         currentRate = incomingRate
         // The key-sync shift was only needed while both tracks overlapped. Now that the incoming

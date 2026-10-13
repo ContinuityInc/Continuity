@@ -37,6 +37,17 @@ final class PlayerClockSafetyTests: XCTestCase {
         XCTAssertEqual(Player.fraction(-.infinity), 0)
     }
 
+    func testFiniteAndClampedSecondsRejectNonFinite() {
+        XCTAssertEqual(Player.finite(12), 12)
+        XCTAssertEqual(Player.finite(.nan), 0)
+        XCTAssertEqual(Player.finite(.infinity, fallback: -1), -1)
+        XCTAssertEqual(Player.clampedSeconds(30, upperBound: 100), 30)
+        XCTAssertEqual(Player.clampedSeconds(-5, upperBound: 100), 0)
+        XCTAssertEqual(Player.clampedSeconds(200, upperBound: 100), 100)
+        XCTAssertEqual(Player.clampedSeconds(.nan, upperBound: 100), 0)
+        XCTAssertEqual(Player.clampedSeconds(50, upperBound: .nan), 50)
+    }
+
     func testDisplayProgressStaysFiniteForAPoisonedPosition() {
         let player = stagedPlayer()
         for poison in [Double.nan, .infinity, -.infinity, -5] {
@@ -82,5 +93,34 @@ final class PlayerClockSafetyTests: XCTestCase {
         XCTAssertEqual(player.position, 42)
         player.seek(to: 30)
         XCTAssertEqual(player.position, 30, "a real seek must still land")
+    }
+
+    /// A corrupt persisted position must not stage NaN onto `position` / `pendingSeekSeconds`.
+    func testRestoreRejectsNonFinitePosition() {
+        let player = stagedPlayer()
+        let track = player.queue[0]
+        let state = PersistedPlaybackState(
+            queueTrackIDs: player.queue.map(\.id),
+            currentIndex: 0,
+            positionSeconds: .nan,
+            skipsRemaining: 3,
+            historyTrackIDs: []
+        )
+        player.restore(state, resolving: [track.id: track])
+        XCTAssertTrue(player.position.isFinite)
+        XCTAssertEqual(player.position, 0)
+        XCTAssertNil(player.pendingSeekSeconds)
+    }
+
+    /// Pre-play queue edits must not arm stem preparation (ORT jetsam at cold launch).
+    func testNotifyUpcomingNoopsBeforeAudioStarts() {
+        let player = stagedPlayer()
+        var notified = 0
+        player.onUpcomingTracks = { _ in notified += 1 }
+        player.notifyUpcoming()
+        XCTAssertEqual(notified, 0, "stems must stay cold until the first real play")
+        player.audioHasStartedThisProcess = true
+        player.notifyUpcoming()
+        XCTAssertEqual(notified, 1)
     }
 }
