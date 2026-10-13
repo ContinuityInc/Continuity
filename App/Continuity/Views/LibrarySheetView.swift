@@ -22,6 +22,12 @@ struct LibrarySheetView: View {
             LibraryView()
                 .miniPlayerDock()
                 .navigationTitle("Continuity")
+                .navigationBarTitleDisplayMode(.inline)
+                // Keep the bar visible so its background runs under the status bar (the
+                // pager restores safe-area insets; without `.visible` the scroll-edge
+                // treatment can collapse the bar into a hairline above the grid).
+                .toolbarBackground(.visible, for: .navigationBar)
+                .restorePagerSafeArea()
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         DownloadsToolbarButton(showingDownloads: $showingDownloads)
