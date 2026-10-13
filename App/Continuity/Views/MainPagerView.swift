@@ -1,5 +1,6 @@
 import SwiftUI
 import Playback
+import ContinuityCore
 
 /// Vertical three-page shell: Library ↑, Now Playing (home), Up Next ↓.
 /// Sticky paging — one full screen at a time via `scrollTargetBehavior(.paging)`.
@@ -35,15 +36,18 @@ struct MainPagerView: View {
                 // NavigationStack pages also clear their opaque UIKit fills so the shared
                 // `PagerBackdrop` gradient bleed shows through at page boundaries.
                 VStack(spacing: 0) {
-                    LibrarySheetView()
+                    //
+                    // On balanced/constrained tiers only the current page + neighbors mount their
+                    // heavy chrome, so offscreen MiniProgressLine / glass / @Query work tears down.
+                    mounted(.library) { LibrarySheetView() }
                         .pagerNavigationPage(insets: insets)
                         .id(MainPagerState.Page.library)
-                    NowPlayingView()
+                    mounted(.nowPlaying) { NowPlayingView() }
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
-                    UpNextView()
+                    mounted(.upNext) { UpNextView() }
                         .pagerNavigationPage(insets: insets)
                         .id(MainPagerState.Page.upNext)
                 }
@@ -79,6 +83,21 @@ struct MainPagerView: View {
                 }
             }
         )
+    }
+
+    /// The page's scroll slot is always laid out by its caller; only the heavy content inside
+    /// it is conditional — mounted when the page is current or adjacent (or when the device
+    /// tier mounts everything).
+    @ViewBuilder
+    private func mounted<Content: View>(
+        _ page: MainPagerState.Page,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if pagerState.shouldMount(page) {
+            content()
+        } else {
+            Color.clear
+        }
     }
 }
 
@@ -199,6 +218,12 @@ final class MainPagerState {
     }
 
     var page: Page = .nowPlaying
+
+    /// Current page plus immediate neighbors on constrained tiers; everything on `.full`.
+    func shouldMount(_ candidate: Page) -> Bool {
+        if AdaptiveQuality.mountsAllPagerPages() { return true }
+        return abs(candidate.rawValue - page.rawValue) <= 1
+    }
 
     func goToNowPlaying() {
         withAnimation(.snappy(duration: 0.35)) {

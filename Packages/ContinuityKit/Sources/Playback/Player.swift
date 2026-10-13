@@ -517,7 +517,15 @@ public final class Player {
         // to poison it), hold the last good position rather than publish a number that traps
         // SwiftUI layout on its way to the scrubber.
         let elapsed = baselineSeconds + audio.current.elapsed
-        if elapsed.isFinite, elapsed >= 0 { position = elapsed }
+        if elapsed.isFinite, elapsed >= 0 {
+            // Blend math below uses the local `elapsed`; UI leaves read `position`. On
+            // balanced/constrained tiers, publish position at 10 Hz when not blending so
+            // scrubber/ring/mini-line invalidations halve without starving transition scheduling.
+            let fullRate = isTransitioning || AdaptiveQuality.allowsFullTickRate()
+            if fullRate || memTicks % 2 == 0 {
+                position = elapsed
+            }
+        }
         // Cosmetic: ease a just-transitioned track's key-sync pitch back to true. Touches only the
         // deck's timePitch node (never `position`), so it stays off the heavy-view tick path.
         advancePitchSettle()

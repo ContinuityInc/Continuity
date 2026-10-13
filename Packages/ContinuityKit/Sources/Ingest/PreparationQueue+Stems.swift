@@ -15,17 +15,21 @@ extension PreparationQueue {
         // whole separation pipeline in/out of a memory repro in one run, no code edits.
         if UserDefaults.standard.bool(forKey: "debug.disableStemSeparation") { return }
         protectedStemKeys = Set(tracks.map(\.stemKey))
-        // First stem demand of the session = playback just started. Hold separation for a
-        // minute so its peak never stacks on engine/UI/download ramp-up.
-        if separationAllowedAt == nil { separationAllowedAt = Date().addingTimeInterval(60) }
+        // First stem demand of the session = playback just started. Hold separation so its
+        // peak never stacks on engine/UI/download ramp-up; longer on low-end tiers.
+        if separationAllowedAt == nil {
+            separationAllowedAt = Date().addingTimeInterval(AdaptiveQuality.stemHoldSeconds())
+        }
         let holdActive = Date() < (separationAllowedAt ?? .distantPast)
+        // Thermal / Low Power Mode: keep reconciling + LRU marks, but don't open ORT.
+        let deferSeparation = AdaptiveQuality.shouldDeferStemSeparation()
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,
                   track.localRelativePath != nil else { continue }
             reconcileStemLinks(track, in: context)
             if track.hasStems {
                 StemCache.markUsed(key: track.stemKey)   // actively played material stays cache-resident
-            } else if holdActive {
+            } else if holdActive || deferSeparation {
                 scheduleDeferredStemsRetry(for: tracks, in: context)
             } else {
                 separateStems(track, in: context)

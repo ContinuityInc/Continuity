@@ -1,4 +1,5 @@
 import Foundation
+import ContinuityCore
 
 /// On-disk location helper for downloaded audio in the ingestion pipeline.
 ///
@@ -28,7 +29,9 @@ public enum AudioCache {
 
     /// The on-disk URL for a given video's audio, e.g. `.../ContinuityAudio/<videoID>.<container>`.
     public static func fileURL(videoID: String, container: String) -> URL {
-        directory.appendingPathComponent("\(videoID).\(container)")
+        let safeID = CachePath.isSafeFileName(videoID) ? videoID : "rejected"
+        let safeContainer = CachePath.coercedContainer(container)
+        return directory.appendingPathComponent("\(safeID).\(safeContainer)")
     }
 
     /// The path of a cached file relative to `directory`.
@@ -40,7 +43,12 @@ public enum AudioCache {
     }
 
     /// Resolves a relative path (as returned by `relativePath(for:)`) back to an absolute URL.
+    /// Unsafe components (traversal / separators) resolve to a non-existent sentinel so
+    /// `fileExists` checks fail closed instead of escaping the cache directory.
     public static func url(forRelativePath path: String) -> URL {
-        directory.appendingPathComponent(path)
+        guard CachePath.isSafeFileName(path) else {
+            return directory.appendingPathComponent(".__rejected__")
+        }
+        return directory.appendingPathComponent(path)
     }
 }

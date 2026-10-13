@@ -167,9 +167,10 @@ private struct TrackRow: View {
             }
             Spacer()
             if isCurrent {
+                // Static tint — the repeating variableColor effect was continuous GPU work for
+                // every open playlist detail while a track played.
                 Image(systemName: "waveform")
                     .foregroundStyle(.tint)
-                    .symbolEffect(.variableColor.iterative, options: .repeating)
             }
             if track.isDemo {
                 Text("DEMO")
