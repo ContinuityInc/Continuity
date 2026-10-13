@@ -1,4 +1,4 @@
-# Publishes every merge to main to internal TestFlight.
+# Publishes every push to alpha to internal TestFlight.
 #
 # Signing uses the App Store Connect API key (Admin role) to install one Apple
 # Distribution certificate and two App Store profiles that include the app group.
@@ -25,8 +25,8 @@ name: TestFlight
 
 on:
   push:
-    branches: [main]
-  # Manual retry (e.g. after fixing secrets) without needing another merge.
+    branches: [alpha]
+  # Manual retry (e.g. after fixing secrets) without needing another push.
   workflow_dispatch:
 
 # One upload at a time, never cancelled mid-upload; queued runs supersede older queued ones.
