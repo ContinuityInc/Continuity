@@ -76,9 +76,10 @@ final class YouTubeStreamResolver: AudioStreamResolving {
     }
 
     /// Lowercased container/extension string (e.g. "m4a", "webm") derived from the
-    /// stream's `fileExtension` enum.
+    /// stream's `fileExtension` enum. Coerced through the allowlist so a weird rawValue
+    /// cannot become a path component.
     private static func containerString(for stream: YouTubeKit.Stream) -> String {
         // FileExtension is a String-backed enum, so rawValue is already e.g. "m4a"/"webm".
-        stream.fileExtension.rawValue
+        CachePath.coercedContainer(stream.fileExtension.rawValue)
     }
 }
