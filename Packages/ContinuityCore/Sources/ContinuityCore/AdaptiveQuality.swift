@@ -33,15 +33,19 @@ public enum AdaptiveQuality {
     /// Live tier from the process environment.
     public static func current() -> AdaptiveQualityTier {
         let info = ProcessInfo.processInfo
-        #if canImport(UIKit) || os(iOS) || os(tvOS) || os(watchOS) || os(macOS) || os(visionOS)
+        // Thermal state and Low Power Mode are Darwin-only Foundation API; the Linux CI build
+        // of this module (core-tests.yml) sees a cool, plugged-in device.
+        #if canImport(Darwin)
         let thermalBad = info.thermalState == .serious || info.thermalState == .critical
+        let lowPower = info.isLowPowerModeEnabled
         #else
         let thermalBad = false
+        let lowPower = false
         #endif
         return tier(
             physicalMemoryBytes: info.physicalMemory,
             thermalSeriousOrWorse: thermalBad,
-            lowPowerMode: info.isLowPowerModeEnabled
+            lowPowerMode: lowPower
         )
     }
 
