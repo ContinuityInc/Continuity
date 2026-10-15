@@ -14,6 +14,8 @@ struct UpNextView: View {
     @Environment(MainPagerState.self) private var pagerState
     // Persisted as a mode label; toggling ON reorders once, toggling OFF is not an undo.
     @AppStorage("flowMode.v1") private var flowMode = false
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     var body: some View {
         // Capture once: upcomingTracks allocates a fresh array slice per access, and body
@@ -54,6 +56,7 @@ struct UpNextView: View {
             .onChange(of: flowMode) { _, isOn in
                 if isOn { applyFlowOrdering() }
             }
+            .renameTrackSheet(for: $trackPendingRename)
         }
     }
 
@@ -89,6 +92,11 @@ struct UpNextView: View {
             }
         }
         .contextMenu {
+            Button {
+                trackPendingRename = track
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
             if !track.isDemo, track.prepState != .ready {
                 Button {
                     prepQueue.prioritize(track, in: modelContext)

@@ -208,6 +208,7 @@ private struct SearchSongRow: View {
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
+    @State private var isRenaming = false
 
     var body: some View {
         Button(action: play) {
@@ -235,6 +236,11 @@ private struct SearchSongRow: View {
             } label: {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
+            Button {
+                isRenaming = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
             if !track.isDemo, track.prepState != .ready {
                 Button {
                     prepQueue.prioritize(track, in: modelContext)
@@ -242,6 +248,9 @@ private struct SearchSongRow: View {
                     Label("Download First", systemImage: "arrow.up.to.line")
                 }
             }
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameTrackSheet(track: track)
         }
     }
 }

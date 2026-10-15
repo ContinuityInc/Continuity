@@ -13,6 +13,8 @@ struct NowPlayingView: View {
     @Environment(MainPagerState.self) private var pagerState
 
     @State private var showingTransitionSettings = false
+    /// Current track whose rename sheet is up (long-press on the title).
+    @State private var trackPendingRename: Track?
 
     var body: some View {
         // No backdrop here: MainPagerView supplies AlbumBackdrop as the page BACKGROUND
@@ -79,6 +81,7 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showingTransitionSettings) {
             TransitionSettingsView()
         }
+        .renameTrackSheet(for: $trackPendingRename)
     }
 
     // MARK: Artwork
@@ -131,6 +134,25 @@ struct NowPlayingView: View {
         .shadow(color: .black.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.2 : 0.4),
                 radius: AdaptiveQuality.prefersOpaqueChrome() ? 4 : 10, y: 3)
         .animation(.easeInOut(duration: 0.3), value: player.currentTrack?.id)
+        .contextMenu {
+            if let track = player.currentTrack {
+                Button {
+                    trackPendingRename = track
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+        } preview: {
+            // The label itself is white-on-backdrop; the system preview sits on a neutral
+            // material, so it gets a legible primary-colored copy instead of a snapshot.
+            if let track = player.currentTrack {
+                VStack(spacing: 4) {
+                    Text(track.title).font(.headline)
+                    Text(track.artist).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(20)
+            }
+        }
     }
 
     /// "124 BPM · 8A" once tempo/key analysis is available — or a "Demo tone" note for the
