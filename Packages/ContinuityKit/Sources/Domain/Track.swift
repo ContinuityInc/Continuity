@@ -113,6 +113,18 @@ public final class Track {
         set { prepStateRaw = newValue.rawValue }
     }
 
+    /// Applies a user edit of the display name. Returns false (and writes nothing) when the
+    /// normalized title is blank or nothing actually differs — callers use that to skip the
+    /// save and the lock-screen refresh.
+    @discardableResult
+    public func rename(title newTitle: String, artist newArtist: String) -> Bool {
+        guard let edit = TrackRename.normalized(title: newTitle, artist: newArtist),
+              TrackRename.isChange(edit, fromTitle: title, artist: artist) else { return false }
+        title = edit.title
+        artist = edit.artist
+        return true
+    }
+
     public init(
         id: UUID = UUID(),
         title: String,
