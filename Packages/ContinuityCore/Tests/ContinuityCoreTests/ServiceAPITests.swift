@@ -111,16 +111,21 @@ final class ServiceAPITests: XCTestCase {
     func testSoundCloudPlaylistsEnvelopeAndBareArray() {
         let envelope = """
         {"collection":[
-          {"urn":"soundcloud:playlists:1","id":1,"title":"Mix","track_count":7,"user":{"username":"dj"},"set_type":"","is_album":false},
+          {"urn":"soundcloud:playlists:1","id":1,"title":"Mix","track_count":7,"user":{"username":"dj"},"set_type":"","is_album":false,"permalink_url":"https://soundcloud.com/dj/sets/mix"},
           {"id":2,"title":"Album","track_count":10,"user":{"username":"band"},"set_type":"album"},
+          {"urn":"soundcloud:playlists:4","title":"No permalink","permalink_url":"not a url"},
           {"id":3,"title":""}
         ],"next_href":"https://api.soundcloud.com/me/playlists?cursor=abc"}
         """
         let page = SoundCloudAPI.parsePlaylistsPage(Data(envelope.utf8))
-        XCTAssertEqual(page.items.count, 2)
-        XCTAssertEqual(page.items[0], ServicePlaylistSummary(service: .soundcloud, sourceID: "soundcloud:playlists:1", kind: .playlist, name: "Mix", ownerName: "dj", trackCount: 7))
+        XCTAssertEqual(page.items.count, 3)
+        // Permalink path is the identity when present — it's what a pasted link yields too.
+        XCTAssertEqual(page.items[0], ServicePlaylistSummary(service: .soundcloud, sourceID: "dj/sets/mix", kind: .playlist, name: "Mix", ownerName: "dj", trackCount: 7))
         XCTAssertEqual(page.items[1].sourceID, "soundcloud:playlists:2")   // synthesised urn
         XCTAssertEqual(page.items[1].kind, .album)
+        XCTAssertEqual(page.items[2].sourceID, "soundcloud:playlists:4")
+        XCTAssertTrue(SoundCloudAPI.isURN("soundcloud:playlists:4"))
+        XCTAssertFalse(SoundCloudAPI.isURN("dj/sets/mix"))
         XCTAssertEqual(page.nextPageURL?.absoluteString, "https://api.soundcloud.com/me/playlists?cursor=abc")
 
         let bare = """

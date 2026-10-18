@@ -85,9 +85,18 @@ public enum SoundCloudAPI {
         return (list, (dict["next_href"] as? String).flatMap(URL.init(string:)))
     }
 
+    /// Whether a `sourceID` is a SoundCloud URN (API-only identity) rather than a permalink path.
+    public static func isURN(_ sourceID: String) -> Bool { sourceID.hasPrefix("soundcloud:") }
+
     private static func playlistSummary(_ dict: [String: Any]) -> ServicePlaylistSummary? {
         guard let title = dict["title"] as? String, !title.isEmpty else { return nil }
-        guard let urn = (dict["urn"] as? String) ?? (dict["id"] as? NSNumber).map({ "soundcloud:playlists:\($0.intValue)" }) else { return nil }
+        // The permalink path is preferred as the identity: it is what a pasted link yields, and
+        // the anonymous page scrape can still sync it after the account is disconnected. The URN
+        // is the fallback for sets whose permalink the API omitted.
+        let permalinkPath = (dict["permalink_url"] as? String).flatMap(SoundCloudURL.parse)?.path
+        guard let urn = permalinkPath
+                ?? (dict["urn"] as? String)
+                ?? (dict["id"] as? NSNumber).map({ "soundcloud:playlists:\($0.intValue)" }) else { return nil }
         let setType = (dict["set_type"] as? String) ?? (dict["playlist_type"] as? String) ?? ""
         let isAlbum = (dict["is_album"] as? Bool) ?? (!setType.isEmpty && setType != "playlist")
         let count = (dict["track_count"] as? NSNumber)?.intValue ?? (dict["tracks"] as? [Any])?.count
