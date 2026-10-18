@@ -82,6 +82,13 @@ jobs:
         run: xcodegen generate
 
       - name: Archive
+        env:
+          # OAuth client ids for the import hub's "Connect" buttons (see project.yml). Unset
+          # secrets expand to empty strings, which the app reads as "service not set up".
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           BUILD_NUMBER=$((1000 + ${{ github.run_number }}))
@@ -107,7 +114,11 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/Continuity.xcarchive \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID:-}" \
+            GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" \
+            SOUNDCLOUD_CLIENT_ID="${SOUNDCLOUD_CLIENT_ID:-}" \
+            SOUNDCLOUD_CLIENT_SECRET="${SOUNDCLOUD_CLIENT_SECRET:-}"
 
       - name: Upload to TestFlight
         env:

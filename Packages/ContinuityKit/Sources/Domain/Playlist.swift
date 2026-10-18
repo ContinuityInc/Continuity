@@ -3,12 +3,28 @@ import SwiftData
 
 /// Where an imported playlist's tracklist lives remotely, for re-fetching on sync.
 public enum PlaylistSource: String, Codable, Sendable {
+    /// `sourceID` is the playlist id; `LL` (Liked videos) needs a signed-in YouTube account.
     case youtube
     case spotifyPlaylist
     case spotifyAlbum
+    /// The connected Spotify account's Liked Songs — API only, no public page to scrape.
+    case spotifyLiked
+    /// A SoundCloud set (playlist or album); `sourceID` is its permalink path
+    /// (`user/sets/slug`) or, for API-listed sets without one, its URN.
+    case soundcloudPlaylist
+    /// The connected SoundCloud account's liked tracks — API only.
+    case soundcloudLikes
     /// A playlist in the user's on-device Apple Music library; `sourceID` is its persistent ID.
     /// Unlike the others this re-fetches locally, so sync works offline.
     case appleMusic
+
+    /// Sources that can only be refreshed through a signed-in account.
+    public var requiresSignIn: Bool {
+        switch self {
+        case .spotifyLiked, .soundcloudLikes: return true
+        default: return false
+        }
+    }
 }
 
 /// A playlist or album. For M0 both concepts are represented by this one model; the

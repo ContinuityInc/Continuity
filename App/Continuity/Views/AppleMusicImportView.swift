@@ -2,13 +2,15 @@ import SwiftUI
 import ContinuityCore
 import Ingest
 
-/// Sheet for importing playlists out of the user's Apple Music library.
+/// Picks playlists out of the user's Apple Music library. Pushed from the import hub; `onDone`
+/// dismisses the whole hub after a successful import.
 ///
 /// **Metadata only.** Apple Music audio is DRM-protected and can't feed our engine, so an
 /// imported playlist keeps each song's title + artist and the ingest pipeline re-sources the
 /// recording from YouTube — the same trade the Spotify importer makes.
 struct AppleMusicImportView: View {
-    @Environment(\.dismiss) private var dismiss
+    let onDone: () -> Void
+
     @Environment(\.modelContext) private var modelContext
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.openURL) private var openURL
@@ -28,18 +30,10 @@ struct AppleMusicImportView: View {
     @State private var isImporting = false
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Apple Music")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
-                            .disabled(isImporting)
-                    }
-                }
-        }
-        .task { await start() }
+        content
+            .navigationTitle("Apple Music")
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await start() }
     }
 
     @ViewBuilder
@@ -202,7 +196,7 @@ struct AppleMusicImportView: View {
                 }
             }
             if imported > 0 {
-                dismiss()
+                onDone()
             } else {
                 phase = .failed("Those playlists couldn't be imported.")
             }

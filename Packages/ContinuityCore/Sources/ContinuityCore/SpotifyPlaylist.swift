@@ -72,6 +72,27 @@ public enum SpotifyPlaylist {
         return SpotifyPlaylistContents(name: name, tracks: tracks)
     }
 
+    /// Parses the embed page of a single track (`open.spotify.com/embed/track/{id}`): the entity
+    /// carries `name`/`title`, the artist as `subtitle` or `artists[].name`, and `duration` in ms.
+    public static func parseTrack(html: String) -> SpotifyTrack? {
+        guard let json = nextDataJSON(in: html),
+              let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+
+        var found: [String: Any]?
+        JSONNav.walk(root) { dict in
+            guard found == nil, (dict["type"] as? String) == "track" || dict["entityType"] as? String == "track",
+                  (dict["name"] as? String ?? dict["title"] as? String)?.isEmpty == false else { return }
+            found = dict
+        }
+        guard let entity = found, let title = (entity["name"] as? String) ?? (entity["title"] as? String) else { return nil }
+
+        let artistNames = (entity["artists"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
+        let artist = artistNames.isEmpty ? (entity["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 } : artistNames.joined(separator: ", ")
+        let ms = (entity["duration"] as? NSNumber)?.doubleValue ?? (entity["duration_ms"] as? NSNumber)?.doubleValue
+        return SpotifyTrack(title: title, artist: artist, durationSeconds: ms.map { Int(($0 / 1000).rounded()) })
+    }
+
     /// Returns the contents of the `<script id="__NEXT_DATA__" …>{ … }</script>` tag.
     static func nextDataJSON(in html: String) -> String? {
         guard let idRange = html.range(of: "id=\"__NEXT_DATA__\""),

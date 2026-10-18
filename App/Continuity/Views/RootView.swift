@@ -228,7 +228,7 @@ struct RootView: View {
         return true
     }
 
-    /// Same import path AddMusicView uses; failures surface in the "Import Failed" alert.
+    /// Same import path the import hub uses; failures surface in the "Import Failed" alert.
     private func startImport(_ pending: PendingLinkImport) {
         Task {
             do {

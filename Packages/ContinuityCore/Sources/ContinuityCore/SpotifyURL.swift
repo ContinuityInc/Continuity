@@ -1,8 +1,8 @@
 import Foundation
 
-/// A Spotify link we can act on: a playlist or album, plus its base-62 ID.
+/// A Spotify link we can act on: a playlist, album or single track, plus its base-62 ID.
 public struct SpotifyLink: Equatable, Sendable {
-    public enum Kind: String, Sendable { case playlist, album }
+    public enum Kind: String, Sendable { case playlist, album, track }
     public var kind: Kind
     public var id: String
 
@@ -10,15 +10,20 @@ public struct SpotifyLink: Equatable, Sendable {
         self.kind = kind
         self.id = id
     }
+
+    /// Whether this is a collection (imported as its own playlist) vs. one song.
+    public var isCollection: Bool { kind != .track }
 }
 
-/// Pure parsing of Spotify playlist/album links into a `(kind, id)` pair. No networking — this
-/// turns whatever a user pastes into something the resolver can fetch. Accepts the open.spotify.com
-/// web links (including `/embed/…` and locale-prefixed `/intl-xx/…` paths, with or without `?si=`),
-/// and the `spotify:` URI scheme. Locked down by unit tests.
+/// Pure parsing of Spotify playlist/album/track links into a `(kind, id)` pair. No networking —
+/// this turns whatever a user pastes into something the resolver can fetch. Accepts the
+/// open.spotify.com web links (including `/embed/…` and locale-prefixed `/intl-xx/…` paths, with or
+/// without `?si=`), and the `spotify:` URI scheme. Locked down by unit tests.
 public enum SpotifyURL {
 
-    /// Parses a raw string. Returns nil if it isn't a recognisable Spotify playlist/album reference.
+    private static let kinds: Set<String> = ["playlist", "album", "track"]
+
+    /// Parses a raw string. Returns nil if it isn't a recognisable Spotify playlist/album/track reference.
     public static func parse(_ raw: String) -> SpotifyLink? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -26,7 +31,7 @@ public enum SpotifyURL {
         // URI form: spotify:playlist:ID  /  spotify:album:ID  (optionally spotify:user:x:playlist:ID)
         if trimmed.lowercased().hasPrefix("spotify:") {
             let parts = trimmed.split(separator: ":").map(String.init)
-            if let kindIndex = parts.firstIndex(where: { $0 == "playlist" || $0 == "album" }),
+            if let kindIndex = parts.firstIndex(where: { kinds.contains($0) }),
                kindIndex + 1 < parts.count,
                let kind = SpotifyLink.Kind(rawValue: parts[kindIndex]),
                isValidID(parts[kindIndex + 1]) {
@@ -44,8 +49,8 @@ public enum SpotifyURL {
         }
 
         let segments = comps.path.split(separator: "/").map(String.init)
-        // Find the "playlist"/"album" segment (handles /embed/playlist/ID and /intl-xx/playlist/ID).
-        guard let kindIndex = segments.firstIndex(where: { $0 == "playlist" || $0 == "album" }),
+        // Find the "playlist"/"album"/"track" segment (handles /embed/playlist/ID and /intl-xx/playlist/ID).
+        guard let kindIndex = segments.firstIndex(where: { kinds.contains($0) }),
               kindIndex + 1 < segments.count,
               let kind = SpotifyLink.Kind(rawValue: segments[kindIndex]),
               isValidID(segments[kindIndex + 1]) else {

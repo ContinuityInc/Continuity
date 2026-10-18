@@ -4,14 +4,16 @@ import Ingest
 import Domain
 import ContinuityCore
 
-/// Single home for link → import routing, shared by AddMusicView and the URL-scheme /
-/// clipboard handlers so YouTube/Spotify classification lives in exactly one place.
+/// Single home for link → import routing, shared by the import hub and the URL-scheme /
+/// clipboard / share-extension handlers so YouTube/Spotify/SoundCloud classification lives in
+/// exactly one place.
 @MainActor
 enum LinkImporter {
 
     /// What a raw link resolves to.
     enum Link {
         case spotify(SpotifyLink)
+        case soundcloud(SoundCloudLink)
         case youtubePlaylist(String)
         case youtubeVideo(String)
 
@@ -19,14 +21,27 @@ enum LinkImporter {
         var sourceName: String {
             switch self {
             case .spotify: return "Spotify"
+            case .soundcloud: return "SoundCloud"
             case .youtubePlaylist, .youtubeVideo: return "YouTube"
             }
         }
 
-        /// Whether this imports a whole playlist (vs. adding a single video).
+        /// The connected-account service this link belongs to.
+        var service: MusicService {
+            switch self {
+            case .spotify: return .spotify
+            case .soundcloud: return .soundcloud
+            case .youtubePlaylist, .youtubeVideo: return .youtube
+            }
+        }
+
+        /// Whether this imports a whole collection (vs. adding a single song).
         var isPlaylistImport: Bool {
             switch self {
-            case .spotify, .youtubePlaylist: return true
+            case .spotify(let link): return link.isCollection
+            // A short link is classified by its redirect; treat it as a collection for the UI.
+            case .soundcloud(let link): return link.kind != .track
+            case .youtubePlaylist: return true
             case .youtubeVideo: return false
             }
         }
@@ -35,6 +50,12 @@ enum LinkImporter {
         var noun: String {
             switch self {
             case .spotify(let link): return "Spotify \(link.kind.rawValue)"
+            case .soundcloud(let link):
+                switch link.kind {
+                case .track: return "SoundCloud track"
+                case .playlist: return "SoundCloud set"
+                case .shortLink: return "SoundCloud link"
+                }
             case .youtubePlaylist: return "playlist"
             case .youtubeVideo: return "video"
             }
@@ -46,6 +67,7 @@ enum LinkImporter {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let link = SpotifyURL.parse(trimmed) { return .spotify(link) }
+        if let link = SoundCloudURL.parse(trimmed) { return .soundcloud(link) }
         if let link = YouTubeURL.parse(trimmed) {
             if let playlistID = link.playlistID { return .youtubePlaylist(playlistID) }
             if let videoID = link.videoID { return .youtubeVideo(videoID) }
@@ -53,8 +75,8 @@ enum LinkImporter {
         return nil
     }
 
-    /// Kicks off the import for a classified link. Playlist imports resolve before returning;
-    /// single videos enqueue instantly. Throws the raw resolver error — map it with
+    /// Kicks off the import for a classified link. Collection imports resolve before returning;
+    /// single YouTube videos enqueue instantly. Throws the raw resolver error — map it with
     /// `errorMessage(_:noun:)` for display.
     static func run(
         _ link: Link,
@@ -63,8 +85,12 @@ enum LinkImporter {
         in modelContext: ModelContext
     ) async throws {
         switch link {
-        case .spotify(let spotifyLink):
+        case .spotify(let spotifyLink) where spotifyLink.isCollection:
             _ = try await queue.importSpotifyPlaylist(spotifyLink, in: modelContext)
+        case .spotify(let spotifyLink):
+            _ = try await queue.importSpotifyTrack(spotifyLink, sourceURL: sourceURL, in: modelContext)
+        case .soundcloud(let soundcloudLink):
+            _ = try await queue.importSoundCloudLink(soundcloudLink, sourceURL: sourceURL, in: modelContext)
         case .youtubePlaylist(let playlistID):
             _ = try await queue.importPlaylist(playlistID: playlistID, in: modelContext)
         case .youtubeVideo(let videoID):
@@ -83,6 +109,14 @@ enum LinkImporter {
             return "Too many requests right now — please try again in a minute."
         case .sourceUnavailable:
             return "That \(noun) looks private or empty. Make sure it's public and try again."
+        case .notSignedIn(let service):
+            return "Connect your \(service.displayName) account to import that \(noun)."
+        case .notConfigured(let service):
+            return "\(service.displayName) sign-in isn't set up in this build."
+        case .authorizationFailed(let reason) where reason == "cancelled":
+            return "Sign-in was cancelled."
+        case .authorizationFailed:
+            return "Sign-in didn't complete. Please try again."
         default:
             return "Couldn't import that \(noun). Please try again."
         }
