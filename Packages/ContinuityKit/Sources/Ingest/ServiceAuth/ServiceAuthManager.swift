@@ -33,11 +33,12 @@ public final class ServiceAuthManager {
     private var activeSession: ASWebAuthenticationSession?
     private let presenter = WebAuthPresenter()
 
-    public init(
-        configuration: ServiceAuthConfiguration = .fromBundle(),
-        store: CredentialStore = KeychainStore(),
-        session: URLSession = .shared
-    ) {
+    public convenience init(configuration: ServiceAuthConfiguration = .fromBundle(), session: URLSession = .shared) {
+        self.init(configuration: configuration, store: KeychainStore(), session: session)
+    }
+
+    /// `CredentialStore` is module-internal, so the storage seam stays off the public surface.
+    init(configuration: ServiceAuthConfiguration, store: CredentialStore, session: URLSession = .shared) {
         self.configuration = configuration
         self.store = store
         self.session = session
