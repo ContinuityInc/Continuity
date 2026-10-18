@@ -47,7 +47,8 @@ unlimited and walk a persistent play history. The full library (playlists, mini 
 detailed Now Playing with live transition settings and presets) lives in a sheet.
 
 **Up Next** — a queue sheet shows what plays next: drag to reorder, swipe to remove, and
-"Play Next" context menus throughout the library. A **Flow** toggle reorders the upcoming
+"Play Next" / "Rename" context menus throughout the library (a rename edits only the
+displayed title and artist — audio, stems and analysis stay put). A **Flow** toggle reorders the upcoming
 tracks by key and tempo, like a DJ set — Camelot-wheel compatibility plus BPM proximity
 (half/double-time pairs count as equal tempo), anchored on the current track. Pure logic in
 `ContinuityCore/FlowOrdering`.

@@ -10,6 +10,8 @@ struct PlaylistDetailView: View {
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
 
@@ -44,6 +46,11 @@ struct PlaylistDetailView: View {
                         } label: {
                             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
+                        Button {
+                            trackPendingRename = track
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
                         if !track.isDemo, track.prepState != .ready {
                             Button {
                                 prepQueue.prioritize(track, in: modelContext)
@@ -67,6 +74,7 @@ struct PlaylistDetailView: View {
         .scrollContentBackground(.hidden)
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
+        .renameTrackSheet(for: $trackPendingRename)
         // Pushed destinations don't inherit insets added outside the NavigationStack, so the
         // dock is attached here too — this is what keeps the bar off the last row.
         .miniPlayerDock()
