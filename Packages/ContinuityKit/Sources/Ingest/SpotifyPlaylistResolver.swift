@@ -18,7 +18,7 @@ final class SpotifyPlaylistResolver: SpotifyPlaylistResolving {
     init() {}
 
     func resolvePlaylist(_ link: SpotifyLink) async throws -> ResolvedSpotifyPlaylist {
-        guard let url = URL(string: "https://open.spotify.com/embed/\(link.kind.rawValue)/\(link.id)") else {
+        guard link.isCollection, let url = URL(string: "https://open.spotify.com/embed/\(link.kind.rawValue)/\(link.id)") else {
             throw IngestError.invalidURL
         }
 
@@ -37,6 +37,25 @@ final class SpotifyPlaylistResolver: SpotifyPlaylistResolving {
             }
         } catch {
             spotifyLog.error("resolve \(link.id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            throw error
+        }
+    }
+
+    func resolveTrack(_ link: SpotifyLink) async throws -> SpotifyTrack {
+        guard link.kind == .track, let url = URL(string: "https://open.spotify.com/embed/track/\(link.id)") else {
+            throw IngestError.invalidURL
+        }
+        do {
+            return try await Retry.run {
+                let html = try await self.fetchEmbedHTML(url)
+                guard let track = SpotifyPlaylist.parseTrack(html: html) else {
+                    spotifyLog.error("reached track \(link.id, privacy: .public) but found no track entity (unavailable or shape change)")
+                    throw IngestError.sourceUnavailable
+                }
+                return track
+            }
+        } catch {
+            spotifyLog.error("resolve track \(link.id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             throw error
         }
     }

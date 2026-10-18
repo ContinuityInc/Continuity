@@ -33,8 +33,14 @@ public final class PreparationQueue {
     let playlistResolver: PlaylistResolving
     /// Resolves a Spotify playlist/album to its tracklist (metadata only).
     let spotifyResolver: SpotifyPlaylistResolving
+    /// Resolves a SoundCloud set/track anonymously (metadata only).
+    let soundcloudResolver: SoundCloudResolving
     /// Reads playlists out of the user's on-device Apple Music library (metadata only).
     let appleMusicLibrary: AppleMusicLibraryReading
+    /// Connected Spotify / YouTube / SoundCloud accounts — sign-in state and bearer tokens.
+    public let serviceAuth: ServiceAuthManager
+    /// Official-API readers for each connected service, keyed by service.
+    let connectedLibraries: [MusicService: ConnectedLibraryReading]
     /// Finds a YouTube video for a Spotify-sourced track (title + artist → video ID).
     let searcher: YouTubeSearching
     /// Resolves a video's real title/channel (replaces bare-ID placeholders).
@@ -61,7 +67,10 @@ public final class PreparationQueue {
         resolver: AudioStreamResolving = YouTubeStreamResolver(),
         playlistResolver: PlaylistResolving = YouTubePlaylistResolver(),
         spotifyResolver: SpotifyPlaylistResolving = SpotifyPlaylistResolver(),
+        soundcloudResolver: SoundCloudResolving = SoundCloudPlaylistResolver(),
         appleMusicLibrary: AppleMusicLibraryReading = AppleMusicLibraryReader(),
+        serviceAuth: ServiceAuthManager? = nil,
+        connectedLibraries: [ConnectedLibraryReading] = [SpotifyAPIClient(), YouTubeDataAPIClient(), SoundCloudAPIClient()],
         searcher: YouTubeSearching = YouTubeSearchResolver(),
         metadataResolver: VideoMetadataResolving = YouTubeOEmbedResolver(),
         downloader: AudioFileDownloading = AudioDownloader()
@@ -69,7 +78,11 @@ public final class PreparationQueue {
         self.resolver = resolver
         self.playlistResolver = playlistResolver
         self.spotifyResolver = spotifyResolver
+        self.soundcloudResolver = soundcloudResolver
         self.appleMusicLibrary = appleMusicLibrary
+        // Default argument can't construct a main-actor type; resolve it here instead.
+        self.serviceAuth = serviceAuth ?? ServiceAuthManager()
+        self.connectedLibraries = Dictionary(uniqueKeysWithValues: connectedLibraries.map { ($0.service, $0) })
         self.searcher = searcher
         self.metadataResolver = metadataResolver
         self.downloader = downloader
