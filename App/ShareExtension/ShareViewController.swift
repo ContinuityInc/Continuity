@@ -63,7 +63,7 @@ final class ShareViewController: UIViewController {
     /// would silently drop it after we already told the user it worked.
     private func acceptIfImportable(_ url: URL) {
         let raw = url.absoluteString
-        let importable = SpotifyURL.parse(raw) != nil || YouTubeURL.parse(raw) != nil
+        let importable = SpotifyURL.parse(raw) != nil || YouTubeURL.parse(raw) != nil || SoundCloudURL.parse(raw) != nil
         guard importable else { return finishUnsupported() }
         stash(url)
     }
