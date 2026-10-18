@@ -15,17 +15,21 @@ extension PreparationQueue {
         // whole separation pipeline in/out of a memory repro in one run, no code edits.
         if UserDefaults.standard.bool(forKey: "debug.disableStemSeparation") { return }
         protectedStemKeys = Set(tracks.map(\.stemKey))
-        // First stem demand of the session = playback just started. Hold separation for a
-        // minute so its peak never stacks on engine/UI/download ramp-up.
-        if separationAllowedAt == nil { separationAllowedAt = Date().addingTimeInterval(60) }
+        // First stem demand of the session = playback just started. Hold separation so its
+        // peak never stacks on engine/UI/download ramp-up; longer on low-end tiers.
+        if separationAllowedAt == nil {
+            separationAllowedAt = Date().addingTimeInterval(AdaptiveQuality.stemHoldSeconds())
+        }
         let holdActive = Date() < (separationAllowedAt ?? .distantPast)
+        // Thermal / Low Power Mode: keep reconciling + LRU marks, but don't open ORT.
+        let deferSeparation = AdaptiveQuality.shouldDeferStemSeparation()
         for track in tracks {
             guard !track.isDemo, track.prepState == .ready,
                   track.localRelativePath != nil else { continue }
             reconcileStemLinks(track, in: context)
             if track.hasStems {
                 StemCache.markUsed(key: track.stemKey)   // actively played material stays cache-resident
-            } else if holdActive {
+            } else if holdActive || deferSeparation {
                 scheduleDeferredStemsRetry(for: tracks, in: context)
             } else {
                 separateStems(track, in: context)
@@ -170,6 +174,20 @@ extension PreparationQueue {
                 MemoryFootprint.breadcrumb("separation task begin")
                 let modelURL = try await StemModelStore.ensureModel()
                 MemoryFootprint.breadcrumb("model ensured")
+                // Re-check after the (possibly long) model download/wait: headroom can collapse
+                // between the pre-slot gate and session load, which is the historical jetsam peak.
+                let headroomAfterModel = MemoryFootprint.headroomMB
+                guard headroomAfterModel > StemSeparationBudget.requiredStartMB else {
+                    Logger.stems.notice("deferring separation for \(key, privacy: .public): \(headroomAfterModel) MB headroom after model ensure < \(StemSeparationBudget.requiredStartMB) MB required")
+                    await limiter.release()
+                    let queueDrained = await MainActor.run { () -> Bool in
+                        guard let self else { return true }
+                        self.stemsInFlight.remove(key)
+                        return self.stemsInFlight.isEmpty
+                    }
+                    if queueDrained { OnnxStemSeparator.releaseSession() }
+                    return
+                }
                 let separator = OnnxStemSeparator(modelURL: modelURL)
                 _ = try separator.separate(inputURL: inputURL, vocalsOut: vocalsOut, accompanimentOut: accompanimentOut)
                 await MainActor.run {

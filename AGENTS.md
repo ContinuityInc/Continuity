@@ -128,7 +128,13 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   library eagerly (that's CPU-hours and gigabytes). `Player.onUpcomingTracks` drives
   just-in-time separation of the play-queue neighborhood **after playback starts**.
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
-  reference to a freed `@Model` crashes.
+ reference to a freed `@Model` crashes.
+- **Never call an AVFAudio node/engine method raw in Playback.** `play()/stop()/pause()/
+ schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
+ engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
+ inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
+ `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+ Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
 - **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`

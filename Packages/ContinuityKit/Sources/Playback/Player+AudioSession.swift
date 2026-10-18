@@ -117,8 +117,7 @@ extension Player {
         if wasPlaying {
             // ensureCurrentLoaded() builds the fresh stack, reloads the current track, and
             // applies the staged seek — the same funnel as first play after launch.
-            if ensureCurrentLoaded(), let audio {
-                audio.current.play()
+            if ensureCurrentLoaded(), startCurrentDeck(context: "mediaServicesReset") {
                 isPlaying = true
                 startTimer()
             }
@@ -169,7 +168,8 @@ extension Player {
         // Engine stops invalidate node schedules — reschedule from where the clock stood.
         if audio.current.seekRealFile(to: position) {
             baselineSeconds = position
-            audio.current.play()
+            // A refusal stages the position, pauses and persists through the failure funnel.
+            guard startCurrentDeck(context: "recoverPlayback") else { return }
             isPlaying = true
             startTimer()
         } else if audio.current.hasRealFile {

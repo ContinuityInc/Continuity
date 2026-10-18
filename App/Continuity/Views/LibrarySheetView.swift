@@ -132,23 +132,33 @@ private struct DownloadsToolbarButton: View {
 
     var body: some View {
         let count = prepQueue.ingestJobs.count
+        // Toolbar buttons get a tight width proposal; without fixedSize the count wraps
+        // inside the capsule (e.g. "480" → "48" / "0"), which is the mangled purple badge.
+        let badge = count > 99 ? "99+" : "\(count)"
         return Button {
             showingDownloads = true
         } label: {
             Image(systemName: count == 0 ? "arrow.down.circle" : "arrow.down.circle.fill")
+                .overlay(alignment: .topTrailing) {
+                    if count > 0 {
+                        Text(badge)
+                            .font(.system(size: 9, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, count >= 10 ? 4 : 0)
+                            .frame(minWidth: 14, minHeight: 14)
+                            .background(.tint, in: Capsule())
+                            .lineLimit(1)
+                            .fixedSize()
+                            .offset(x: 8, y: -8)
+                            .accessibilityHidden(true)
+                    }
+                }
+                // Keep the trailing badge inside the tap target; otherwise it clips
+                // against the nav title and looks like stacked fragments.
+                .padding(.trailing, count > 0 ? 10 : 0)
+                .padding(.top, count > 0 ? 6 : 0)
         }
-        .accessibilityLabel("Downloads")
-        .overlay(alignment: .topTrailing) {
-            if count > 0 {
-                Text("\(count)")
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(.tint, in: Capsule())
-                    .foregroundStyle(.white)
-                    .offset(x: 8, y: -8)
-                    .accessibilityHidden(true)
-            }
-        }
+        .accessibilityLabel(count == 0 ? "Downloads" : "Downloads, \(count) in progress")
     }
 }

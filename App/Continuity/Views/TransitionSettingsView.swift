@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Playback
 import Domain
 import ContinuityCore
@@ -114,6 +115,22 @@ struct TransitionSettingsView: View {
                 } footer: {
                     Text("Beatmatching tempo-matches and beat-aligns tracks with a detected grid. Bass swap fades the incoming low end in so basslines don't clash. Harmonic mixing nudges the incoming track up to a semitone into a compatible key. Vocal handling shapes how vocals overlap once stems are separated.")
                 }
+
+                // MARK: Diagnostics — crash forensics the owner can share after a bad session
+                Section {
+                    LabeledContent("Unclean exits", value: "\(CrashDiagnostics.shared.uncleanExitCount)")
+                    LabeledContent("Audio faults absorbed", value: "\(AVFAudioGuard.caughtExceptionCount)")
+                    ShareLink(
+                        item: DiagnosticsReport(),
+                        preview: SharePreview("Continuity diagnostics", image: Image(systemName: "waveform.badge.exclamationmark"))
+                    ) {
+                        Label("Export Diagnostics Report", systemImage: "square.and.arrow.up")
+                    }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("Unclean exits counts sessions that ended while the app was in the foreground without a normal exit. Audio faults absorbed are audio-engine errors this session that would previously have crashed the app. The report includes the system's crash records for Continuity and contains no library or account data.")
+                }
             }
             .navigationTitle("Transition")
             .navigationBarTitleDisplayMode(.inline)
@@ -131,6 +148,17 @@ struct TransitionSettingsView: View {
         case .linear: return "Linear"
         case .equalPower: return "Equal Power"
         case .smooth: return "Smooth"
+        }
+    }
+}
+
+/// Builds the diagnostics report lazily — only when the share sheet actually exports it — so
+/// opening the settings sheet never touches the filesystem.
+private struct DiagnosticsReport: Transferable {
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .plainText) { _ in
+            let url = try await MainActor.run { try CrashDiagnostics.shared.writeReport() }
+            return SentTransferredFile(url)
         }
     }
 }
