@@ -16,40 +16,55 @@ struct NowPlayingView: View {
     /// Current track whose rename sheet is up (long-press on the title).
     @State private var trackPendingRename: Track?
 
+    /// Measured page size. Written only when the window resizes (fold/unfold, iPhone Mirroring
+    /// drags), never on playback ticks, so it doesn't put this body on the 20 Hz path.
+    @State private var pageSize: CGSize = .zero
+
     var body: some View {
         // No backdrop here: MainPagerView supplies AlbumBackdrop as the page BACKGROUND
         // (behind the safe-area padding) so the blur fills the physical screen.
-        VStack(spacing: 20) {
-            // Top spacer clears the Library chevron overlay; bottom one reserves the band the
-            // vote bar + Up Next chevron overlays float in, so the column never collides.
-            Spacer(minLength: 44)
-
-            if let track = player.currentTrack {
-                artworkTile(for: track)
+        let width = Double(pageSize.width)
+        let height = Double(pageSize.height)
+        let arrangement = NowPlayingLayout.arrangement(width: width, height: height)
+        let artworkSide = CGFloat(NowPlayingLayout.artworkMaxSide(arrangement, width: width, height: height))
+        Group {
+            switch arrangement {
+            case .column:
+                VStack(spacing: 20) {
+                    // Top spacer clears the Library chevron overlay; bottom one reserves the band
+                    // the vote bar + Up Next chevron overlays float in, so the column never collides.
+                    Spacer(minLength: 44)
+                    if let track = player.currentTrack {
+                        artworkTile(for: track, maxSide: artworkSide)
+                    }
+                    controls
+                    Spacer(minLength: 96)
+                }
+                // Wide-but-short windows stay a column; keep the scrubber/transport phone-sized.
+                .frame(maxWidth: CGFloat(NowPlayingLayout.columnMaxWidth))
+            case .sideBySide:
+                // iPhone Duo inner display / wide iPhone Mirroring window: artwork beside the
+                // controls, the same chevron bands above and below.
+                VStack(spacing: 0) {
+                    Spacer(minLength: 44)
+                    HStack(spacing: 40) {
+                        if let track = player.currentTrack {
+                            artworkTile(for: track, maxSide: artworkSide)
+                        }
+                        VStack(spacing: 20) { controls }
+                            .frame(maxWidth: 440)
+                    }
+                    Spacer(minLength: 96)
+                }
             }
-
-            trackLabel
-
-            // Live blend graph while a transition is in flight, or a preview + countdown of
-            // the next scheduled blend.
-            TransitionSection()
-
-            if player.currentTrack != nil {
-                ScrubberBar()
-            }
-
-            transport
-                .padding(.top, 2)
-
-            transitionChip
-
-            Spacer(minLength: 96)
         }
         .padding(.horizontal, 24)
         // Greedy on purpose: the backdrop used to be the layer that stretched this page to
         // full height; without it the column hugs its content and the page collapses to a
         // centered band (with the chevron overlays piling onto the transport).
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Re-decided on every resize: a fold moves the app between displays mid-session.
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { pageSize = $0 }
         .animation(.easeInOut, value: player.isTransitioning)
         .overlay(alignment: .top) {
             pageChevron(
@@ -84,9 +99,27 @@ struct NowPlayingView: View {
         .renameTrackSheet(for: $trackPendingRename)
     }
 
+    /// Everything below the artwork, shared by both arrangements.
+    @ViewBuilder private var controls: some View {
+        trackLabel
+
+        // Live blend graph while a transition is in flight, or a preview + countdown of
+        // the next scheduled blend.
+        TransitionSection()
+
+        if player.currentTrack != nil {
+            ScrubberBar()
+        }
+
+        transport
+            .padding(.top, 2)
+
+        transitionChip
+    }
+
     // MARK: Artwork
 
-    private func artworkTile(for track: Track) -> some View {
+    private func artworkTile(for track: Track, maxSide: CGFloat) -> some View {
         let soft = AdaptiveQuality.prefersOpaqueChrome()
         return RemoteArtworkView(
             url: track.artworkURL,
@@ -96,7 +129,7 @@ struct NowPlayingView: View {
             maxPixel: CGFloat(AdaptiveQuality.heroArtworkMaxPixel()),
             cropsLetterbox: true
         )
-            .frame(maxWidth: 280)
+            .frame(maxWidth: maxSide)
             .aspectRatio(1, contentMode: .fit)
             // Playing = full size with a lifted shadow; paused = drawn back, like a record
             // easing off the platter. Softened on constrained tiers — large soft shadows are GPU-heavy.

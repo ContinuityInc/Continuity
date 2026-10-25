@@ -45,6 +45,10 @@ struct MainPagerView: View {
                     mounted(.nowPlaying) { NowPlayingView() }
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
+                        // iPhone Duo's inner display puts the status bar on the RIGHT edge, so
+                        // the side insets are real there (and in landscape-shaped windows).
+                        .padding(.leading, insets.leading)
+                        .padding(.trailing, insets.trailing)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
                     mounted(.upNext) { UpNextView() }
