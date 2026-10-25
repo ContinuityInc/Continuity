@@ -445,6 +445,10 @@ private struct MusicKeyboardView: View {
                 }
                 bottomRow
             }
+            // Phone-sized keys on wide windows (iPhone Duo inner display): stretched across
+            // ~800pt the rows become a reach test. The opaque plane still spans the full width.
+            .frame(maxWidth: 640)
+            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 4)
         .padding(.top, 8)
