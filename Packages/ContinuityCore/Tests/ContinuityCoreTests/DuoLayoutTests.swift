@@ -34,14 +34,19 @@ final class DuoLayoutTests: XCTestCase {
 
     func testFoldAwareColumnCountIsEvenAndPositive() {
         let result = DuoLayout.foldAwareColumnCount(
-            contentWidth: 867, contentHeight: 669, leadingInset: 0, trailingInset: 84
+            viewportWidth: 867, viewportHeight: 669, leadingInset: 0, trailingInset: 84
         )
         XCTAssertNotNil(result)
         XCTAssertGreaterThanOrEqual(result!.perSide, 1)
         XCTAssertGreaterThan(result!.gutter, 0)
         // Phone-shaped window: no fold-aware grid.
         XCTAssertNil(DuoLayout.foldAwareColumnCount(
-            contentWidth: 402, contentHeight: 874, leadingInset: 0, trailingInset: 0
+            viewportWidth: 402, viewportHeight: 874, leadingInset: 0, trailingInset: 0
+        ))
+        // A tall *content* height must not be passed here — but if the viewport itself is
+        // tall (outer display / portrait mirroring), keep the adaptive grid.
+        XCTAssertNil(DuoLayout.foldAwareColumnCount(
+            viewportWidth: 867, viewportHeight: 1200, leadingInset: 0, trailingInset: 84
         ))
     }
 
