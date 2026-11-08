@@ -130,11 +130,15 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
  reference to a freed `@Model` crashes.
 - **Never call an AVFAudio node/engine method raw in Playback.** `play()/stop()/pause()/
- schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
- engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
- inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
- `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
- Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
+  engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
+  inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
+  `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+  Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  Configuration-change recovery must go through `scheduleRecoverPlayback` (never call
+  `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
+  posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
+  residual crash class after the shim.
 - **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`

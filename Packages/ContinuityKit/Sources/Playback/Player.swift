@@ -200,6 +200,11 @@ public final class Player {
     /// automatic retries in `Player+DeckFailure`. Reset by `startCurrentFresh` and user play.
     @ObservationIgnored var deckStartFailures = 0
 
+    /// Coalesces nested `recoverPlayback` entries. `engine.start()` / session activation can
+    /// post `.AVAudioEngineConfigurationChange` synchronously on the main queue; without this
+    /// flag the observer re-enters recovery mid-reschedule and double-touches the decks.
+    @ObservationIgnored var isRecoveringPlayback = false
+
     /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
     /// can drop the old registrations instead of stacking duplicate handlers.
     var audioEnvironmentObservers: [NSObjectProtocol] = []
@@ -516,7 +521,9 @@ public final class Player {
         // asynchronously. Never let transition scheduling touch player nodes in that gap.
         guard audio.engine.isRunning else {
             Logger.audio.error("playback tick found stopped engine — recovering")
-            recoverPlayback(force: true)
+            // Async: the tick runs under the display timer; keep recovery off this call stack
+            // so a nested configuration-change notification cannot reenter mid-tick.
+            scheduleRecoverPlayback(force: true)
             return
         }
         // If the clock baseline has been corrupted (a stale render time survived long enough
