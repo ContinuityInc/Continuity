@@ -134,6 +134,7 @@ struct TransitionSettingsView: View {
             }
             .navigationTitle("Transition")
             .navigationBarTitleDisplayMode(.inline)
+            .readableScrollColumn()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

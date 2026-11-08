@@ -125,6 +125,16 @@ never finish the job. Fixes (keep all):
   tracks don't end in an audible cut. `isUserInitiatedSkipTransition` prevents double-spend.
   `Player.displayProgress` blends outgoing/incoming fractions by `transitionProgress` so
   progress UI glides across song changes.
+- **iPhone Duo (foldable, Oct 2026)**: the inner display hands the app a wide, near-square,
+  regular/regular window that resizes on fold/unfold, with the status bar on the RIGHT edge
+  (top inset ≈ 0). Layout decisions come from measured page size (`ContinuityCore.NowPlayingLayout`
+  + `DuoLayout`, pinned by Linux tests), never from idiom, orientation, size-class-as-iPad or
+  `UIScreen`. Now Playing goes side-by-side when wide; Library grid splits evenly around the
+  physical fold (panel midpoint, insets included); search keyboard and readable chrome stay
+  phone-width; every page honours leading/trailing insets; chevrons get a minimum top margin
+  when the top inset collapses. Landscape is allowed for the outer-display tent pose. Apps
+  built with the iOS 26 SDK are letterboxed on the inner display; edge-to-edge needs the
+  iOS 27.1 SDK (Xcode 27.1) — the TestFlight job uses the newest Xcode on the runner.
 - `Player.prepare`/`restore` stay **metadata-only** (no engine build, no `notifyUpcoming()`)
   — see AGENTS.md jetsam gotcha.
 
