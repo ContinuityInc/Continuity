@@ -92,14 +92,26 @@ never finish the job. Fixes (keep all):
  a real trap in its first run (`Double(Int64.max)` rounds up → `Int64(_:)` overflow), which is
  the point: crash-class math must be testable without a phone.
 - Field evidence: `App/Continuity/Library/CrashDiagnostics.swift` subscribes to MetricKit
- (crash signal/exception type/termination reason/ObjC exception message → `crash` log
- category + JSON in Application Support/Diagnostics) and keeps a dirty-session marker
- (unclean foreground exits counted even without a payload). Transition settings →
- Diagnostics → "Export Diagnostics Report" shares it. **Ask for that report before reasoning
- about a crash from symptoms.**
+  (crash signal/exception type/termination reason/ObjC exception message → `crash` log
+  category + JSON in Application Support/Diagnostics) and keeps a dirty-session marker
+  (unclean foreground exits counted even without a payload). Transition settings →
+  Diagnostics → "Export Diagnostics Report" shares it. **Ask for that report before reasoning
+  about a crash from symptoms.**
+- Residual "transient" crashes after the shim (Nov 2026): the shim stopped *node* calls from
+  aborting, but recovery itself could still kill the process. Root cause: NotificationCenter
+  delivers main-queue observers **synchronously** when the poster is on main, and
+  `engine.start()` / session activation inside `recoverPlayback` posts
+  `.AVAudioEngineConfigurationChange`. That re-entered recovery mid-reschedule (double
+  disconnect/connect/schedule → format assertions the shim then had to absorb on a half-built
+  graph, or a nested start that never settled). Fix: `isRecoveringPlayback` coalesce flag,
+  always `scheduleRecoverPlayback` (next main-queue turn) from observers + the tick path,
+  reconnect both decks' player→mixer buses *before* `ensureRunning`, and open `AVAudioFile` /
+  write time-pitch params through the same ObjC boundary. Keep asking for the diagnostics
+  report — `AVFAudio exceptions caught this session` should now climb instead of the process
+  dying when a route flaps during recovery.
 - Stacked-PR trap: #158/#159 were merged into their *base branches* after #157 had merged
- into main, so GitHub showed them merged while main never got the code (re-landed in #161).
- Merge stacks top-down, or delete head branches on merge so GitHub retargets.
+  into main, so GitHub showed them merged while main never got the code (re-landed in #161).
+  Merge stacks top-down, or delete head branches on merge so GitHub retargets.
 
 ### UI architecture decisions
 - **20 Hz `position` writes must not reach heavy views**: only leaf views

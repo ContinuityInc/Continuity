@@ -35,7 +35,9 @@ extension Player {
                     self?.pauseForEnvironment()
                 case .ended where options.contains(.shouldResume):
                     Logger.audio.info("interruption ended — resuming")
-                    self?.recoverPlayback()
+                    // Defer: interruption-end handlers can nest under session activation, and
+                    // a sync recoverPlayback → ensureRunning → start() can re-post this.
+                    self?.scheduleRecoverPlayback(force: false)
                 default:
                     break
                 }
@@ -80,13 +82,16 @@ extension Player {
                                   currentEngine === engine,
                                   !engine.isRunning else { return }
                             Logger.audio.error("engine stopped after configuration callback — recovering")
-                            self.recoverPlayback(force: true)
+                            self.scheduleRecoverPlayback(force: true)
                         }
                     }
                     return
                 }
                 Logger.audio.info("engine configuration change — recovering playback")
-                self.recoverPlayback(force: true)
+                // Always async: NotificationCenter delivers main-queue observers *synchronously*
+                // when the poster is on main, and `engine.start()` inside recovery is a known
+                // poster. Sync re-entry was the residual "transient" crash after the AVFAudio shim.
+                self.scheduleRecoverPlayback(force: true)
             }
         })
 
@@ -138,15 +143,40 @@ extension Player {
         persistState()       // lock screen should show paused immediately
     }
 
+    /// Posts recovery onto the next main-queue turn so a notification delivered synchronously
+    /// from inside `engine.start()` / session activation cannot re-enter `recoverPlayback`.
+    func scheduleRecoverPlayback(force: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                self?.recoverPlayback(force: force)
+            }
+        }
+    }
+
     /// Restarts the engine and reschedules the current track at the current position. `force`
     /// recovers even without a preceding `pauseForEnvironment` (configuration changes stop the
     /// engine without an interruption notification).
     func recoverPlayback(force: Bool = false) {
+        // Nested entry (sync notification from start(), or overlapping async schedules) must
+        // not double-disconnect / double-schedule the decks — that is the residual crash class
+        // after the AVFAudio exception shim: recovery itself becoming the exception source.
+        guard !isRecoveringPlayback else {
+            Logger.audio.info("recoverPlayback coalesced (already in flight)")
+            return
+        }
         guard force || resumeAfterInterruption else { return }
+        isRecoveringPlayback = true
+        defer { isRecoveringPlayback = false }
         resumeAfterInterruption = false
         // Observers only exist once the stack does, so `audio` is always live here.
         guard currentTrack != nil, let audio else { return }
         let transitionWasInterrupted = isTransitioning
+        // Rebuild player→mixer connections while the engine is still stopped. A route change
+        // can leave the previous bus formats unconvertible for the new hardware rate; starting
+        // first and reconnecting later is what raised
+        // `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` mid-recovery.
+        audio.deckA.reconnectAfterConfigurationChange()
+        audio.deckB.reconnectAfterConfigurationChange()
         guard ensureRunning() else {
             if transitionWasInterrupted {
                 // The idle deck's schedule is no longer trustworthy. Clear the blend flags even

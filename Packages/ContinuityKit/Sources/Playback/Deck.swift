@@ -92,12 +92,12 @@ final class Deck {
     /// raises on values outside its range, and a NaN ratio from a bad BPM pair is not a tempo.
     var rate: Float {
         get { timePitch.rate }
-        set { timePitch.rate = TimePitchLimits.clampRate(newValue) }
+        set { timePitch.guardedSetRate(TimePitchLimits.clampRate(newValue)) }
     }
     /// Pitch offset in cents (100 = one semitone), for harmonic mixing. Tempo is unaffected.
     var pitchCents: Float {
         get { timePitch.pitch }
-        set { timePitch.pitch = TimePitchLimits.clampPitchCents(newValue) }
+        set { timePitch.guardedSetPitch(TimePitchLimits.clampPitchCents(newValue)) }
     }
     /// Low-shelf gain (dB) on this deck's low end. 0 = flat; negative cuts bass. Ramped during a
     /// blend so the incoming bassline fades in instead of stacking on the outgoing one.
@@ -126,14 +126,15 @@ final class Deck {
     func load(_ track: Track) -> TimeInterval {
         stop()
         self.track = track
-        timePitch.rate = 1
-        timePitch.pitch = 0
+        timePitch.guardedSetRate(1)
+        timePitch.guardedSetPitch(0)
         volume = 1; vocalsGain = 1; accompanimentGain = 1; bassGainDB = 0; loudnessGain = 1
 
         let scheduled: Bool
         if track.hasStems,
            let vURL = stemURL(track.vocalsRelativePath), let aURL = stemURL(track.accompanimentRelativePath),
-           let vFile = try? AVAudioFile(forReading: vURL), let aFile = try? AVAudioFile(forReading: aURL) {
+           let vFile = AVAudioFile.guardedOpen(forReading: vURL),
+           let aFile = AVAudioFile.guardedOpen(forReading: aURL) {
             // Stem mode: vocals + accompaniment, sample-aligned (both derived from the same mix).
             hasStems = true
             vocalsFile = vFile; accompFile = aFile
@@ -142,7 +143,8 @@ final class Deck {
             let a = accompPlayer.guardedScheduleFile(aFile)
             scheduled = v && a
             loadedDuration = resolveDuration(track, file: aFile)
-        } else if let url = readyFileURL(for: track), let file = try? AVAudioFile(forReading: url) {
+        } else if let url = readyFileURL(for: track),
+                  let file = AVAudioFile.guardedOpen(forReading: url) {
             hasStems = false
             accompFile = file; vocalsFile = nil
             setAccompFormat(file.processingFormat)
@@ -308,6 +310,28 @@ final class Deck {
             accompFormat = format
         } else if engine.guardedConnect(accompPlayer, to: stemMixer, format: accompFormat) {
             Logger.audio.error("accompaniment format change refused — kept previous connection format")
+        }
+    }
+
+    /// Force-reconnects this deck's player nodes after an engine configuration change.
+    ///
+    /// Called while the engine is still stopped (before `ensureRunning`). A Bluetooth / AirPods
+    /// route change can leave the previous bus formats unconvertible for the new hardware rate;
+    /// reconnecting after `start()` is what raised
+    /// `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` during recovery.
+    func reconnectAfterConfigurationChange() {
+        let aFormat = accompFile?.processingFormat ?? accompFormat
+        _ = engine.guardedDisconnectNodeOutput(accompPlayer)
+        if engine.guardedConnect(accompPlayer, to: stemMixer, format: aFormat) {
+            accompFormat = aFormat
+        } else if engine.guardedConnect(accompPlayer, to: stemMixer, format: synthFormat) {
+            accompFormat = synthFormat
+            Logger.audio.error("post-route accomp reconnect fell back to synth format")
+        }
+        if hasStems, let vFile = vocalsFile {
+            let vFormat = vFile.processingFormat
+            _ = engine.guardedDisconnectNodeOutput(vocalsPlayer)
+            _ = engine.guardedConnect(vocalsPlayer, to: stemMixer, format: vFormat)
         }
     }
 }

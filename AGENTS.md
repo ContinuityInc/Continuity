@@ -135,29 +135,33 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
  reference to a freed `@Model` crashes.
 - **Never call an AVFAudio node/engine method raw in Playback.** `play()/stop()/pause()/
- schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
- engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
- inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
- `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
- Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
+  engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
+  inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
+  `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+  Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  Configuration-change recovery must go through `scheduleRecoverPlayback` (never call
+  `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
+  posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
+  residual crash class after the shim.
 - **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
- Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
- `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
- TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
- "Sign-in not set up in this build" and link imports still work via scrape. Redirect URIs to
- register: `continuity://auth/spotify`, `continuity://auth/soundcloud`, and Google's
- reversed-client-id scheme (iOS client type). Tokens live in the Keychain (`KeychainStore`);
- the OAuth maths (`OAuthFlow`) and every API JSON parser are in ContinuityCore and Linux-tested.
+  Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
+  `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
+  TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
+  "Sign-in not set up in this build" and link imports still work via scrape. Redirect URIs to
+  register: `continuity://auth/spotify`, `continuity://auth/soundcloud`, and Google's
+  reversed-client-id scheme (iOS client type). Tokens live in the Keychain (`KeychainStore`);
+  the OAuth maths (`OAuthFlow`) and every API JSON parser are in ContinuityCore and Linux-tested.
 - **SoundCloud scraping has two moving parts.** Set/track pages embed `window.__sc_hydration`
- with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
- `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
- `a-v2.sndcdn.com/assets/*.js` bundles (`SoundCloudPlaylist.clientID(inScript:)`). If every
- SoundCloud import fails while Spotify/YouTube work, check those two first; `on.soundcloud.com`
- short links are resolved by following the redirect. API-imported sets are keyed by permalink
- path so they stay syncable after a disconnect; URN-only identities need the account.
+  with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
+  `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
+  `a-v2.sndcdn.com/assets/*.js` bundles (`SoundCloudPlaylist.clientID(inScript:)`). If every
+  SoundCloud import fails while Spotify/YouTube work, check those two first; `on.soundcloud.com`
+  short links are resolved by following the redirect. API-imported sets are keyed by permalink
+  path so they stay syncable after a disconnect; URN-only identities need the account.
 - **Spotify caps ~50 tracks** (anonymous embed API; a connected account reads the full list).
- YouTube playlists paginate to ~500. Connected-account imports stop at 1 000 tracks
- (`connectedLibraryMaxTracks`).
+  YouTube playlists paginate to ~500. Connected-account imports stop at 1 000 tracks
+  (`connectedLibraryMaxTracks`).
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`
 
