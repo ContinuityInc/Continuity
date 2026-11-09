@@ -20,7 +20,7 @@ final class StemSeparatorStreamingTests: XCTestCase {
     }
 
     /// "Vocals = half the mix" fake model: output shape (2, segment) from the (2, segment) input.
-    private static let halfMixInference: OnnxStemSeparator.WindowInference = { input in
+    private static let halfMixInference: StemStreamingEngine.WindowInference = { input in
         input.map { $0 * 0.5 }
     }
 
@@ -76,10 +76,18 @@ final class StemSeparatorStreamingTests: XCTestCase {
 
     /// vocals ≈ mix/2 and accompaniment ≈ mix/2 (energy-wise, post-AAC) for the half-mix fake.
     func testRoundTripStereo() throws {
-        let input = try writeInputFile(name: "in.caf", seconds: 20)
-        let separator = OnnxStemSeparator(inference: Self.halfMixInference)
-        let vocalsOut = tempDir.appendingPathComponent("voc.m4a")
-        let accOut = tempDir.appendingPathComponent("acc.m4a")
+        try assertHalfMixRoundTrip(OnnxStemSeparator(inference: Self.halfMixInference))
+    }
+
+    /// Phase 3a seam: Core ML separator shares `StemStreamingEngine` (fake inference, no .mlpackage).
+    func testCoreMLSeparatorSharesStreamingEngine() throws {
+        try assertHalfMixRoundTrip(CoreMLStemSeparator(inference: Self.halfMixInference))
+    }
+
+    private func assertHalfMixRoundTrip(_ separator: StemSeparating) throws {
+        let input = try writeInputFile(name: "in-\(UUID().uuidString).caf", seconds: 20)
+        let vocalsOut = tempDir.appendingPathComponent("voc-\(UUID().uuidString).m4a")
+        let accOut = tempDir.appendingPathComponent("acc-\(UUID().uuidString).m4a")
         let paths = try separator.separate(inputURL: input, vocalsOut: vocalsOut, accompanimentOut: accOut)
         XCTAssertEqual(paths.vocals, vocalsOut)
 
