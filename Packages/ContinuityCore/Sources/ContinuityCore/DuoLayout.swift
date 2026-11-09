@@ -73,17 +73,21 @@ public enum DuoLayout {
     /// Even column count for a fold-centered grid: the same number of flexible columns on each
     /// side of the hinge, with a widened central gutter. Falls back to a single adaptive column
     /// count when the fold can't be placed.
+    ///
+    /// `viewportWidth` / `viewportHeight` must be the *visible* window (ScrollView bounds),
+    /// not the LazyVGrid's content size — a tall scrolling grid is always "taller than wide"
+    /// and would permanently disable the fold split.
     public static func foldAwareColumnCount(
-        contentWidth: Double,
-        contentHeight: Double,
+        viewportWidth: Double,
+        viewportHeight: Double,
         leadingInset: Double,
         trailingInset: Double,
         minimum: Double = libraryCardMinimum,
         spacing: Double = libraryCardSpacing
     ) -> (perSide: Int, gutter: Double)? {
-        guard usesFoldAwareGrid(width: contentWidth, height: contentHeight),
+        guard usesFoldAwareGrid(width: viewportWidth, height: viewportHeight),
               let mid = foldContentMidX(
-                  contentWidth: contentWidth,
+                  contentWidth: viewportWidth,
                   leadingInset: leadingInset,
                   trailingInset: trailingInset
               ),
@@ -92,7 +96,7 @@ public enum DuoLayout {
         else { return nil }
 
         // Shorter side sets the usable half so both sides match.
-        let half = min(mid, contentWidth - mid)
+        let half = min(mid, viewportWidth - mid)
         guard half.isFinite, half > minimum else { return nil }
         // Thin gutter for the hinge itself (a few points); spacing is added by the grid.
         let gutter = spacing + 8

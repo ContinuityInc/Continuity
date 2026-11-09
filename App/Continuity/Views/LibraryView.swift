@@ -16,17 +16,18 @@ struct LibraryView: View {
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
     @State private var playlistPendingDelete: Playlist?
-    /// Measured grid size — fold/unfold rewrites this; never on the 20 Hz tick path.
-    @State private var gridSize: CGSize = .zero
+    /// Visible ScrollView size (not the LazyVGrid content height) — fold/unfold rewrites this;
+    /// never on the 20 Hz tick path.
+    @State private var viewportSize: CGSize = .zero
 
     /// Phone: adaptive columns. Duo inner display: even columns on each side of the fold so a
     /// card never sits on the hinge (see `DuoLayout.foldAwareColumnCount`).
     private var columns: [GridItem] {
-        let width = Double(gridSize.width)
-        let height = Double(gridSize.height)
+        let width = Double(viewportSize.width)
+        let height = Double(viewportSize.height)
         if let fold = DuoLayout.foldAwareColumnCount(
-            contentWidth: width,
-            contentHeight: height,
+            viewportWidth: width,
+            viewportHeight: height,
             leadingInset: Double(pagerInsets.leading),
             trailingInset: Double(pagerInsets.trailing)
         ) {
@@ -112,14 +113,16 @@ struct LibraryView: View {
                 }
             }
             .padding(16)
-            .onGeometryChange(for: CGSize.self) { proxy in
-                let r = DuoLayout.roundedSize(
-                    width: Double(proxy.size.width),
-                    height: Double(proxy.size.height)
-                )
-                return CGSize(width: r.width, height: r.height)
-            } action: { gridSize = $0 }
         }
+        // Measure the ScrollView viewport — measuring the LazyVGrid would use content height
+        // (always tall) and permanently disable the fold-aware column split.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            let r = DuoLayout.roundedSize(
+                width: Double(proxy.size.width),
+                height: Double(proxy.size.height)
+            )
+            return CGSize(width: r.width, height: r.height)
+        } action: { viewportSize = $0 }
         .scrollContentBackground(.hidden)
     }
 
