@@ -7,7 +7,8 @@ architecture, commands, conventions, and traps that aren't obvious from the code
 
 Native iOS 26 music app. Flagship: **transitions so smooth you don't notice the song changed** —
 stem-separated, beatmatched, harmonically-mixed DJ blends. Audio is sourced from YouTube;
-Spotify contributes tracklists only (its audio is DRM-locked). Personal prototype — not
+Spotify, SoundCloud and Apple Music contribute tracklists only (their audio is DRM-locked / not
+ours to stream). Personal prototype — not
 App-Store-shippable as-is (YouTube ToS). See `README.md` for the feature tour.
 
 ## Architecture
@@ -21,7 +22,7 @@ depend *downward*; the compiler blocks reaching into another layer.
 |---|---|---|---|
 | **ContinuityCore** | `Packages/ContinuityCore` | all scraping/parsing + all DSP/math. NO UIKit/AVFoundation/SwiftData. ~114 unit tests. | *(nothing)* |
 | **Domain** | `Packages/ContinuityKit/Sources/Domain` | `@Model` `Track`/`Playlist`, `TransitionSettings`, `AudioCache`/`StemCache` | ContinuityCore |
-| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
+| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, connected accounts (`ServiceAuth/`, `ConnectedLibraries`), download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
 | **Playback** | `Packages/ContinuityKit/Sources/Playback` | `Player`, `Deck`, `NowPlayingBridge`, `PlaybackStateStore`, `ToneSynth` | Domain, ContinuityCore |
 | **app target** | `App/Continuity` (`Views/*`, `Library/SampleData`) | SwiftUI, app wiring | all package products |
 
@@ -35,8 +36,12 @@ extension files (`Player+Transport.swift`, `PreparationQueue+Sync.swift`, …) s
 different concerns of the same type don't collide; stored properties + `init` stay in the core
 file, methods move to the extensions.
 
-Data flow: `AddMusicView` → `PreparationQueue` (resolve → download → analyze → stems, bounded
-concurrency) → SwiftData. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
+Data flow: `ImportHubView` (the single "+": pasted link / connected-account picker / Apple Music /
+files) → `PreparationQueue` (resolve → download → analyze → stems, bounded concurrency) →
+SwiftData. Every remote collection — YouTube, Spotify, SoundCloud, by link or by account — is
+normalised to `ContinuityCore.ServicePlaylistContents` and goes through
+`PreparationQueue.fetchRemoteContents` (official API when that service is connected, anonymous
+scrape otherwise) → `importServicePlaylist`; sync reuses the same fetch. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
 via `ContinuityCore.TransitionPlan`.
 
 ## Build & test
@@ -81,19 +86,82 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 
 - **New files need `xcodegen generate`** before `xcodebuild`, or you get "cannot find X in
   scope." XcodeGen uses explicit file lists.
-- **Stem separation on the Simulator: CoreML EP is disabled on purpose** (`#if
-  !targetEnvironment(simulator)` in `StemSeparator`). Sim CoreML has no ANE/GPU and routes the
-  model through a ~100× slower serial CPU queue — it looks hung. Real devices use CoreML/ANE.
+- **Schemes come only from `project.yml`.** XcodeGen emits no scheme unless a target declares
+  `scheme:` (the Continuity target does — keep it). `xcodebuild` on Xcode 26.x does **not**
+  auto-create schemes the way the Xcode GUI does, so without it `-scheme Continuity` fails in
+  ~30s with exit 65 "does not contain a scheme named" — which is exactly how every TestFlight
+  run from PR #127 to #137 died.
+- **onnxruntime is a static `.framework` (ar archive), not a dylib.** Xcode still embeds a
+  broken ~50 KB stub into `Continuity.app/Frameworks`. Never "fix" that stub by patching
+  `MinimumOSVersion` and re-signing — that cured ITMS upload checks while leaving a poison
+  Frameworks entry (and earlier, an invalidated signature → device install `0xe8008001`).
+  The app already statically links ORT into its binary. The Continuity target's post-build
+  script must **delete** `onnxruntime.framework` / `onnxruntime_extensions.framework` from
+  the app bundle after Embed Frameworks. Do not reintroduce plist-patch/resign for them.
+- **Stem separation jetsams at ~3.4 GB (`per-process-limit`)** if the ORT session for
+  HT-Demucs starts at cold launch. `Player.prepare` / `restore` must stay metadata-only —
+  no `notifyUpcoming()` → `ensureStems` until the first real play (`ensureCurrentLoaded` /
+  `startCurrentFresh`). Keep the stem limiter at 1; never separate the whole library
+  eagerly. Use CPU EP only (never CoreML EP on device — session creation alone has hit
+  the per-process limit). Cap ORT `intraOpNumThreads` to 1.
+- **Stem separation streams — don't reintroduce whole-file buffers.** The pipeline (chunked
+  decode → windowed inference → overlap-add → incremental AAC encode) keeps peak memory
+  O(segment) regardless of track length; the old whole-file implementation held ~7 full-length
+  float buffers (>1 GB on an hour-long track) and jetsammed devices. The overlap-add math is
+  `StreamingOverlapAdd` in ContinuityCore (unit-tested); simulator tests for the pipeline live
+  in `ContinuityKit/Tests/IngestTests` (fake-inference seam, no model download; run via
+  `xcodebuild test -scheme ContinuityKit-Package` with a simulator destination).
+- **Stem separation on the Simulator** is also CPU-only (and slow). Do not "fix" perceived
+  hangs by enabling CoreML on sim — sim CoreML has no ANE/GPU and routes through a ~100×
+  slower serial CPU queue.
+- **YouTubeKit is pinned `exact:` on purpose — bump it deliberately, never float on `main`.**
+  Stream URLs come from whichever InnerTube client the pinned YouTubeKit asks; YouTube retires
+  clients without notice (Aug 2026: ANDROID_VR URLs started 403-ing after the first ~1 MB, so
+  every 1 MiB ranged download died on chunk #2 → `streamURLExpired` on every track → minutes of
+  spinner, then the orange retry badge). The signature of "YouTube changed again" is *every*
+  imported track failing with `prep failed for …: streamURLExpired` (or `.network`) in Console;
+  playlist/search scrapes still succeed. First response: check upstream YouTubeKit for a newer
+  tag, bump `exact:` in `Packages/ContinuityKit/Package.swift`, and re-run the opt-in probe
+  `CONTINUITY_LIVE_PROBE=1 … -only-testing:IngestTests/LiveIngestProbeTests` (simulator) —
+  it prints the failing stage and exact error per track. Beware: a scratch SwiftPM harness
+  that depends on `branch: "main"` silently resolves upstream HEAD, not the app's pin.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures
   (`Ingest/Retry.swift`) and classify errors (`IngestError.network/.rateLimited/.sourceUnavailable`).
 - **Stem cache is size-budgeted** (8 GB LRU) and **demand-driven** — never separate the whole
   library eagerly (that's CPU-hours and gigabytes). `Player.onUpcomingTracks` drives
-  just-in-time separation of the play-queue neighborhood.
+  just-in-time separation of the play-queue neighborhood **after playback starts**.
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
-  reference to a freed `@Model` crashes.
-- **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
+ reference to a freed `@Model` crashes.
+- **Never call an AVFAudio node/engine method raw in Playback.** `play()/stop()/pause()/
+  schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
+  engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
+  inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
+  `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+  Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  Configuration-change recovery must go through `scheduleRecoverPlayback` (never call
+  `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
+  posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
+  residual crash class after the shim.
+- **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
+  Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
+  `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
+  TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
+  "Sign-in not set up in this build" and link imports still work via scrape. Redirect URIs to
+  register: `continuity://auth/spotify`, `continuity://auth/soundcloud`, and Google's
+  reversed-client-id scheme (iOS client type). Tokens live in the Keychain (`KeychainStore`);
+  the OAuth maths (`OAuthFlow`) and every API JSON parser are in ContinuityCore and Linux-tested.
+- **SoundCloud scraping has two moving parts.** Set/track pages embed `window.__sc_hydration`
+  with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
+  `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
+  `a-v2.sndcdn.com/assets/*.js` bundles (`SoundCloudPlaylist.clientID(inScript:)`). If every
+  SoundCloud import fails while Spotify/YouTube work, check those two first; `on.soundcloud.com`
+  short links are resolved by following the redirect. API-imported sets are keyed by permalink
+  path so they stay syncable after a disconnect; URN-only identities need the account.
+- **Spotify caps ~50 tracks** (anonymous embed API; a connected account reads the full list).
+  YouTube playlists paginate to ~500. Connected-account imports stop at 1 000 tracks
+  (`connectedLibraryMaxTracks`).
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`
 

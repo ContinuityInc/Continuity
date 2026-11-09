@@ -13,7 +13,11 @@ public enum StemCache {
     /// 1000-song library stays under the ~15 GB target even when the stem cache is full.
     public static let budgetBytes: Int64 = 8_000_000_000
 
-    public static var directory: URL {
+    /// Memoized (`static let`, lazily initialized once per process): `stemFile`, `markUsed`,
+    /// `removeStems` and `url(forRelativePath:)` all read this in loops, and as a computed
+    /// property every one of those iterations paid a `createDirectory` + `setResourceValues`
+    /// syscall pair.
+    public static let directory: URL = {
         // Under Application Support (not Caches) so stems persist across launches. Excluded from
         // iCloud backup — they're large and re-derivable from the cached audio.
         var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -23,13 +27,18 @@ public enum StemCache {
         values.isExcludedFromBackup = true
         try? dir.setResourceValues(values)
         return dir
-    }
+    }()
 
     public static func vocalsURL(key: String) -> URL { directory.appendingPathComponent("\(key)-vocals.m4a") }
     public static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }
 
     public static func relativePath(for url: URL) -> String { url.lastPathComponent }
-    public static func url(forRelativePath path: String) -> URL { directory.appendingPathComponent(path) }
+    public static func url(forRelativePath path: String) -> URL {
+        guard CachePath.isSafeFileName(path) else {
+            return directory.appendingPathComponent(".__rejected__")
+        }
+        return directory.appendingPathComponent(path)
+    }
 
     /// Whether both stems already exist on disk for this key (either format generation).
     public static func hasStems(key: String) -> Bool {
@@ -42,6 +51,17 @@ public enum StemCache {
         for ext in ["m4a", "caf"] {
             let url = directory.appendingPathComponent("\(key)-\(kind).\(ext)")
             if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// Extracts the cache key from a stem file's base name ("<key>-vocals" / "<key>-accompaniment").
+    /// Suffix-only on purpose: a YouTube video ID can itself contain "-vocals"/"-accompaniment"
+    /// as a substring, so anywhere-in-name matching would mangle the key (and the sweep/budget
+    /// logic built on it would misclassify — or delete — valid stems).
+    public static func key(fromStemBaseName base: String) -> String? {
+        for marker in ["-vocals", "-accompaniment"] where base.hasSuffix(marker) {
+            return String(base.dropLast(marker.count))
         }
         return nil
     }
@@ -76,9 +96,7 @@ public enum StemCache {
         var byKey: [String: (bytes: Int64, lastUsed: Date, urls: [URL])] = [:]
         for file in files {
             let base = file.deletingPathExtension().lastPathComponent
-            guard let range = base.range(of: "-vocals") ?? base.range(of: "-accompaniment"),
-                  range.upperBound == base.endIndex else { continue }
-            let key = String(base[..<range.lowerBound])
+            guard let key = Self.key(fromStemBaseName: base) else { continue }
 
             let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let bytes = Int64(values?.fileSize ?? 0)

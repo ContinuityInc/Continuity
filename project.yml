@@ -15,9 +15,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "2"
-    DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
 
 targets:
@@ -35,7 +34,8 @@ targets:
         product: Ingest
       - package: ContinuityKit
         product: Playback
-    # App group shared with the extension — the share-sheet → app handoff channel.
+    # App group kept so existing installs can still migrate a legacy SwiftData store
+    # out of the group container. The share extension is not shipped in this build.
     entitlements:
       path: App/Continuity/Continuity.entitlements
       properties:
@@ -55,10 +55,23 @@ targets:
         UIBackgroundModes:
           - audio
         ITSAppUsesNonExemptEncryption: false
+        # Portrait plus landscape: Duo's outer display is often used tent-style in landscape,
+        # and the inner display ignores this list anyway (size classes drive layout there).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # No CFBundleURLTypes on this branch — remote import is disabled, so the
-        # continuity:// deep-link scheme would be a dead entry point (App Review 2.1).
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    # Shared scheme so `xcodebuild -scheme Continuity` works on a fresh checkout / CI without
+    # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
+    scheme:
+      gatherCoverageData: false
+      archive:
+        config: Release
+    # Release signing lives in this xcconfig so it does not land on YouTubeKit.
+    # The committed file is empty (local archives stay Automatic). TestFlight
+    # overwrites it with Manual + an App Store profile before xcodegen.
+    configFiles:
+      Release: Signing/Continuity.release.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity
@@ -68,24 +81,33 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
-    # onnxruntime SPM xcframework omits MinimumOSVersion → ITMS-90530/90360 on upload.
-    # Patch after Embed Frameworks (postBuildScripts runs last). See microsoft/onnxruntime#27396.
+    # onnxruntime SPM ships a *static* .framework (Mach-O archive, not a dylib). Xcode still
+    # copies a broken ~50 KB stub into Continuity.app/Frameworks. That stub:
+    #   - fails code-sign / ITMS MinimumOSVersion checks (microsoft/onnxruntime#27396)
+    #   - is useless at runtime — ORT is already statically linked into the app binary
+    # Remove the embed entirely. Do NOT patch+resign the stub (that papered over ITMS while
+    # leaving a poison Frameworks entry). See also RunAnywhere issue on static-framework embeds.
     postBuildScripts:
-      - name: Patch onnxruntime MinimumOSVersion
+      - name: Remove embedded static onnxruntime
         basedOnDependencyAnalysis: false
+        # Declare the stub frameworks' signatures as inputs so the build system orders this
+        # delete AFTER "Sign onnxruntime.framework". With no inputs the two tasks can run
+        # concurrently, and the delete landing mid-sign fails the build with
+        # "CodeSign failed ... onnxruntime.framework: No such file or directory".
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/onnxruntime.framework/_CodeSignature/CodeResources
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/onnxruntime_extensions.framework/_CodeSignature/CodeResources
         script: |
           set -euo pipefail
           FRAMEWORKS_PATH="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
           for framework in onnxruntime onnxruntime_extensions; do
-            PLIST="${FRAMEWORKS_PATH}/${framework}.framework/Info.plist"
-            if [ -f "$PLIST" ]; then
-              /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$PLIST" 2>/dev/null || true
-              /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IPHONEOS_DEPLOYMENT_TARGET}" "$PLIST"
-              echo "Patched MinimumOSVersion=${IPHONEOS_DEPLOYMENT_TARGET} in ${framework}.framework"
+            FRAMEWORK="${FRAMEWORKS_PATH}/${framework}.framework"
+            if [ -d "$FRAMEWORK" ]; then
+              rm -rf "$FRAMEWORK"
+              echo "Removed embedded static ${framework}.framework (linked into app binary)"
             fi
           done
+          # Leave an empty Frameworks dir alone — other embeds (none today) may appear later.
 
-  # The ContinuityShare share extension is NOT built on this branch: with remote import
-  # disabled it could only ever say "Import not available", and App Review rejects
-  # nonfunctional features (Guideline 2.1). The sources stay in App/ShareExtension so
-  # merges from main are clean; `main`'s project.yml still builds the target.
+  # ContinuityShare is not built on the App Store cut — link import is gone, and App Review
+  # rejects a share extension that can only say "Import not available". Sources stay in-tree.

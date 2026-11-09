@@ -1,11 +1,30 @@
 import Foundation
 import SwiftData
+import ContinuityCore
 
 /// Where a track is in the ingest/preparation pipeline. In M0 everything is `.ready`
 /// (synthesised audio); from M1 on this reflects download → analyse → separate progress
 /// and drives the per-track UI badges and transition fallbacks.
 public enum PrepState: String, Codable, Sendable {
     case pending, preparing, ready, failed
+}
+
+/// On-disk store for artwork extracted from imported files' embedded metadata. Mirrors
+/// `StemCache`: flat files in one Application Support directory, excluded from backup.
+public enum ArtworkStore {
+    /// Memoized (`static let`, lazily initialized once per process). `Track.artworkURL` reads
+    /// this, and that runs in every artwork view body — i.e. per row, per frame of a scroll —
+    /// so a computed property meant two filesystem syscalls (`createDirectory` +
+    /// `setResourceValues`) on the main thread for every visible row.
+    public static let directory: URL = {
+        var dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Artwork", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir
+    }()
 }
 
 @Model
@@ -66,19 +85,24 @@ public final class Track {
 
     /// A seeded demo track (no real source) — it plays synthesized tones, not real audio. Used to
     /// label the placeholder sample library so it isn't mistaken for real playback.
-    public var isDemo: Bool {
-        youtubeVideoID == nil && searchQuery == nil && localRelativePath == nil
-    }
+    public var isDemo: Bool { youtubeVideoID == nil && searchQuery == nil && localRelativePath == nil }
 
-    /// Stable key for the stem cache (and other per-source on-disk caches). Legacy
-    /// YouTube-sourced tracks keep their video ID (existing stems stay linked); locally
-    /// imported tracks use their own UUID.
+    /// Filename (relative to `ArtworkStore.directory`) of artwork extracted from an imported
+    /// file's embedded metadata; nil when the file carried none.
+    public var artworkPath: String?
+
+    /// Stable key for the stem cache (and other per-source on-disk caches). YouTube-sourced
+    /// tracks keep their video ID (existing stems stay linked, and the same video shared
+    /// across playlists shares its caches); locally imported tracks use their own UUID.
     public var stemKey: String { youtubeVideoID ?? id.uuidString }
 
-    /// Real cover art for YouTube-sourced tracks: the video's thumbnail, served from YouTube's
-    /// deterministic thumbnail CDN (no API call needed). nil for demo tracks → gradient artwork.
+    /// Real cover art: embedded artwork extracted at import, else the YouTube thumbnail for
+    /// YouTube-sourced tracks. nil → gradient placeholder artwork.
     public var artworkURL: URL? {
-        youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }
+        if let artworkPath, CachePath.isSafeFileName(artworkPath) {
+            return ArtworkStore.directory.appendingPathComponent(artworkPath)
+        }
+        return youtubeVideoID.flatMap { URL(string: "https://i.ytimg.com/vi/\($0)/hqdefault.jpg") }
     }
 
     /// Inverse side of the Playlist ↔ Track relationship.
@@ -87,6 +111,18 @@ public final class Track {
     public var prepState: PrepState {
         get { PrepState(rawValue: prepStateRaw) ?? .pending }
         set { prepStateRaw = newValue.rawValue }
+    }
+
+    /// Applies a user edit of the display name. Returns false (and writes nothing) when the
+    /// normalized title is blank or nothing actually differs — callers use that to skip the
+    /// save and the lock-screen refresh.
+    @discardableResult
+    public func rename(title newTitle: String, artist newArtist: String) -> Bool {
+        guard let edit = TrackRename.normalized(title: newTitle, artist: newArtist),
+              TrackRename.isChange(edit, fromTitle: title, artist: artist) else { return false }
+        title = edit.title
+        artist = edit.artist
+        return true
     }
 
     public init(

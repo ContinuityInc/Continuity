@@ -1,43 +1,51 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import Ingest
 import Playback
 
-/// The full library experience, presented as a sheet from the minimal Now Playing home:
-/// browse/add/delete playlists, with the mini player and the detailed Now Playing sheet intact.
+/// Library page in the vertical shell (above Now Playing): browse/add/delete playlists,
+/// with a mini player that jumps back to the home page.
 struct LibrarySheetView: View {
-    @Environment(Player.self) private var player
-    @State private var showNowPlaying = false
-    @State private var showingAdd = false
+    @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.modelContext) private var modelContext
+    @State private var showingLocalImport = false
+    @State private var isImportingLocal = false
 
     var body: some View {
         NavigationStack {
             LibraryView()
+                .miniPlayerDock()
                 .navigationTitle("Continuity")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .restorePagerSafeArea()
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
-                            showingAdd = true
+                            showingLocalImport = true
                         } label: {
-                            Image(systemName: "plus")
+                            if isImportingLocal {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "plus")
+                            }
                         }
-                        .accessibilityLabel("Add music")
+                        .disabled(isImportingLocal)
+                        .accessibilityLabel("Import local files")
                     }
                 }
         }
-        .sheet(isPresented: $showingAdd) {
-            AddMusicView()
-        }
-        .safeAreaInset(edge: .bottom) {
-            if player.currentTrack != nil {
-                MiniPlayerView()
-                    .onTapGesture { showNowPlaying = true }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
+        .fileImporter(
+            isPresented: $showingLocalImport,
+            allowedContentTypes: [.audio, .folder],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result, !urls.isEmpty else { return }
+            isImportingLocal = true
+            Task {
+                _ = await prepQueue.importLocalFiles(urls, in: modelContext)
+                isImportingLocal = false
             }
-        }
-        .sheet(isPresented: $showNowPlaying) {
-            NowPlayingView(mode: .sheet)
-                .presentationDragIndicator(.visible)
         }
     }
 }

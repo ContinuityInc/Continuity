@@ -6,27 +6,64 @@ import os
 
 extension Player {
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
-    func beginTransition(toIndex index: Int, outgoingPosition: Double) {
-        guard queue.indices.contains(index) else { return }
-        // Only reachable from tick() while playing, so the stack exists; funnel anyway.
+    /// Returns false when the blend could not start — the incoming deck's schedule or start
+    /// was refused by AVFAudio — leaving the current deck untouched so callers can hard-advance.
+    @discardableResult
+    func beginTransition(
+        toIndex index: Int,
+        outgoingPosition: Double,
+        duration: TimeInterval,
+        isUserInitiatedSkip: Bool
+    ) -> Bool {
+        guard queue.indices.contains(index), duration > 0 else { return false }
+        // Automatic blends arrive from tick(); skip blends may materialize a staged session first.
+        // Funnel both through the same lazy stack accessor.
         let audio = ensureAudioStack()
+
+        // Vote adaptation: a downvoted pair runs a simplified blend (see Player+Voting). The
+        // adapted settings drive every effect decision below and the mid-blend shaping in
+        // tick(); `duration` stays the caller's (tick already passes the adapted duration,
+        // and skip blends keep their fixed 5 s).
+        let outgoingTrack = audio.current.track ?? currentTrack
+        let (blend, level) = adaptedTransitionSettings(from: outgoingTrack, to: queue[index])
+        activeBlendSettings = blend
+        var blendForRecord = blend
+        blendForRecord.durationSeconds = duration
+        if let outgoingTrack {
+            votableTransition = TransitionRecord(
+                id: UUID(),
+                fromTrackID: outgoingTrack.id,
+                toTrackID: queue[index].id,
+                fromTitle: outgoingTrack.title,
+                toTitle: queue[index].title,
+                settings: blendForRecord,
+                simplificationLevel: level,
+                completedAt: nil
+            )
+        }
         let incoming = audio.idle
         incoming.load(queue[index])
         applyLoudness(to: incoming)
         incoming.volume = 0
         incoming.rate = 1
         incomingStartOffset = 0
+        incomingDeckElapsed = 0
 
         // Beatmatch: when both tracks have a detected tempo and the stretch is modest, retempo the
         // incoming deck to the outgoing track so they beat together through the blend. Otherwise
         // (synth samples, missing tempo, or too large a stretch) leave rate at 1 and fall back to
         // the plain equal-power crossfade.
+        // Match against the outgoing track's EFFECTIVE tempo: it may itself be playing
+        // rate-shifted from its own beatmatched entry (the rate persists for the whole track,
+        // like the harmonic pitch shift below).
         var rate = 1.0
-        if transitionSettings.beatmatchEnabled,
+        incomingRate = 1
+        if blend.beatmatchEnabled,
            let outBPM = audio.current.track?.bpm,
            let inBPM = queue[index].bpm,
-           let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM) {
+           let matched = BeatMath.matchRate(incomingBPM: inBPM, outgoingBPM: outBPM * currentRate) {
             rate = matched
+            incomingRate = matched
             incoming.rate = Float(matched)
         }
 
@@ -34,13 +71,14 @@ extension Player {
         // phase-locking the two grids through the blend (the "you won't notice" bit). Needs a beat
         // grid on both tracks; declines gracefully — and only when the seek lands — leaving the
         // incoming at its start otherwise.
-        if transitionSettings.beatmatchEnabled,
+        if blend.beatmatchEnabled,
            let outBeats = audio.current.track?.beatTimes, !outBeats.isEmpty,
            let offset = BeatMath.incomingStartOffset(
                outgoingPosition: outgoingPosition,
                outgoingBeats: outBeats,
                incomingBeats: queue[index].beatTimes,
-               rate: rate
+               rate: rate,
+               outgoingRate: currentRate
            ), incoming.seekRealFile(to: offset) {
             incomingStartOffset = offset
         }
@@ -48,7 +86,7 @@ extension Player {
         // Gapless: if beat-alignment didn't already seek, skip the incoming track's leading
         // silence so the blend brings in audio, not dead air. (Beat grids start at the first
         // onsets, so an aligned seek is already past any leading silence.)
-        if transitionSettings.trimSilenceEnabled, incomingStartOffset == 0,
+        if blend.trimSilenceEnabled, incomingStartOffset == 0,
            let audibleStart = queue[index].audibleStartSeconds, audibleStart > 0.05,
            incoming.seekRealFile(to: audibleStart) {
             incomingStartOffset = audibleStart
@@ -59,7 +97,7 @@ extension Player {
         // the shift persists for the whole track — Deck.load resets it on the next load). Compare
         // against the outgoing track's EFFECTIVE key: it may itself be playing shifted.
         incomingPitchShiftSemitones = 0
-        if transitionSettings.harmonicMixingEnabled,
+        if blend.harmonicMixingEnabled,
            let outKey = audio.current.track?.camelotCode.flatMap(Camelot.parse),
            let inKey = queue[index].camelotCode.flatMap(Camelot.parse),
            let shift = HarmonicMix.pitchShiftSemitones(
@@ -73,7 +111,7 @@ extension Player {
         // Vocal-aware setup: for instrumental-overlap / hard-swap the incoming vocals start silent
         // (they enter later); for ducking they ride in with the track.
         if incoming.hasStems {
-            switch transitionSettings.vocalMode {
+            switch blend.vocalMode {
             case .duck: incoming.vocalsGain = 1
             case .instrumentalOverlap, .hardSwap: incoming.vocalsGain = 0
             }
@@ -81,18 +119,34 @@ extension Player {
 
         // Start the incoming with its low end cut so the bass-swap has something to ramp up from
         // (avoids a low-end blip before the first tick).
-        if transitionSettings.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
+        if blend.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
 
-        incoming.play()
+        // `needsRescheduleAfterEngineStart` here means load()/seek couldn't schedule; play()
+        // false means AVFAudio refused the start. Either way there is no incoming audio: undo
+        // the staging and report it rather than ramp a blend into silence.
+        guard !incoming.needsRescheduleAfterEngineStart, incoming.play() else {
+            Logger.audio.error("incoming deck refused to start — blend not started")
+            incoming.stop()
+            incoming.volume = 1; incoming.vocalsGain = 1; incoming.bassGainDB = 0
+            incoming.rate = 1; incoming.pitchCents = 0
+            incomingStartOffset = 0; incomingDeckElapsed = 0
+            incomingRate = 1; incomingPitchShiftSemitones = 0
+            activeBlendSettings = nil
+            votableTransition = nil
+            return false
+        }
         transitionTargetIndex = index
+        activeTransitionDurationSeconds = duration
+        isUserInitiatedSkipTransition = isUserInitiatedSkip
         isTransitioning = true
+        return true
     }
 
     /// Shapes the per-stem vocal gains during a blend per the chosen vocal mode. Only called when
     /// both decks have stems.
     func applyVocalHandling(progress: Double) {
         guard let audio else { return }
-        switch transitionSettings.vocalMode {
+        switch blendSettings.vocalMode {
         case .duck:
             // Outgoing vocals fade out over the first ~70% of the blend; incoming vocals ride in.
             audio.current.vocalsGain = Float(max(0, 1 - progress / 0.7))
@@ -124,20 +178,36 @@ extension Player {
         incoming.volume = 1
         incoming.vocalsGain = 1
         incoming.bassGainDB = 0
-        // The outgoing track played to its natural end — earn one forward skip back (capped),
-        // and remember it in the history for unlimited previous-skips.
-        skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
-        pushHistory(currentTrack)
+        if !isUserInitiatedSkipTransition {
+            // A scheduled blend means the outgoing track played naturally. Skip blends already
+            // spent their budget and recorded history when the button was pressed.
+            skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+            pushHistory(currentTrack)
+        }
         audio.current = incoming
         currentIndex = transitionTargetIndex
         queueRefillAttempted = false   // deck promotion changes the current track sans startCurrentFresh
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
-        baselineSeconds = incomingStartOffset
-        position = baselineSeconds + incoming.elapsed
+        // Hold a finite clock only — a poisoned baseline would republish through `position` and
+        // trap SwiftUI / Int conversion before the next tick can refuse the update.
+        let offset = Player.finite(incomingStartOffset)
+        let nextPosition = offset + incoming.elapsed
+        baselineSeconds = offset
+        position = nextPosition.isFinite && nextPosition >= 0 ? nextPosition : offset
         currentPitchShiftSemitones = incomingPitchShiftSemitones
+        currentRate = incomingRate
+        // The key-sync shift was only needed while both tracks overlapped. Now that the incoming
+        // plays solo, glide its pitch back to true over a short window and clear the shift — else
+        // it repitches the whole remaining track (the "plays a little higher" bug).
+        beginPitchSettle()
         isTransitioning = false
+        activeTransitionDurationSeconds = 0
+        isUserInitiatedSkipTransition = false
         transitionProgress = 0
+        activeBlendSettings = nil
+        // Timestamp the record: the blend is now rateable as "the transition you just heard".
+        votableTransition?.completedAt = Date()
         persistState()
         notifyUpcoming()
     }
@@ -155,7 +225,70 @@ extension Player {
             audio.current.vocalsGain = 1
             audio.current.bassGainDB = 0
         }
+        clearTransitionState()
+    }
+
+    /// Clears blend bookkeeping without touching AVAudio objects. Media-services reset leaves
+    /// every node orphaned, so that path must abandon state without calling even `stop()`.
+    func clearTransitionState() {
         isTransitioning = false
+        transitionTargetIndex = currentIndex
+        activeTransitionDurationSeconds = 0
+        isUserInitiatedSkipTransition = false
+        incomingStartOffset = 0
+        incomingDeckElapsed = 0
+        incomingPitchShiftSemitones = 0
+        incomingRate = 1
         transitionProgress = 0
+        activeBlendSettings = nil
+        votableTransition = nil   // an aborted blend was never fully heard — nothing to rate
+        cancelPitchSettle()
+    }
+
+    /// Starts the cosmetic pitch settle on the now-current deck once a blend completes. The
+    /// harmonic key-sync detune only has to hold while both tracks overlap; once the incoming
+    /// plays solo we glide it back to true pitch (0 cents) over `pitchSettleDurationSeconds` and
+    /// clear the persisted shift, so the rest of the track isn't left detuned. No-op (and drops
+    /// any prior settle) when the promoted track isn't shifted.
+    func beginPitchSettle() {
+        guard currentPitchShiftSemitones != 0 else { cancelPitchSettle(); return }
+        // Driven by the 20 Hz tick loop (see Player.startTimer): duration / tick interval ticks.
+        pitchSettleTotalTicks = max(1, Int((Player.pitchSettleDurationSeconds / 0.05).rounded()))
+        pitchSettleTicksRemaining = pitchSettleTotalTicks
+        pitchSettleStartCents = Float(currentPitchShiftSemitones * 100)
+    }
+
+    /// One tick of the pitch settle: eases the current deck from its key-sync pitch toward true
+    /// pitch with a raised-cosine glide (zero slope at both ends → no click), then clears the
+    /// persisted shift. Only touches the deck's timePitch node, never `position`, so it can't
+    /// churn the tick-driven UI. Driven from `Player.tick()`.
+    func advancePitchSettle() {
+        guard pitchSettleTicksRemaining > 0, let audio else { return }
+        pitchSettleTicksRemaining -= 1
+        guard pitchSettleTicksRemaining > 0 else {
+            audio.current.pitchCents = 0
+            currentPitchShiftSemitones = 0   // nothing stays detuned for the rest of the track
+            pitchSettleStartCents = 0
+            return
+        }
+        let progress = Double(pitchSettleTotalTicks - pitchSettleTicksRemaining) / Double(pitchSettleTotalTicks)
+        let eased = 0.5 * (1 + cos(progress * .pi))   // 1 → 0 as progress goes 0 → 1
+        audio.current.pitchCents = pitchSettleStartCents * Float(eased)
+    }
+
+    /// Abandons any in-progress pitch settle. When a settle was actually mid-glide, finalize it —
+    /// snap the current deck to true pitch and clear the persisted shift — so a track can't be
+    /// left frozen at a partial detune (e.g. a second transition cancelled while the first's
+    /// settle was still gliding). A pure no-op when no settle is active, so it never touches a
+    /// deck's pitch on the normal path. Fresh-load callers already zeroed the deck via `Deck.load`,
+    /// so the snap is redundant-but-harmless there.
+    func cancelPitchSettle() {
+        if pitchSettleTicksRemaining > 0 {
+            audio?.current.pitchCents = 0
+            currentPitchShiftSemitones = 0
+        }
+        pitchSettleTicksRemaining = 0
+        pitchSettleTotalTicks = 0
+        pitchSettleStartCents = 0
     }
 }

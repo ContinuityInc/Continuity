@@ -7,30 +7,42 @@ import Domain
 struct PlaylistDetailView: View {
     @Bindable var playlist: Playlist
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     var body: some View {
-        List {
+        // Resolved once per body evaluation: `orderedTracks` sorts and copies the whole
+        // relationship array, and this body used to call it three times (rows, tap handler,
+        // Play button) — plus once more per tap.
+        let tracks = playlist.orderedTracks
+        return List {
             // The header is a regular row — NOT a pinned section header, which in a plain list
             // floats transparently over the rows and lets them scroll underneath the Play button.
             // As a row it scrolls away with the content, Apple Music-style.
-            header
+            header(tracks)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
 
-            ForEach(Array(playlist.orderedTracks.enumerated()), id: \.element.id) { index, track in
-                TrackRow(track: track, isCurrent: player.currentTrack?.id == track.id)
+            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                TrackRow(track: track)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // A failed track has no audio to play; this build can't re-download it.
                         guard track.prepState != .failed else { return }
-                        player.play(tracks: playlist.orderedTracks, startAt: index)
+                        player.play(tracks: tracks, startAt: index)
+                        pagerState.goToNowPlaying()
                     }
                     .contextMenu {
                         Button {
                             player.playNext(track)
                         } label: {
                             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        Button {
+                            trackPendingRename = track
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
                         }
                     }
                     .swipeActions(edge: .trailing) {
@@ -43,22 +55,29 @@ struct PlaylistDetailView: View {
             }
         }
         .listStyle(.plain)
+        // Match the library root: let the shared pager backdrop show through empty chrome
+        // so pushed playlists don't reintroduce an opaque card seam.
+        .scrollContentBackground(.hidden)
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
+        .renameTrackSheet(for: $trackPendingRename)
+        // Pushed destinations don't inherit insets added outside the NavigationStack, so the
+        // dock is attached here too — this is what keeps the bar off the last row.
+        .miniPlayerDock()
     }
 
     /// Removes a track: the player drops it first (so no deck/queue reference dangles), then the
     /// model goes, then any cached files no other track shares.
     private func delete(_ track: Track) {
-        let files = LibraryCleanup.DeletedTrackFiles(track)
+        let key = track.stemKey
         player.handleDeleted(trackIDs: [track.id])
         modelContext.delete(track)
         playlist.touch()    // membership changed → resort the library
         try? modelContext.save()
-        LibraryCleanup.removeOrphanedFiles(for: [files], in: modelContext)
+        LibraryCleanup.removeOrphanedFiles(keys: [key], in: modelContext)
     }
 
-    private var header: some View {
+    private func header(_ tracks: [Track]) -> some View {
         VStack(spacing: 12) {
             RemoteArtworkView(url: playlist.artworkURL, symbol: playlist.artworkSymbol, seed: playlist.gradientSeed, cornerRadius: 20)
                 .frame(width: 180, height: 180)
@@ -66,12 +85,14 @@ struct PlaylistDetailView: View {
             Text(playlist.title).font(.title2.bold())
             Text(playlist.subtitle).font(.subheadline).foregroundStyle(.secondary)
             Button {
-                player.play(tracks: playlist.orderedTracks, startAt: 0)
+                player.play(tracks: tracks, startAt: 0)
+                pagerState.goToNowPlaying()
             } label: {
                 Label("Play", systemImage: "play.fill")
                     .frame(maxWidth: 200)
             }
             .buttonStyle(.glassProminent)
+            .accessibilityLabel("Play \(playlist.title)")
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
@@ -79,9 +100,14 @@ struct PlaylistDetailView: View {
     }
 }
 
+/// One track row. Reads the now-playing highlight itself rather than taking it as a parameter:
+/// as a parameter, every track change invalidated `PlaylistDetailView.body` — which re-sorted
+/// the entire playlist to rebuild the list.
 private struct TrackRow: View {
     let track: Track
-    let isCurrent: Bool
+    @Environment(Player.self) private var player
+
+    private var isCurrent: Bool { player.currentTrack?.id == track.id }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -99,9 +125,10 @@ private struct TrackRow: View {
             }
             Spacer()
             if isCurrent {
+                // Static tint — the repeating variableColor effect was continuous GPU work for
+                // every open playlist detail while a track played.
                 Image(systemName: "waveform")
                     .foregroundStyle(.tint)
-                    .symbolEffect(.variableColor.iterative, options: .repeating)
             }
             if track.isDemo {
                 Text("DEMO")
@@ -117,6 +144,9 @@ private struct TrackRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(track.title), \(track.artist)")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
     /// Subtle trailing badge reflecting the track's ingest state. Ready tracks show nothing.
@@ -128,11 +158,10 @@ private struct TrackRow: View {
             ProgressView()
                 .controlSize(.mini)
         case .failed:
-            // The audio file is missing and this build can't re-download it — plain warning,
-            // not a retry affordance.
             Image(systemName: "exclamationmark.triangle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
+                .accessibilityLabel("Unavailable")
         case .ready:
             EmptyView()
         }

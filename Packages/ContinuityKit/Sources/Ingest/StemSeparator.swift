@@ -1,11 +1,25 @@
 import Foundation
 import AVFoundation
+import ContinuityCore
 import OnnxRuntimeBindings
+import os
 
 /// The two stems Continuity needs for vocal-aware transitions.
 struct StemPaths: Sendable, Equatable {
     let vocals: URL
     let accompaniment: URL
+}
+
+/// Memory budgets (MB) gating separation — the ORT session load (~600 MB transient: fp16→fp32
+/// upcast + protobuf parse) plus the first window's attention arena (up to ~1.7 GB for the 7.8 s
+/// segment) is the single biggest allocation in the app. Sized from the jetsam RCA estimates;
+/// tune against the mem[] breadcrumbs from a real device run.
+enum StemSeparationBudget {
+    /// Headroom required to START a separation (session load + first-window peak + margin).
+    /// Scales up on low-RAM / thermal tiers so Air-class devices don't open ORT into a hitch.
+    static var requiredStartMB: Int { AdaptiveQuality.stemRequiredStartMB() }
+    /// Mid-track floor: abort before the next window if headroom falls below this.
+    static let windowFloorMB = 600
 }
 
 enum StemSeparationError: Error, Sendable {
@@ -25,34 +39,118 @@ protocol StemSeparating: Sendable {
 }
 
 /// HT-Demucs FT "vocals specialist" run via ONNX Runtime (CPU execution provider — see the
-/// session comment for why CoreML is banned on device). Mirrors the model's reference pipeline: decode → 44.1 kHz stereo → 7.8 s windows with
-/// 25% overlap → take the vocals source (index 3) → overlap-add → accompaniment = mix − vocals.
+/// session comment for why CoreML is banned on device). Mirrors the model's reference pipeline:
+/// decode → 44.1 kHz stereo → 7.8 s windows with 25% overlap → take the vocals source (index 3)
+/// → overlap-add → accompaniment = mix − vocals.
+///
+/// The whole pipeline **streams**: decode, inference, overlap-add, and stem encoding all run
+/// chunk-by-chunk, so peak memory is O(segment) — a few tens of MB — regardless of track length.
+/// The previous whole-file implementation held ~7 full-length float buffers and jetsammed real
+/// devices on long tracks (an hour of 44.1 kHz stereo ≈ >1 GB) while the simulator's host RAM
+/// masked it.
 final class OnnxStemSeparator: StemSeparating {
-    private let modelURL: URL
+    // com.continuity.app matches every other logger in the app — one Console filter sees all.
+    private static let log = Logger(subsystem: "com.continuity.app", category: "StemSeparator")
+
+    /// Runs one model window: input is planar (1, 2, segment) mix samples; returns the planar
+    /// (2, segment) vocals output. Seam so tests can exercise the streaming pipeline without the
+    /// 158 MB ONNX model.
+    typealias WindowInference = @Sendable ([Float]) throws -> [Float]
+
+    private let modelURL: URL?
+    private let inference: WindowInference?
 
     private let sampleRate = 44_100.0
-    private let segment = 343_980          // 7.8 s @ 44.1 kHz — the model's fixed input length
+    let segment = 343_980                  // 7.8 s @ 44.1 kHz — the model's fixed input length
     private let channels = 2
     private let sources = 4                // [drums, bass, other, vocals]
     private let vocalsIndex = 3
 
+    /// Backstop against pathological inputs (multi-hour mixes): separation is truncated here.
+    /// Bounds disk + CPU-hours; the streaming pipeline already bounds memory. Transitions only
+    /// ever need stems near track edges of *songs* — a 30-min+ input is a mix/podcast where
+    /// vocal-aware transitions matter less than staying alive.
+    private let maxSeparationSeconds: Double = 1_800
+
     init(modelURL: URL) {
         self.modelURL = modelURL
+        self.inference = nil
+    }
+
+    /// Test seam: bypasses ONNX entirely and runs `inference` per window.
+    init(inference: @escaping WindowInference) {
+        self.modelURL = nil
+        self.inference = inference
     }
 
     /// One process-wide session: rebuilding it per track re-pays model load for zero benefit.
     private static let sessionLock = NSLock()
     nonisolated(unsafe) private static var cachedSession: (path: String, session: ORTSession)?
 
+    /// Drops the cached session, returning its weights/arenas to the OS. Called when the
+    /// separation queue drains: the session is worth caching *between back-to-back tracks*,
+    /// but holding hundreds of MB of transformer weights under live playback + UI for the
+    /// rest of the process lifetime is exactly the jetsam margin long sessions die on.
+    static func releaseSession() {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        cachedSession = nil
+    }
+
+    /// Set on a system memory warning; the streaming loop checks it before each window and
+    /// bails, deleting the partial stems. The track keeps playing without stems and re-enters
+    /// separation on a later `ensureStems` pass. Cleared when the next separation starts.
+    nonisolated(unsafe) private static var abortRequested = false
+    private static let abortLock = NSLock()
+
+    static var isAbortRequested: Bool {
+        abortLock.lock(); defer { abortLock.unlock() }
+        return abortRequested
+    }
+
+    static func requestAbort() {
+        abortLock.lock(); abortRequested = true; abortLock.unlock()
+    }
+
+    static func clearAbort() {
+        abortLock.lock(); abortRequested = false; abortLock.unlock()
+    }
+
     private static func sharedSession(modelURL: URL) throws -> ORTSession {
         sessionLock.lock()
         defer { sessionLock.unlock() }
         if let cached = cachedSession, cached.path == modelURL.path { return cached.session }
+        // Last-chance gate immediately before the load peak — callers also check, but download
+        // / queue wait can leave headroom far below requiredStartMB by the time we get here.
+        let headroom = MemoryFootprint.headroomMB
+        guard headroom > StemSeparationBudget.requiredStartMB else {
+            throw StemSeparationError.inference(
+                "session load deferred: \(headroom) MB headroom < \(StemSeparationBudget.requiredStartMB) MB")
+        }
         do {
+            MemoryFootprint.breadcrumb("ort session load begin")
             let env = try ORTEnv(loggingLevel: .warning)
             let options = try ORTSessionOptions()
+            // Cap thread fan-out: default parallel arenas on a phone balloon RSS toward the
+            // ~3.4 GB per-process jetsam limit when loading HT-Demucs. One intra-op thread is
+            // plenty for an offline cache-once job.
+            try options.setIntraOpNumThreads(1)
+            try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
+            // Prepacking rewrites weights into kernel-friendly layouts as ADDITIONAL copies —
+            // for an 85M-param transformer that's hundreds of MB of duplicated RSS for a
+            // marginal speedup on an offline cache-once job. Keeping the originals only.
+            try options.addConfigEntry(withKey: "session.disable_prepacking", value: "1")
+            // NO graph optimization. Measured on device (mem breadcrumbs): session creation
+            // alone blew through >3.3 GB of headroom and jetsammed the app before "ort session
+            // ready". Mechanism: this model stores fp16 weights behind per-weight Cast nodes,
+            // and load-time constant folding materializes an fp32 copy of EVERY weight while
+            // the protobuf and the fp16 originals are still resident — several full copies of
+            // an 85M-param model at once. Skipping optimization trades some per-window CPU
+            // (fine for an offline cache-once job) for a load peak that actually fits.
+            try options.setGraphOptimizationLevel(ORTGraphOptimizationLevel.none)
             let session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
             cachedSession = (modelURL.path, session)
+            MemoryFootprint.breadcrumb("ort session ready")
             return session
         } catch {
             throw StemSeparationError.inference("session: \(error)")
@@ -60,13 +158,7 @@ final class OnnxStemSeparator: StemSeparating {
     }
 
     func separate(inputURL: URL, vocalsOut: URL, accompanimentOut: URL) throws -> StemPaths {
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw StemSeparationError.modelMissing
-        }
-
-        let (left, right, frames) = try decodePlanar(inputURL)
-        guard frames > 0 else { throw StemSeparationError.decode("no audio frames") }
-
+        Self.clearAbort()   // a stale warning must not kill this fresh attempt
         // ONNX Runtime session, CPU EP everywhere. The CoreML EP jetsammed real devices:
         // converting/compiling the 85M-param HT-Demucs transformer at session creation ballooned
         // the app past the per-process limit (~3.4 GB observed on iPhone 17 Pro — JetsamEvent
@@ -74,164 +166,318 @@ final class OnnxStemSeparator: StemSeparating {
         // separation is an offline cache-once job, so slower-but-alive wins. Revisit via a real
         // Core ML (mlpackage) conversion if on-device speed ever matters more.
         // The session is cached: model load + graph init is expensive and identical per track.
-        let session = try Self.sharedSession(modelURL: modelURL)
+        let runWindow: WindowInference
+        if let inference {
+            runWindow = inference
+        } else {
+            guard let modelURL, FileManager.default.fileExists(atPath: modelURL.path) else {
+                throw StemSeparationError.modelMissing
+            }
+            let session = try Self.sharedSession(modelURL: modelURL)
+            runWindow = Self.ortInference(session: session, segment: segment,
+                                          channels: channels, vocalsIndex: vocalsIndex)
+        }
 
-        var vocL = [Float](repeating: 0, count: frames)
-        var vocR = [Float](repeating: 0, count: frames)
-        var weight = [Float](repeating: 0, count: frames)
+        let decoder = try StreamingStereoDecoder(url: inputURL, sampleRate: sampleRate)
+        let maxFrames = Int(maxSeparationSeconds * sampleRate)
 
-        let overlap = segment / 4
-        let stride = segment - overlap
-        let window = transitionWindow(segment: segment, fade: overlap)
+        let vocalsFile = try openStemFile(vocalsOut)
+        let accFile = try openStemFile(accompanimentOut)
+        do {
+            let frames = try runStreaming(decoder: decoder, runWindow: runWindow, maxFrames: maxFrames,
+                                          vocalsFile: vocalsFile, accFile: accFile)
+            guard frames > 0 else { throw StemSeparationError.decode("no audio frames") }
+        } catch {
+            // Don't leave truncated stems behind — a half-written cache entry would be linked as
+            // if complete.
+            try? FileManager.default.removeItem(at: vocalsOut)
+            try? FileManager.default.removeItem(at: accompanimentOut)
+            throw error
+        }
+        MemoryFootprint.breadcrumb("separation done")
+        return StemPaths(vocals: vocalsOut, accompaniment: accompanimentOut)
+    }
+
+    /// The streaming core: pull decoded frames just far enough to run the next window, run
+    /// inference, overlap-add, then flush every finalized frame (vocals + derived accompaniment)
+    /// straight to the encoders. Pending state never exceeds ~segment + stride frames.
+    private func runStreaming(decoder: StreamingStereoDecoder, runWindow: WindowInference,
+                              maxFrames: Int, vocalsFile: AVAudioFile, accFile: AVAudioFile) throws -> Int {
+        let ola = StreamingOverlapAdd(channels: channels, segment: segment, overlap: segment / 4)
+        let stride = ola.stride
+
+        // Un-flushed mix frames [flushed, flushed + mix count) — needed both as model input and
+        // to derive accompaniment = mix − vocals after normalization.
+        var mixL = [Float](), mixR = [Float]()
+        var flushed = 0
+        var decodedEnd = 0
+        var atEOF = false
+        var input = [Float](repeating: 0, count: channels * segment)
 
         var start = 0
-        while start < frames {
-            let length = min(segment, frames - start)
+        var windowCount = 0
+        while true {
+            // Decode ahead through the end of this window (or EOF / the length cap).
+            while !atEOF && decodedEnd < start + segment {
+                if let chunk = try decoder.next() {
+                    var takeCount = chunk.left.count
+                    if decodedEnd + takeCount >= maxFrames {
+                        takeCount = maxFrames - decodedEnd
+                        atEOF = true
+                        Self.log.warning("separation truncated at \(self.maxSeparationSeconds, privacy: .public)s cap")
+                    }
+                    mixL.append(contentsOf: chunk.left.prefix(takeCount))
+                    mixR.append(contentsOf: chunk.right.prefix(takeCount))
+                    decodedEnd += takeCount
+                } else {
+                    atEOF = true
+                }
+            }
+            if start >= decodedEnd { break }   // fully processed (or empty input)
 
             // Build the input tensor: shape (1, 2, segment), planar [ch0…, ch1…], zero-padded.
-            var input = [Float](repeating: 0, count: channels * segment)
+            let length = min(segment, decodedEnd - start)
+            let offset = start - flushed
             for i in 0..<length {
-                input[i] = left[start + i]
-                input[segment + i] = right[start + i]
+                input[i] = mixL[offset + i]
+                input[segment + i] = mixR[offset + i]
             }
+            for i in length..<segment {
+                input[i] = 0
+                input[segment + i] = 0
+            }
+
+            if windowCount % 10 == 0 { MemoryFootprint.breadcrumb("window \(windowCount)") }
+            windowCount += 1
+            let vocals = try runWindow(input)
+            guard vocals.count >= channels * segment else {
+                throw StemSeparationError.inference("short vocals output: \(vocals.count)")
+            }
+            ola.add(start: start, length: length) { c, i in vocals[c * segment + i] }
+
+            start += stride
+
+            // Everything before the next window's start is final: normalize, derive
+            // accompaniment, and stream both out.
+            let finalUpTo = min(start, decodedEnd)
+            if finalUpTo > flushed {
+                let voc = ola.drain(upTo: finalUpTo)
+                let n = finalUpTo - flushed
+                var accL = [Float](repeating: 0, count: n)
+                var accR = [Float](repeating: 0, count: n)
+                for i in 0..<n {
+                    accL[i] = mixL[i] - voc[0][i]
+                    accR[i] = mixR[i] - voc[1][i]
+                }
+                try append(to: vocalsFile, left: voc[0], right: voc[1])
+                try append(to: accFile, left: accL, right: accR)
+                mixL.removeFirst(n)
+                mixR.removeFirst(n)
+                flushed = finalUpTo
+            }
+            if atEOF && start >= decodedEnd { break }
+        }
+        return decodedEnd
+    }
+
+    /// Wraps the ORT session as a per-window inference closure. Output shape (1, 4, 2, segment);
+    /// returns just the vocals source (index 3) as planar (2, segment).
+    private static func ortInference(session: ORTSession, segment: Int,
+                                     channels: Int, vocalsIndex: Int) -> WindowInference {
+        // Shrink the CPU arena back after every Run: the transformer's attention intermediates
+        // spike the arena to its high-water mark, and by default ORT never returns that memory
+        // between windows — it sits on top of live playback for the whole track (jetsam margin).
+        // Re-growing per window costs a little CPU; an offline cache-once job can afford it.
+        let runOptions = try? ORTRunOptions()
+        try? runOptions?.addConfigEntry(withKey: "memory.enable_memory_arena_shrinkage", value: "cpu:0")
+        return { input in
             let inputData = input.withUnsafeBytes { NSMutableData(bytes: $0.baseAddress, length: $0.count) }
-            let stems: ORTValue
             do {
+                if Self.isAbortRequested {
+                    throw StemSeparationError.inference("aborted under memory pressure")
+                }
+                // Don't wait for the system warning: if headroom has fallen below the window
+                // floor, the next attention spike could be the fatal one — bail now (the error
+                // path deletes the partial stems; a later ensureStems pass retries).
+                let headroom = MemoryFootprint.headroomMB
+                if headroom < StemSeparationBudget.windowFloorMB {
+                    throw StemSeparationError.inference("aborted: \(headroom) MB headroom below window floor")
+                }
                 let inputValue = try ORTValue(tensorData: inputData, elementType: .float,
                                               shape: [1, NSNumber(value: channels), NSNumber(value: segment)])
                 let outputs = try session.run(withInputs: ["mix": inputValue],
-                                              outputNames: ["stems"], runOptions: nil)
+                                              outputNames: ["stems"], runOptions: runOptions)
                 guard let out = outputs["stems"] else { throw StemSeparationError.inference("no 'stems' output") }
-                stems = out
+                let outData = try out.tensorData() as Data
+                let vocBase = (vocalsIndex * channels) * segment
+                let count = channels * segment
+                let neededBytes = (vocBase + count) * MemoryLayout<Float>.size
+                guard outData.count >= neededBytes else {
+                    throw StemSeparationError.inference(
+                        "short stems tensor: \(outData.count) bytes, need \(neededBytes)")
+                }
+                return outData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    let f = raw.bindMemory(to: Float.self)
+                    // Count was checked above; baseAddress is non-nil for a non-empty buffer.
+                    return Array(UnsafeBufferPointer(start: f.baseAddress! + vocBase, count: count))
+                }
             } catch let e as StemSeparationError {
                 throw e
             } catch {
                 throw StemSeparationError.inference("run: \(error)")
             }
-
-            // Output shape (1, 4, 2, segment); take vocals source (index 3) and overlap-add it in.
-            let outData = try stems.tensorData()
-            (outData as Data).withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                let f = raw.bindMemory(to: Float.self)
-                let vocBase = (vocalsIndex * channels) * segment
-                for i in 0..<length {
-                    let w = window[i]
-                    vocL[start + i] += f[vocBase + i] * w
-                    vocR[start + i] += f[vocBase + segment + i] * w
-                    weight[start + i] += w
-                }
-            }
-
-            start += stride
         }
-
-        // Normalize the overlap-add, then derive accompaniment as (mix − vocals).
-        var accL = [Float](repeating: 0, count: frames)
-        var accR = [Float](repeating: 0, count: frames)
-        for i in 0..<frames {
-            if weight[i] > 0 { vocL[i] /= weight[i]; vocR[i] /= weight[i] }
-            accL[i] = left[i] - vocL[i]
-            accR[i] = right[i] - vocR[i]
-        }
-
-        try writeStereo(vocalsOut, left: vocL, right: vocR)
-        try writeStereo(accompanimentOut, left: accL, right: accR)
-        return StemPaths(vocals: vocalsOut, accompaniment: accompanimentOut)
     }
 
     // MARK: - Audio I/O
 
-    /// Decodes `url` to 44.1 kHz stereo, returning planar left/right float arrays.
-    private func decodePlanar(_ url: URL) throws -> (left: [Float], right: [Float], frames: Int) {
-        let file: AVAudioFile
-        do { file = try AVAudioFile(forReading: url) } catch { throw StemSeparationError.decode("\(error)") }
+    /// Opens a stem output file for incremental appends.
+    private func openStemFile(_ url: URL) throws -> AVAudioFile {
+        // AAC at 128 kbps, matched to the (~128 kbps) source's fidelity — a stem can't carry
+        // more information than the mix it was separated from. This keeps a 1000-song stem
+        // cache in single-digit GB; float32 PCM was ~140 MB per track (~140 GB per 1000).
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 128_000,
+        ]
+        do {
+            return try AVAudioFile(forWriting: url, settings: settings,
+                                   commonFormat: .pcmFormatFloat32, interleaved: false)
+        } catch {
+            throw StemSeparationError.write("open: \(error)")
+        }
+    }
+
+    /// Appends planar stereo frames to an open stem file.
+    private func append(to file: AVAudioFile, left: [Float], right: [Float]) throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
+                                         channels: 2, interleaved: false),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(left.count)) else {
+            throw StemSeparationError.write("buffer")
+        }
+        buffer.frameLength = AVAudioFrameCount(left.count)
+        guard let channelData = buffer.floatChannelData else { throw StemSeparationError.write("channel data") }
+        left.withUnsafeBufferPointer { channelData[0].update(from: $0.baseAddress!, count: left.count) }
+        right.withUnsafeBufferPointer { channelData[1].update(from: $0.baseAddress!, count: right.count) }
+        do {
+            try file.write(from: buffer)
+        } catch {
+            throw StemSeparationError.write("\(error)")
+        }
+    }
+}
+
+/// Decodes an audio file to 44.1 kHz stereo float chunks incrementally — never the whole file.
+/// Uses a persistent pull-mode `AVAudioConverter` when the source needs sample-rate / channel /
+/// format conversion.
+final class StreamingStereoDecoder {
+    private let file: AVAudioFile
+    private let converter: AVAudioConverter?
+    private let readChunk: AVAudioPCMBuffer     // in the file's processing format
+    private let outBuffer: AVAudioPCMBuffer     // 44.1 kHz stereo float32 planar
+    private var fileAtEnd = false
+    private var converterDone = false
+    private var pendingReadError: Error?
+
+    /// ~256k frames per read (~2 MB stereo float) — same chunking philosophy as TrackAnalyzer.
+    private static let chunkFrames: AVAudioFrameCount = 1 << 18
+
+    init(url: URL, sampleRate: Double) throws {
+        do { file = try AVAudioFile(forReading: url) } catch {
+            throw StemSeparationError.decode("\(error)")
+        }
         let inFormat = file.processingFormat
-        let frameCount = AVAudioFrameCount(file.length)
-        guard frameCount > 0, let inBuffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frameCount) else {
+        guard file.length > 0 else { throw StemSeparationError.decode("empty file") }
+        guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
+                                         channels: 2, interleaved: false) else {
+            throw StemSeparationError.decode("format")
+        }
+        guard let readChunk = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: Self.chunkFrames),
+              let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: Self.chunkFrames) else {
             throw StemSeparationError.decode("buffer alloc")
         }
-        do { try file.read(into: inBuffer) } catch { throw StemSeparationError.decode("\(error)") }
+        self.readChunk = readChunk
+        self.outBuffer = outBuffer
 
         let isReady = inFormat.sampleRate == sampleRate
             && inFormat.channelCount == 2
             && inFormat.commonFormat == .pcmFormatFloat32
             && !inFormat.isInterleaved
-        let buffer: AVAudioPCMBuffer
         if isReady {
-            buffer = inBuffer
+            converter = nil
         } else {
-            guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
-                                             channels: 2, interleaved: false),
-                  let converter = AVAudioConverter(from: inFormat, to: target) else {
+            guard let converter = AVAudioConverter(from: inFormat, to: target) else {
                 throw StemSeparationError.decode("converter")
             }
-            let capacity = AVAudioFrameCount(Double(inBuffer.frameLength) * sampleRate / inFormat.sampleRate) + 4096
-            guard let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
-                throw StemSeparationError.decode("out buffer")
-            }
-            var consumed = false
-            var convError: NSError?
-            converter.convert(to: outBuffer, error: &convError) { _, status in
-                if consumed { status.pointee = .endOfStream; return nil }
-                consumed = true; status.pointee = .haveData; return inBuffer
-            }
-            if let convError { throw StemSeparationError.decode("\(convError)") }
-            buffer = outBuffer
+            self.converter = converter
         }
+    }
 
+    /// Returns the next decoded stereo chunk, or nil at end of stream.
+    func next() throws -> (left: [Float], right: [Float])? {
+        if let converter {
+            guard !converterDone else { return nil }
+            outBuffer.frameLength = 0
+            var convError: NSError?
+            let status = converter.convert(to: outBuffer, error: &convError) { [weak self] _, outStatus in
+                guard let self else { outStatus.pointee = .endOfStream; return nil }
+                // AVAudioFile.read at exact EOF throws ("nilError") instead of returning 0
+                // frames — check the position first, in both decode paths.
+                if self.fileAtEnd || self.file.framePosition >= self.file.length {
+                    self.fileAtEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                self.readChunk.frameLength = 0
+                do {
+                    try self.file.read(into: self.readChunk, frameCount: Self.chunkFrames)
+                } catch {
+                    self.pendingReadError = error
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                if self.readChunk.frameLength == 0 {
+                    self.fileAtEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+                outStatus.pointee = .haveData
+                return self.readChunk
+            }
+            if let pendingReadError { throw StemSeparationError.decode("\(pendingReadError)") }
+            if let convError { throw StemSeparationError.decode("\(convError)") }
+            if status == .endOfStream || status == .error { converterDone = true }
+            if outBuffer.frameLength == 0 {
+                converterDone = true
+                return nil
+            }
+            return Self.planar(outBuffer)
+        } else {
+            guard !fileAtEnd, file.framePosition < file.length else {
+                fileAtEnd = true
+                return nil
+            }
+            readChunk.frameLength = 0
+            do { try file.read(into: readChunk, frameCount: Self.chunkFrames) } catch {
+                throw StemSeparationError.decode("\(error)")
+            }
+            if readChunk.frameLength == 0 {
+                fileAtEnd = true
+                return nil
+            }
+            return Self.planar(readChunk)
+        }
+    }
+
+    private static func planar(_ buffer: AVAudioPCMBuffer) -> (left: [Float], right: [Float])? {
         let frames = Int(buffer.frameLength)
-        guard let channelData = buffer.floatChannelData else { throw StemSeparationError.decode("no channel data") }
+        guard frames > 0, let channelData = buffer.floatChannelData else { return nil }
         let left = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
         let right = buffer.format.channelCount > 1
             ? Array(UnsafeBufferPointer(start: channelData[1], count: frames))
             : left
-        return (left, right, frames)
-    }
-
-    /// Writes a stereo float `.caf` from planar channel arrays.
-    private func writeStereo(_ url: URL, left: [Float], right: [Float]) throws {
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
-                                         channels: 2, interleaved: false) else {
-            throw StemSeparationError.write("format")
-        }
-        do {
-            // AAC at 128 kbps, matched to the (~128 kbps) source's fidelity — a stem can't carry
-            // more information than the mix it was separated from. This keeps a 1000-song stem
-            // cache in single-digit GB; float32 PCM was ~140 MB per track (~140 GB per 1000).
-            let settings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: sampleRate,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128_000,
-            ]
-            let file = try AVAudioFile(forWriting: url, settings: settings,
-                                       commonFormat: .pcmFormatFloat32, interleaved: false)
-            let frames = AVAudioFrameCount(left.count)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
-                throw StemSeparationError.write("buffer")
-            }
-            buffer.frameLength = frames
-            let channelData = buffer.floatChannelData!
-            left.withUnsafeBufferPointer { channelData[0].update(from: $0.baseAddress!, count: left.count) }
-            right.withUnsafeBufferPointer { channelData[1].update(from: $0.baseAddress!, count: right.count) }
-            try file.write(from: buffer)
-        } catch let e as StemSeparationError {
-            throw e
-        } catch {
-            throw StemSeparationError.write("\(error)")
-        }
-    }
-
-    /// Linear fade-in/out window of length `segment`, fading over `fade` samples at each end, so
-    /// overlapping chunks cross-blend cleanly under overlap-add normalization.
-    private func transitionWindow(segment: Int, fade: Int) -> [Float] {
-        var window = [Float](repeating: 1, count: segment)
-        guard fade > 1, fade * 2 <= segment else { return window }
-        for i in 0..<fade {
-            let g = Float(i) / Float(fade - 1)
-            window[i] = g
-            window[segment - 1 - i] = g
-        }
-        return window
+        return (left, right)
     }
 }

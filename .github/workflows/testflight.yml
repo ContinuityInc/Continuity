@@ -1,0 +1,143 @@
+# Publishes every push to alpha to internal TestFlight.
+#
+# Signing uses the App Store Connect API key (Admin role) to install one Apple
+# Distribution certificate and two App Store profiles that include the app group.
+# No certificates or profiles are stored in the repo. Three repository secrets:
+#
+#   ASC_KEY_ID     App Store Connect API key ID            (App Store Connect → Users and
+#   ASC_ISSUER_ID  App Store Connect API issuer ID          Access → Integrations → App Store
+#   ASC_KEY_P8     the .p8 private key, base64-encoded      Connect API → create a key with
+#                                                           Admin role)
+#   base64 encode:  base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
+#
+# Do NOT pass CODE_SIGN_IDENTITY / CODE_SIGN_STYLE as xcodebuild xcargs — Xcode applies
+# those to every target, including YouTubeKit's resource bundle, and Xcode 26 treats
+# Automatic + a forced Distribution identity as a hard error. The install script writes
+# Manual signing into the two app targets' Release xcconfigs only. Plain Automatic
+# signing is also wrong here: ephemeral runners minted a new Apple Development
+# certificate every run until the account hit the cap.
+#
+# CFBundleVersion is 1000 + github.run_number. TestFlight already has build 130 (Xcode Cloud,
+# Jul 18) while run_number is still in the 30s — a raw run_number would be rejected as older.
+# Uploads become available to INTERNAL testers automatically once App Store Connect finishes
+# processing — no extra distribution step.
+name: TestFlight
+
+on:
+  push:
+    branches: [alpha]
+  # Manual retry (e.g. after fixing secrets) without needing another push.
+  workflow_dispatch:
+
+# One upload at a time, never cancelled mid-upload; queued runs supersede older queued ones.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    # Skip cleanly (rather than fail) until the ASC secrets are configured.
+    if: ${{ vars.TESTFLIGHT_ENABLED != 'false' }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer" && xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -eu
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ]; then
+            echo "::error::ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 secrets are not configured — see the header of this workflow."
+            exit 1
+          fi
+          mkdir -p "$HOME/private_keys"
+          echo "$ASC_KEY_P8" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Restore distribution certificate
+        uses: actions/cache/restore@v4
+        with:
+          path: .signing/distribution.p12
+          key: continuity-distribution-${{ github.run_id }}
+          restore-keys: continuity-distribution-
+
+      - name: Install App Store signing
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: python3 .github/scripts/install_distribution_signing.py
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Archive
+        env:
+          # OAuth client ids for the import hub's "Connect" buttons (see project.yml). Unset
+          # secrets expand to empty strings, which the app reads as "service not set up".
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          BUILD_NUMBER=$((1000 + ${{ github.run_number }}))
+          echo "CFBundleVersion=${BUILD_NUMBER}"
+          xcodebuild -showBuildSettings \
+            -project Continuity.xcodeproj \
+            -scheme Continuity \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            | tee /tmp/continuity-settings.txt
+          xcodebuild -showBuildSettings \
+            -project Continuity.xcodeproj \
+            -target ContinuityShare \
+            -configuration Release \
+            | tee /tmp/share-settings.txt
+          grep -E "CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE_SPECIFIER" /tmp/continuity-settings.txt /tmp/share-settings.txt
+          grep -q "CODE_SIGN_STYLE = Manual" /tmp/continuity-settings.txt
+          grep -q "PROVISIONING_PROFILE_SPECIFIER = ContinuityCIStore" /tmp/continuity-settings.txt
+          grep -q "PROVISIONING_PROFILE_SPECIFIER = ContinuityShareCIStore" /tmp/share-settings.txt
+          xcodebuild archive \
+            -project Continuity.xcodeproj \
+            -scheme Continuity \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Continuity.xcarchive \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID:-}" \
+            GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" \
+            SOUNDCLOUD_CLIENT_ID="${SOUNDCLOUD_CLIENT_ID:-}" \
+            SOUNDCLOUD_CLIENT_SECRET="${SOUNDCLOUD_CLIENT_SECRET:-}"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -eu
+          xcodebuild -exportArchive \
+            -archivePath build/Continuity.xcarchive \
+            -exportOptionsPlist Signing/ExportOptions.plist \
+            -exportPath build/export \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Save distribution certificate
+        if: always() && hashFiles('.signing/created-new') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .signing/distribution.p12
+          key: continuity-distribution-${{ github.run_id }}

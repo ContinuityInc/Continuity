@@ -23,26 +23,52 @@ public enum LoudnessMeter {
         var highPass = Biquad.highPass(f0: 38.13547087602444, q: 0.5003270373238773,
                                        sampleRate: sampleRate)
 
-        var weighted = [Double](repeating: 0, count: samples.count)
-        for i in 0..<samples.count {
-            weighted[i] = highPass.process(shelf.process(Double(samples[i])))
-        }
-
         // 400 ms blocks, 100 ms hop (75% overlap).
         let block = Int(0.4 * sampleRate)
         let hop = Int(0.1 * sampleRate)
-        guard block > 0, hop > 0, weighted.count >= block else { return nil }
+        guard block > 0, hop > 0, samples.count >= block else { return nil }
 
+        // Single streaming pass: weighted samples land in a block-sized ring instead of a
+        // full-length buffer (which cost ~127 MB on a 6-minute track — a jetsam-feeding spike
+        // while analysis runs during playback). Each block's mean-square is summed from the
+        // ring in logical order, so the arithmetic — order included — matches the old
+        // whole-buffer implementation exactly.
+        //
+        // The index arithmetic is division-free. The obvious form of this loop (`ring[i % block]`
+        // to write, `ring[j % block]` to sum, `(filled - block) % hop` to decide) runs three
+        // integer divisions per sample — tens of millions per track, and integer division is
+        // the slowest thing in the loop by a wide margin. The write cursor wraps by hand, the
+        // next block boundary is counted rather than tested for divisibility, and the sum walks
+        // the ring as two contiguous runs (`base..<block` then `0..<base`), which visits exactly
+        // the same elements in exactly the same order as the modulo form — so the floating-point
+        // result is bit-identical, not merely close.
+        var ring = [Double](repeating: 0, count: block)
         var blockLoudness: [Double] = []
         var blockMeanSquare: [Double] = []
-        var start = 0
-        while start + block <= weighted.count {
+        var writeIndex = 0
+        var nextBlockEnd = block
+        for i in 0..<samples.count {
+            ring[writeIndex] = highPass.process(shelf.process(Double(samples[i])))
+            writeIndex += 1
+            if writeIndex == block { writeIndex = 0 }
+            let filled = i + 1
+            guard filled == nextBlockEnd else { continue }
+            nextBlockEnd += hop
+            let base = (filled - block) % block
             var sum = 0.0
-            for i in start..<(start + block) { sum += weighted[i] * weighted[i] }
+            ring.withUnsafeBufferPointer { window in
+                for k in base..<block {
+                    let w = window[k]
+                    sum += w * w
+                }
+                for k in 0..<base {
+                    let w = window[k]
+                    sum += w * w
+                }
+            }
             let ms = sum / Double(block)
             blockMeanSquare.append(ms)
             blockLoudness.append(-0.691 + 10 * log10(max(ms, .leastNormalMagnitude)))
-            start += hop
         }
 
         // Absolute gate: drop blocks below −70 LUFS.

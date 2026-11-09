@@ -12,8 +12,6 @@
 	<array/>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
-		<!-- UserDefaults: sample-library seed flag, playback-state persistence,
-		     transition settings. App's own data only. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
@@ -22,14 +20,22 @@
 				<string>CA92.1</string>
 			</array>
 		</dict>
-		<!-- File timestamps: stem-cache LRU eviction reads/writes modification dates of
-		     files inside the app container (StemCache). -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>C617.1</string>
+			</array>
+		</dict>
+		<!-- System boot time (`mach_absolute_time`): Deck.play anchors stem playback to a
+		     fresh render clock so a stale hostTime after an engine restart cannot SIGABRT. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
 			</array>
 		</dict>
 	</array>
