@@ -50,8 +50,12 @@ Requires **Xcode 26+**. `xcode-select` points at CommandLineTools, so prefix Xco
 `DEVELOPER_DIR`:
 
 ```sh
-# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change):
-cd Packages/ContinuityCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change).
+# On Linux CI / cloud agents the same command works; Package.swift excludes the
+# Accelerate sources (BeatTracker / KeyDetector) so the Foundation suite is first-class.
+cd Packages/ContinuityCore && swift test
+# On a Mac with CommandLineTools as default, prefix with Xcode's toolchain:
+#   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 # App + modules build (regenerate the project first if you added/removed/renamed a file):
 xcodegen generate
@@ -189,16 +193,14 @@ built or run here**. Plan work accordingly:
   code review + the ContinuityCore unit tests they rely on; real build/run must happen on a Mac.
 - **A Linux Swift toolchain is preinstalled** via `swiftly` (added to `~/.profile`, so `swift` is
   on `PATH` in login shells). Use `swift`, not `DEVELOPER_DIR`/`xcodebuild`, on this VM.
-- **`swift test` in `Packages/ContinuityCore` FAILS to compile on Linux**, even though the README
-  implies it's portable: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate` (Apple's
-  vDSP — no Linux module). Since SwiftPM compiles the target as a unit, those two files break the
-  whole build/test, including the 15 pure-Foundation files.
-- **To run the platform-agnostic tests on Linux**, build a throwaway SwiftPM package that includes
-  only the non-`Accelerate` sources + tests (exclude `BeatTracker.swift`, `KeyDetector.swift`,
-  `BeatTrackerTests.swift`, `KeyDetectorTests.swift`, `KeyDetectorAccuracyTests.swift`). That runs
-  **111 of ~114** real `XCTest` cases (Camelot/flow ordering, crossfade curves, transition plan,
-  loudness, silence trimming, YouTube/Spotify URL + page parsing). The BPM/beat-grid and
-  musical-key suites (Accelerate) can only be exercised on a Mac. Test fixtures are inline string
-  literals — no external resource files needed.
+- **`swift test` in `Packages/ContinuityCore` is first-class on Linux.** `Package.swift` uses
+  `#if os(Linux)` to `exclude` `BeatTracker.swift` / `KeyDetector.swift` (and their three test
+  files) — those `import Accelerate` (Apple vDSP). Run:
+  `cd Packages/ContinuityCore && swift test` (CI: `swift test --package-path Packages/ContinuityCore`).
+  That covers the Foundation suite (Camelot/flow ordering, crossfade curves, transition plan,
+  loudness, silence trimming, YouTube/Spotify/SoundCloud parsers, PlaybackClock, Duo layout, …).
+  New pure-Core files are picked up automatically; keep them Accelerate-free or add them to the
+  Linux `exclude` lists in `Package.swift`. The BPM/beat-grid and musical-key suites still need
+  a Mac (Xcode toolchain). Test fixtures are inline string literals — no external resource files.
 - **The core package has zero external SwiftPM dependencies**, so there is nothing to fetch on
   startup; the update script only warms the build graph.

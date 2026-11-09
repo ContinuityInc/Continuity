@@ -177,9 +177,9 @@ the owner adds them, "Connect" rows read "not set up" and everything else still 
 
 ## CI / TestFlight operations
 
-- `.github/workflows/core-tests.yml`: assembles the non-Accelerate ContinuityCore subset and
-  runs `swift test` on Linux for every PR. New pure Core files + tests are picked up
-  automatically (keep them Accelerate-free or add them to the exclusion list).
+- `.github/workflows/core-tests.yml`: runs `swift test --package-path Packages/ContinuityCore`
+  on Linux for every PR. `Package.swift` excludes Accelerate sources (`BeatTracker` /
+  `KeyDetector`) on Linux; keep new Core files Accelerate-free or add them to that list.
 - `.github/workflows/testflight.yml`: on every push to `main` (+ `workflow_dispatch`), builds
   on `macos-26` with **cloud signing** — no certs/profiles in the repo. Secrets: `ASC_KEY_ID`
   / `ASC_ISSUER_ID` / `ASC_KEY_P8` (base64 .p8). The API key **must be Admin role** — an App
