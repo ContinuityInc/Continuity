@@ -25,8 +25,9 @@ extension Logger {
 ///    session died while in the foreground — counted even when no MetricKit payload arrives
 ///    (jetsam while foregrounded, watchdog kills, a crash on the first launch of a build).
 ///
-/// `writeReport()` bundles both plus device/tier info and the in-process AVFAudio-exception
-/// counter into one text file for sharing from Transition settings → Diagnostics.
+/// `writeReport()` bundles both plus a stem/playback budget card (RSS peaks from `mem[]`
+/// breadcrumbs, AdaptiveQuality tier, AVFAudio exception count) into one text file for
+/// sharing from Transition settings → Diagnostics.
 @MainActor
 final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber {
     static let shared = CrashDiagnostics()
@@ -174,21 +175,35 @@ final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber {
 
     /// Writes a shareable plain-text report and returns its URL.
     func writeReport() throws -> URL {
+        let physicalMB = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
         var text = """
         Continuity diagnostics report
         generated: \(Date())
         build: \(Self.buildDescription)
         device: \(Self.deviceModel) iOS \(UIDevice.current.systemVersion)
-        physical memory: \(ProcessInfo.processInfo.physicalMemory / 1_048_576) MB
-        adaptive quality tier: \(AdaptiveQuality.current().rawValue)
+        physical memory: \(physicalMB) MB
         thermal state: \(ProcessInfo.processInfo.thermalState.rawValue)  low power: \(ProcessInfo.processInfo.isLowPowerModeEnabled)
 
         unclean foreground exits (all time): \(uncleanExitCount)
         last unclean exit: \(lastUncleanExit.map { "\($0)" } ?? "none")
-        AVFAudio exceptions caught this session: \(AVFAudioGuard.caughtExceptionCount)
-        last caught: \(AVFAudioGuard.lastCaughtDescription ?? "none")
 
         """
+
+        // One-page stem/playback budget: RSS peaks from mem[] breadcrumbs, AdaptiveQuality
+        // tier, AVFAudio exception count — comparable across ORT / Core ML experiments.
+        text += DiagnosticsBudgetCard.render(
+            MemoryBudgetRecorder.shared.makeSnapshot(
+                qualityTier: AdaptiveQuality.current().rawValue,
+                avfAudioExceptionCount: AVFAudioGuard.caughtExceptionCount,
+                lastCaughtDescription: AVFAudioGuard.lastCaughtDescription,
+                stemRequiredStartMB: AdaptiveQuality.stemRequiredStartMB(),
+                // Mirrors Ingest `StemSeparationBudget.windowFloorMB` (not public to App).
+                stemWindowFloorMB: 600,
+                physicalMemoryMB: physicalMB,
+                currentHeadroomMB: ProcessMemory.headroomMB,
+                currentRSSMB: ProcessMemory.residentMB
+            )
+        )
 
         text += "\n== MetricKit summaries received this launch ==\n"
         text += receivedSummaries.isEmpty ? "(none)\n" : receivedSummaries.joined(separator: "\n") + "\n"

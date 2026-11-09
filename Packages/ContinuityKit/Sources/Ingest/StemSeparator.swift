@@ -94,7 +94,10 @@ final class OnnxStemSeparator: StemSeparating {
     static func releaseSession() {
         sessionLock.lock()
         defer { sessionLock.unlock() }
+        let hadSession = cachedSession != nil
         cachedSession = nil
+        // Budget-card anchor: RSS after weights/arenas are dropped (pairs with load begin/ready).
+        if hadSession { MemoryFootprint.breadcrumb("ort session drain") }
     }
 
     /// Set on a system memory warning; the streaming loop checks it before each window and
