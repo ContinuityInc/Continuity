@@ -1,5 +1,6 @@
 import SwiftUI
 import Playback
+import ContinuityCore
 
 /// Vertical three-page shell: Library ↑, Now Playing (home), Up Next ↓.
 /// Sticky paging — one full screen at a time via `scrollTargetBehavior(.paging)`.
@@ -11,8 +12,9 @@ struct MainPagerView: View {
 
     var body: some View {
         // Full-screen pages: the pager ignores the safe area so each page tiles exactly one
-        // screen (no neighbor bleed into the status-bar / home-indicator bands); the measured
-        // insets are re-applied per page below.
+        // screen (no neighbor bleed into the status-bar / home-indicator bands). Library and
+        // Up Next restore those insets onto their own UINavigationControllers so bars extend
+        // under the status bar; Now Playing re-applies them as hard padding (no nav bar).
         GeometryReader { proxy in
             let insets = proxy.safeAreaInsets
             // The ScrollView below ignores the safe area, so it — and therefore every page's
@@ -26,31 +28,34 @@ struct MainPagerView: View {
             // exactly the three pages it is drawing.
             let pageHeight = proxy.size.height + insets.top + insets.bottom
             ScrollView(.vertical) {
-                // Every page gets HARD insets (the pager hides the window safe area, and
-                // neither NavigationStack bars nor safe-area piercing behave inside scroll
-                // content); full-bleed surfaces are provided as page BACKGROUNDS behind the
-                // padding, which cover the whole page frame including the bars.
+                // Library / Up Next are full-bleed NavigationStacks: a safe-area restorer
+                // re-injects the window insets so their bars extend under the status bar
+                // (hard top padding left a dead band above the bar that read as a seam).
+                // Now Playing has no nav bar, so it still uses hard insets — overlays and
+                // the column sit clear of the status bar / home indicator without UIKit help.
+                // NavigationStack pages also clear their opaque UIKit fills so the shared
+                // `PagerBackdrop` gradient bleed shows through at page boundaries.
                 VStack(spacing: 0) {
-                    // The pages are transparent: a single shared `PagerBackdrop` behind the whole
-                    // scroll content supplies every page's surface (flat `systemGroupedBackground`
-                    // for Library/Up Next, the album gradient over Now Playing, and the gradient
-                    // bleeding halfway into each neighbor). Because that one layer scrolls with the
-                    // content, the gradient is continuous across page boundaries — no per-page
-                    // seam, no per-frame crossfade state.
-                    LibrarySheetView()
-                        .padding(.top, insets.top)
-                        .padding(.bottom, insets.bottom)
-                        .containerRelativeFrame(.vertical)
+                    //
+                    // On balanced/constrained tiers only the current page + neighbors mount their
+                    // heavy chrome, so offscreen MiniProgressLine / glass / @Query work tears down.
+                    mounted(.library) { LibrarySheetView() }
+                        .pagerNavigationPage(insets: insets)
                         .id(MainPagerState.Page.library)
-                    NowPlayingView()
+                    mounted(.nowPlaying) { NowPlayingView() }
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
+                        // iPhone Duo's inner display puts the status bar on the RIGHT edge, so
+                        // the side insets are real there (and in landscape-shaped windows).
+                        .padding(.leading, insets.leading)
+                        .padding(.trailing, insets.trailing)
+                        // Now Playing reads these for Duo top-chrome compensation; Library /
+                        // Up Next already get them via `pagerNavigationPage`.
+                        .environment(\.pagerSafeAreaInsets, insets)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
-                    UpNextView()
-                        .padding(.top, insets.top)
-                        .padding(.bottom, insets.bottom)
-                        .containerRelativeFrame(.vertical)
+                    mounted(.upNext) { UpNextView() }
+                        .pagerNavigationPage(insets: insets)
                         .id(MainPagerState.Page.upNext)
                 }
                 .scrollTargetLayout()
@@ -85,6 +90,21 @@ struct MainPagerView: View {
                 }
             }
         )
+    }
+
+    /// The page's scroll slot is always laid out by its caller; only the heavy content inside
+    /// it is conditional — mounted when the page is current or adjacent (or when the device
+    /// tier mounts everything).
+    @ViewBuilder
+    private func mounted<Content: View>(
+        _ page: MainPagerState.Page,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if pagerState.shouldMount(page) {
+            content()
+        } else {
+            Color.clear
+        }
     }
 }
 
@@ -205,6 +225,12 @@ final class MainPagerState {
     }
 
     var page: Page = .nowPlaying
+
+    /// Current page plus immediate neighbors on constrained tiers; everything on `.full`.
+    func shouldMount(_ candidate: Page) -> Bool {
+        if AdaptiveQuality.mountsAllPagerPages() { return true }
+        return abs(candidate.rawValue - page.rawValue) <= 1
+    }
 
     func goToNowPlaying() {
         withAnimation(.snappy(duration: 0.35)) {

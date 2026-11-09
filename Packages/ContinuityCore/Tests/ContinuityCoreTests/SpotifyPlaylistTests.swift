@@ -36,6 +36,19 @@ final class SpotifyPlaylistTests: XCTestCase {
         XCTAssertEqual(contents.tracks[1].youtubeSearchQuery, "Die With A Smile Lady Gaga, Bruno Mars")
     }
 
+    func testParsesSingleTrackEmbed() {
+        let html = """
+        <script id="__NEXT_DATA__" type="application/json">
+        {"props":{"pageProps":{"state":{"data":{"entity":{"type":"track","name":"Blinding Lights","uri":"spotify:track:0VjIjW4GlUZAMYd2vXMi3b","duration":200040,"artists":[{"name":"The Weeknd"}]}}}}}}
+        </script>
+        """
+        XCTAssertEqual(
+            SpotifyPlaylist.parseTrack(html: html),
+            SpotifyTrack(title: "Blinding Lights", artist: "The Weeknd", durationSeconds: 200)
+        )
+        XCTAssertNil(SpotifyPlaylist.parseTrack(html: "<html>no data</html>"))
+    }
+
     func testReturnsEmptyWithoutNextData() {
         XCTAssertTrue(SpotifyPlaylist.parse(html: "<html>no data</html>").isEmpty)
     }

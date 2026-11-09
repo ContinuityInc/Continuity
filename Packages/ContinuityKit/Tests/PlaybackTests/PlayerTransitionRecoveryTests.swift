@@ -28,36 +28,7 @@ final class PlayerTransitionRecoveryTests: XCTestCase {
         XCTAssertNil(player.audio)
     }
 
-    func testRecentRenderClockFromPreviousEngineRunIsRejected() {
-        XCTAssertFalse(Deck.isRenderClockUsable(
-            renderHostTime: 950,
-            engineStartedAtHostTime: 1_000,
-            now: 1_010,
-            maximumAge: 100
-        ))
-    }
-
-    func testRecentRenderClockFromCurrentEngineRunIsAccepted() {
-        XCTAssertTrue(Deck.isRenderClockUsable(
-            renderHostTime: 1_005,
-            engineStartedAtHostTime: 1_000,
-            now: 1_010,
-            maximumAge: 100
-        ))
-    }
-
-    func testFutureAndExpiredRenderClocksAreRejected() {
-        XCTAssertFalse(Deck.isRenderClockUsable(
-            renderHostTime: 1_020,
-            engineStartedAtHostTime: 1_000,
-            now: 1_010,
-            maximumAge: 100
-        ))
-        XCTAssertFalse(Deck.isRenderClockUsable(
-            renderHostTime: 1_005,
-            engineStartedAtHostTime: 1_000,
-            now: 1_200,
-            maximumAge: 100
-        ))
-    }
+    // The render-clock freshness rule (`PlaybackClock.isRenderClockUsable`) and the rest of the
+    // deck clock arithmetic are pinned in ContinuityCore's `PlaybackClockTests`, which run on
+    // Linux CI for every PR; this simulator-only suite no longer duplicates them.
 }

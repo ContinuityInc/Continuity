@@ -11,6 +11,8 @@ struct UpNextView: View {
     @Environment(MainPagerState.self) private var pagerState
     // Persisted as a mode label; toggling ON reorders once, toggling OFF is not an undo.
     @AppStorage("flowMode.v1") private var flowMode = false
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     var body: some View {
         // Capture once: upcomingTracks allocates a fresh array slice per access, and body
@@ -26,6 +28,10 @@ struct UpNextView: View {
             }
             .navigationTitle("Up Next")
             .navigationBarTitleDisplayMode(.inline)
+            // Same as Library: visible bar so its fill extends under the status bar once
+            // the pager restores safe-area insets on this full-bleed page.
+            .toolbarBackground(.visible, for: .navigationBar)
+            .restorePagerSafeArea()
             .toolbar {
                 if pagerState.page == .upNext {
                     ToolbarItem(placement: .topBarLeading) {
@@ -39,7 +45,6 @@ struct UpNextView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Toggle("Flow", systemImage: "wand.and.stars", isOn: $flowMode)
-                        .accessibilityLabel("Flow")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     EditButton()
@@ -48,6 +53,7 @@ struct UpNextView: View {
             .onChange(of: flowMode) { _, isOn in
                 if isOn { applyFlowOrdering() }
             }
+            .renameTrackSheet(for: $trackPendingRename)
         }
     }
 
@@ -65,10 +71,12 @@ struct UpNextView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .listStyle(.insetGrouped)
-        // Let the shared pager backdrop (the gradient bleeding up from Now Playing) show through
-        // the list; the inset rows stay opaque so queue content remains legible.
+        // Plain + hidden scroll background: edge-to-edge rows over the shared pager
+        // backdrop (no insetGrouped card margins / rounded seam against Now Playing).
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // Duo inner display: keep row labels reachable instead of stretching to ~900pt.
+        .readableScrollColumn()
     }
 
     /// Same 44pt artwork + title/artist treatment as the library's track rows.
@@ -84,6 +92,13 @@ struct UpNextView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(track.title), \(track.artist)")
+        .contextMenu {
+            Button {
+                trackPendingRename = track
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+        }
     }
 
     /// Reorders only the upcoming tracks. The current track is passed as the chain's anchor —

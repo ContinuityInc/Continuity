@@ -33,7 +33,12 @@ public enum StemCache {
     public static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }
 
     public static func relativePath(for url: URL) -> String { url.lastPathComponent }
-    public static func url(forRelativePath path: String) -> URL { directory.appendingPathComponent(path) }
+    public static func url(forRelativePath path: String) -> URL {
+        guard CachePath.isSafeFileName(path) else {
+            return directory.appendingPathComponent(".__rejected__")
+        }
+        return directory.appendingPathComponent(path)
+    }
 
     /// Whether both stems already exist on disk for this key (either format generation).
     public static func hasStems(key: String) -> Bool {

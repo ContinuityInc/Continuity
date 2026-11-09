@@ -38,12 +38,9 @@ public final class PreparationQueue {
     /// whole pass before the first frame can land.
     public func resumePreparation(in context: ModelContext) async {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
-        // One directory listing per cache instead of up to five `fileExists` probes per track.
         let cacheIndex = CacheIndex.snapshot()
         var needsSave = false
         for (i, track) in tracks.enumerated() {
-            // Demo tracks have no source and play synthesized audio — there is nothing to
-            // resume. Heal any that a past build left non-ready.
             if track.isDemo {
                 if track.prepState != .ready {
                     track.prepState = .ready
@@ -55,13 +52,9 @@ public final class PreparationQueue {
             case .ready:
                 let hasAudio = track.localRelativePath.map { cacheIndex.hasAudio($0) } ?? false
                 if hasAudio {
-                    // Stems are demand-driven from the play queue (`ensureStems`) — never
-                    // separated library-wide at launch. Just true-up links vs the disk.
                     reconcileStemLinks(track, in: context, using: cacheIndex)
                     backfillTrackDetails(track, in: context)
                 } else {
-                    // Audio gone and this build can't re-download — surface as failed rather
-                    // than leaving a "ready" track that silently won't play.
                     track.prepState = .failed
                     needsSave = true
                 }
@@ -81,14 +74,7 @@ public final class PreparationQueue {
     public var onTracksDeleted: ((Set<UUID>) -> Void)?
 
     /// Best-effort, fire-and-forget healing of a ready track's display details:
-    /// - `durationSeconds` from the local audio file when the model still says 0 ("0:00" rows),
-    /// - audible bounds for gapless transitions,
-    /// - re-analysis when `TrackAnalyzer.analysisVersion` has moved.
-    ///
-    /// Runs post-`.ready` (never blocks playability) from both the import path and
-    /// `resumePreparation`. Every heavy step is gated by `ingestLimiter` so a large library's
-    /// launch backfill can't fan out into dozens of simultaneous file opens / PCM decodes
-    /// (which hitch launch and thrash memory).
+    /// duration, audible bounds, and re-analysis when `TrackAnalyzer.analysisVersion` moved.
     func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
         let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil
@@ -98,8 +84,6 @@ public final class PreparationQueue {
 
         Task {
             guard track.modelContext != nil else { return }
-            // Duration header + silence scan used to run ungated — one Task per ready track at
-            // every launch. SilenceScan alone decodes ~20 MB of PCM per track.
             if needsDuration || needsSilenceScan, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
@@ -120,9 +104,6 @@ public final class PreparationQueue {
                 }
                 await ingestLimiter.release()
             }
-            // Stale analysis: results computed by an older analyzer (e.g. pre-fix key detection)
-            // are refreshed so fixes reach the existing library. CPU-heavy → limiter-gated,
-            // off the main actor.
             if needsReanalysis, track.modelContext != nil, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
@@ -148,26 +129,11 @@ public final class PreparationQueue {
 
     // MARK: Stems (demand-driven)
 
-    /// Stem keys for the current play-queue neighborhood — protected from cache eviction.
     var protectedStemKeys: Set<String> = []
-    /// Stem keys whose separation is currently running. Keyed like the cache — by video/UUID,
-    /// not Track row — so the same source in two playlists can't run two concurrent
-    /// separations that rewrite the same output files.
     var stemsInFlight: Set<String> = []
-    /// Separation is held until this moment — armed on the session's FIRST stem demand
-    /// (i.e. when playback starts). Pressing play spins up the audio engine, UI, artwork, and
-    /// (first run) the model download all at once; the ORT session-load + first-window peak is
-    /// the app's largest allocation and must not stack on that ramp.
     var separationAllowedAt: Date?
-    /// At most one pending post-hold retry (ensureStems also re-fires on every track change).
     var stemsRetryScheduled = false
-    /// True while a stem-cache budget pass is running. `ensureStems` fires on every queue move
-    /// and each pass enumerates the whole stem directory with per-file sizes and dates, so
-    /// rapid skips used to stack one full scan per skip.
     var budgetPassInFlight = false
-    /// A pass was asked for while one was running — run exactly one more when it finishes.
     var budgetPassRequested = false
-    /// Keys a queued pass must protect on top of the play-queue neighborhood (a stem written
-    /// after the queue moved on), drained into the next pass.
     var budgetExtraProtectedKeys: Set<String> = []
 }

@@ -2,6 +2,7 @@ import SwiftUI
 import Ingest
 import Playback
 import Domain
+import ContinuityCore
 import SwiftData
 
 /// Minimal library: a grid of playlist/album cards. Tap a card to open its track list;
@@ -10,11 +11,36 @@ struct LibraryView: View {
     @Query(sort: \Playlist.createdAt) private var playlists: [Playlist]
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.pagerSafeAreaInsets) private var pagerInsets
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
     @State private var playlistPendingDelete: Playlist?
+    /// Measured grid size — fold/unfold rewrites this; never on the 20 Hz tick path.
+    @State private var gridSize: CGSize = .zero
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+    /// Phone: adaptive columns. Duo inner display: even columns on each side of the fold so a
+    /// card never sits on the hinge (see `DuoLayout.foldAwareColumnCount`).
+    private var columns: [GridItem] {
+        let width = Double(gridSize.width)
+        let height = Double(gridSize.height)
+        if let fold = DuoLayout.foldAwareColumnCount(
+            contentWidth: width,
+            contentHeight: height,
+            leadingInset: Double(pagerInsets.leading),
+            trailingInset: Double(pagerInsets.trailing)
+        ) {
+            var items = Array(
+                repeating: GridItem(.flexible(), spacing: DuoLayout.libraryCardSpacing),
+                count: fold.perSide * 2
+            )
+            // Widen the central gutter so the hinge falls between cards, not through one.
+            if fold.perSide > 0 {
+                items[fold.perSide - 1] = GridItem(.flexible(), spacing: fold.gutter)
+            }
+            return items
+        }
+        return [GridItem(.adaptive(minimum: DuoLayout.libraryCardMinimum), spacing: DuoLayout.libraryCardSpacing)]
+    }
 
     private var trimmedSearch: String {
         searchText.trimmingCharacters(in: .whitespaces)
@@ -60,7 +86,7 @@ struct LibraryView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: DuoLayout.libraryCardSpacing) {
                 ForEach(sortedPlaylists) { playlist in
                     NavigationLink {
                         PlaylistDetailView(playlist: playlist)
@@ -79,6 +105,13 @@ struct LibraryView: View {
                 }
             }
             .padding(16)
+            .onGeometryChange(for: CGSize.self) { proxy in
+                let r = DuoLayout.roundedSize(
+                    width: Double(proxy.size.width),
+                    height: Double(proxy.size.height)
+                )
+                return CGSize(width: r.width, height: r.height)
+            } action: { gridSize = $0 }
         }
         .scrollContentBackground(.hidden)
     }
@@ -166,7 +199,10 @@ private struct SearchResultsView: View {
                 ContentUnavailableView.search(text: query)
             }
         }
-        .listStyle(.insetGrouped)
+        // Same edge-to-edge treatment as Up Next / playlist detail — no insetGrouped
+        // card margins that read as a seam against the pager backdrop.
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     /// Plays the tapped track in its playlist context, so what follows is its real neighbors.
@@ -185,6 +221,7 @@ private struct SearchSongRow: View {
     let track: Track
     let play: () -> Void
     @Environment(Player.self) private var player
+    @State private var isRenaming = false
 
     var body: some View {
         Button(action: play) {
@@ -213,6 +250,14 @@ private struct SearchSongRow: View {
             } label: {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
+            Button {
+                isRenaming = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameTrackSheet(track: track)
         }
     }
 }

@@ -47,7 +47,7 @@ struct TransitionVoteBar: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 34)
-            .continuityGlass(cornerRadius: 20)
+            .continuityGlass(cornerRadius: 20, reduceUnderPressure: true)
             .transition(.opacity.combined(with: .scale(scale: 0.9)))
             // Restart the linger clock when the blend completes (completedAt flips nil → Date).
             .task(id: record.completedAt) {

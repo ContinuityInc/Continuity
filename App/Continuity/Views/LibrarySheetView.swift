@@ -9,7 +9,6 @@ struct LibrarySheetView: View {
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
     @State private var showingLocalImport = false
-    /// Non-nil while a picked folder/files are being scanned + copied in.
     @State private var isImportingLocal = false
 
     var body: some View {
@@ -17,6 +16,9 @@ struct LibrarySheetView: View {
             LibraryView()
                 .miniPlayerDock()
                 .navigationTitle("Continuity")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .restorePagerSafeArea()
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -33,10 +35,6 @@ struct LibrarySheetView: View {
                     }
                 }
         }
-        // Local import: pick audio files OR a whole folder — folders are scanned recursively
-        // for music (audio type + song-sized) and imported in bulk into "Local Files".
-        // iOS sandboxing means the app can't read the Files "music folder" unprompted; a
-        // folder grant through this picker is the sanctioned way to scan it.
         .fileImporter(
             isPresented: $showingLocalImport,
             allowedContentTypes: [.audio, .folder],

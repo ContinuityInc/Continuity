@@ -71,7 +71,8 @@ struct TransitionVisualizationView: View {
             chips
         }
         .padding(16)
-        .continuityGlass(cornerRadius: 20)
+        // Large glass over the album backdrop is the top GPU cost on Air-class devices.
+        .continuityGlass(cornerRadius: 20, reduceUnderPressure: true)
     }
 
     // MARK: Header
@@ -243,7 +244,7 @@ private struct BlendPlayhead: View {
     @Environment(Player.self) private var player
 
     var body: some View {
-        let progress = min(max(player.transitionProgress, 0), 1)
+        let progress = Player.fraction(player.transitionProgress)
         GeometryReader { geometry in
             Rectangle()
                 .fill(.white.opacity(0.5))

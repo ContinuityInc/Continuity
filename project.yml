@@ -18,12 +18,6 @@ settings:
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "2"
     CODE_SIGN_STYLE: Automatic
-  configs:
-    # Release archives must use Distribution. Automatic + Development on ephemeral
-    # CI runners minted a new Apple Development cert every TestFlight run until the
-    # account hit the cap ("Choose a certificate to revoke").
-    Release:
-      CODE_SIGN_IDENTITY: Apple Distribution
 
 targets:
   Continuity:
@@ -51,7 +45,8 @@ targets:
       path: App/Continuity/Info.plist
       properties:
         CFBundleDisplayName: Continuity
-        # Keep in sync with settings.base MARKETING_VERSION / CURRENT_PROJECT_VERSION.
+        # Keep in sync with settings.base MARKETING_VERSION / CURRENT_PROJECT_VERSION —
+        # hard-coded 1.0 here drifted from project.yml's 0.1.0.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
@@ -60,14 +55,23 @@ targets:
         UIBackgroundModes:
           - audio
         ITSAppUsesNonExemptEncryption: false
+        # Portrait plus landscape: Duo's outer display is often used tent-style in landscape,
+        # and the inner display ignores this list anyway (size classes drive layout there).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     # Shared scheme so `xcodebuild -scheme Continuity` works on a fresh checkout / CI without
     # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
     scheme:
       gatherCoverageData: false
       archive:
         config: Release
+    # Release signing lives in this xcconfig so it does not land on YouTubeKit.
+    # The committed file is empty (local archives stay Automatic). TestFlight
+    # overwrites it with Manual + an App Store profile before xcodegen.
+    configFiles:
+      Release: Signing/Continuity.release.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity

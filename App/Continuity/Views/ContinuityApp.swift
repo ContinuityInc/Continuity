@@ -12,6 +12,9 @@ struct ContinuityApp: App {
     @State private var prepQueue = PreparationQueue()
 
     init() {
+        // First: arm crash forensics (dirty-session marker + MetricKit) before anything that
+        // could itself crash. Cheap — one small file write and a subscriber registration.
+        CrashDiagnostics.shared.start()
         Self.configureURLCache()
         do {
             let schema = Schema([Playlist.self, Track.self, TransitionVote.self])

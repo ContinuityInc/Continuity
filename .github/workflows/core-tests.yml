@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Every AVFAudio node/engine call in Playback must go through the @try/@catch shim
+      # (AVFAudioGuard.swift); a raw call is a latent SIGABRT. Pure grep, runs anywhere.
+      - name: AVFAudio exception boundary
+        run: Scripts/check-avfaudio-boundary.sh
+
       - name: Assemble Linux-buildable subset
         run: |
           set -eu

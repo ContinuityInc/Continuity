@@ -9,6 +9,8 @@ struct PlaylistDetailView: View {
     @Environment(Player.self) private var player
     @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     var body: some View {
         // Resolved once per body evaluation: `orderedTracks` sorts and copies the whole
@@ -37,6 +39,11 @@ struct PlaylistDetailView: View {
                         } label: {
                             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
+                        Button {
+                            trackPendingRename = track
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
                     }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
@@ -48,8 +55,12 @@ struct PlaylistDetailView: View {
             }
         }
         .listStyle(.plain)
+        // Match the library root: let the shared pager backdrop show through empty chrome
+        // so pushed playlists don't reintroduce an opaque card seam.
+        .scrollContentBackground(.hidden)
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
+        .renameTrackSheet(for: $trackPendingRename)
         // Pushed destinations don't inherit insets added outside the NavigationStack, so the
         // dock is attached here too — this is what keeps the bar off the last row.
         .miniPlayerDock()
@@ -114,9 +125,10 @@ private struct TrackRow: View {
             }
             Spacer()
             if isCurrent {
+                // Static tint — the repeating variableColor effect was continuous GPU work for
+                // every open playlist detail while a track played.
                 Image(systemName: "waveform")
                     .foregroundStyle(.tint)
-                    .symbolEffect(.variableColor.iterative, options: .repeating)
             }
             if track.isDemo {
                 Text("DEMO")
@@ -146,7 +158,6 @@ private struct TrackRow: View {
             ProgressView()
                 .controlSize(.mini)
         case .failed:
-            // Missing audio in this build can't be re-fetched — re-import the file.
             Image(systemName: "exclamationmark.triangle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)

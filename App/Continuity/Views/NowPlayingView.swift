@@ -1,6 +1,7 @@
 import SwiftUI
 import Playback
 import Domain
+import ContinuityCore
 
 /// THE Now Playing screen — the app's home page in `MainPagerView` and the only now-playing
 /// surface (the old mini-player-expanded sheet is gone; the mini player jumps here instead).
@@ -10,43 +11,68 @@ import Domain
 struct NowPlayingView: View {
     @Environment(Player.self) private var player
     @Environment(MainPagerState.self) private var pagerState
+    @Environment(\.pagerSafeAreaInsets) private var pagerInsets
 
     @State private var showingTransitionSettings = false
+    /// Current track whose rename sheet is up (long-press on the title).
+    @State private var trackPendingRename: Track?
+    /// Measured page size. Written only when the window resizes (fold/unfold, iPhone Mirroring
+    /// drags), never on playback ticks, so it doesn't put this body on the 20 Hz path.
+    @State private var pageSize: CGSize = .zero
 
     var body: some View {
         // No backdrop here: MainPagerView supplies AlbumBackdrop as the page BACKGROUND
         // (behind the safe-area padding) so the blur fills the physical screen.
-        VStack(spacing: 20) {
-            // Top spacer clears the Library chevron overlay; bottom one reserves the band the
-            // vote bar + Up Next chevron overlays float in, so the column never collides.
-            Spacer(minLength: 44)
-
-            if let track = player.currentTrack {
-                artworkTile(for: track)
+        let width = Double(pageSize.width)
+        let height = Double(pageSize.height)
+        let arrangement = NowPlayingLayout.arrangement(width: width, height: height)
+        let artworkSide = CGFloat(NowPlayingLayout.artworkMaxSide(arrangement, width: width, height: height))
+        // Duo's inner display collapses the top inset to ~0; keep the Library chevron clear of
+        // the edge without pushing it down on a normal portrait phone.
+        let topChrome = CGFloat(DuoLayout.extraTopChrome(topInset: Double(pagerInsets.top)))
+        Group {
+            switch arrangement {
+            case .column:
+                VStack(spacing: 20) {
+                    // Top spacer clears the Library chevron overlay; bottom one reserves the band
+                    // the vote bar + Up Next chevron overlays float in, so the column never collides.
+                    Spacer(minLength: 44)
+                    if let track = player.currentTrack {
+                        artworkTile(for: track, maxSide: artworkSide)
+                    }
+                    controls
+                    Spacer(minLength: 96)
+                }
+                // Wide-but-short windows stay a column; keep the scrubber/transport phone-sized.
+                .frame(maxWidth: CGFloat(NowPlayingLayout.columnMaxWidth))
+            case .sideBySide:
+                // iPhone Duo inner display / wide iPhone Mirroring window: artwork beside the
+                // controls, the same chevron bands above and below. Prefer splitting on the
+                // physical fold so the hinge doesn't bisect the artwork.
+                VStack(spacing: 0) {
+                    Spacer(minLength: 44)
+                    HStack(spacing: 40) {
+                        if let track = player.currentTrack {
+                            artworkTile(for: track, maxSide: artworkSide)
+                        }
+                        VStack(spacing: 20) { controls }
+                            .frame(maxWidth: 440)
+                    }
+                    Spacer(minLength: 96)
+                }
             }
-
-            trackLabel
-
-            // Live blend graph while a transition is in flight, or a preview + countdown of
-            // the next scheduled blend.
-            TransitionSection()
-
-            if player.currentTrack != nil {
-                ScrubberBar()
-            }
-
-            transport
-                .padding(.top, 2)
-
-            transitionChip
-
-            Spacer(minLength: 96)
         }
         .padding(.horizontal, 24)
         // Greedy on purpose: the backdrop used to be the layer that stretched this page to
         // full height; without it the column hugs its content and the page collapses to a
         // centered band (with the chevron overlays piling onto the transport).
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Re-decided on every resize: a fold moves the app between displays mid-session.
+        // Round to whole points so the fold animation doesn't rewrite @State every frame.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            let r = DuoLayout.roundedSize(width: Double(proxy.size.width), height: Double(proxy.size.height))
+            return CGSize(width: r.width, height: r.height)
+        } action: { pageSize = $0 }
         .animation(.easeInOut, value: player.isTransitioning)
         .overlay(alignment: .top) {
             pageChevron(
@@ -56,7 +82,7 @@ struct NowPlayingView: View {
             ) {
                 pagerState.go(to: .library)
             }
-            .padding(.top, 8)
+            .padding(.top, 8 + topChrome)
         }
         .overlay(alignment: .bottom) {
             pageChevron(
@@ -78,20 +104,47 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showingTransitionSettings) {
             TransitionSettingsView()
         }
+        .renameTrackSheet(for: $trackPendingRename)
+    }
+
+    /// Everything below the artwork, shared by both arrangements.
+    @ViewBuilder private var controls: some View {
+        trackLabel
+
+        // Live blend graph while a transition is in flight, or a preview + countdown of
+        // the next scheduled blend.
+        TransitionSection()
+
+        if player.currentTrack != nil {
+            ScrubberBar()
+        }
+
+        transport
+            .padding(.top, 2)
+
+        transitionChip
     }
 
     // MARK: Artwork
 
-    private func artworkTile(for track: Track) -> some View {
-        RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 28, cropsLetterbox: true)
-            .frame(maxWidth: 280)
+    private func artworkTile(for track: Track, maxSide: CGFloat) -> some View {
+        let soft = AdaptiveQuality.prefersOpaqueChrome()
+        return RemoteArtworkView(
+            url: track.artworkURL,
+            symbol: track.artworkSymbol,
+            seed: track.gradientSeed,
+            cornerRadius: 28,
+            maxPixel: CGFloat(AdaptiveQuality.heroArtworkMaxPixel()),
+            cropsLetterbox: true
+        )
+            .frame(maxWidth: maxSide)
             .aspectRatio(1, contentMode: .fit)
             // Playing = full size with a lifted shadow; paused = drawn back, like a record
-            // easing off the platter. The signature "is it playing?" glance cue.
+            // easing off the platter. Softened on constrained tiers — large soft shadows are GPU-heavy.
             .scaleEffect(player.isPlaying ? 1 : 0.84)
-            .shadow(color: .black.opacity(0.45),
-                    radius: player.isPlaying ? 32 : 16,
-                    y: player.isPlaying ? 18 : 8)
+            .shadow(color: .black.opacity(soft ? 0.28 : 0.45),
+                    radius: player.isPlaying ? (soft ? 16 : 32) : (soft ? 8 : 16),
+                    y: player.isPlaying ? (soft ? 10 : 18) : (soft ? 4 : 8))
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: player.isPlaying)
             .padding(.horizontal, 32)
             .padding(.vertical, 6)
@@ -119,8 +172,28 @@ struct NowPlayingView: View {
         }
         .lineLimit(1)
         .multilineTextAlignment(.center)
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 3)
+        .shadow(color: .black.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.2 : 0.4),
+                radius: AdaptiveQuality.prefersOpaqueChrome() ? 4 : 10, y: 3)
         .animation(.easeInOut(duration: 0.3), value: player.currentTrack?.id)
+        .contextMenu {
+            if let track = player.currentTrack {
+                Button {
+                    trackPendingRename = track
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+        } preview: {
+            // The label itself is white-on-backdrop; the system preview sits on a neutral
+            // material, so it gets a legible primary-colored copy instead of a snapshot.
+            if let track = player.currentTrack {
+                VStack(spacing: 4) {
+                    Text(track.title).font(.headline)
+                    Text(track.artist).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(20)
+            }
+        }
     }
 
     /// "124 BPM · 8A" once tempo/key analysis is available — or a "Demo tone" note for the
@@ -149,7 +222,8 @@ struct NowPlayingView: View {
                 .overlay(alignment: .bottom) { skipBadge.offset(y: 30) }
         }
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+        .shadow(color: .black.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.2 : 0.4),
+                radius: AdaptiveQuality.prefersOpaqueChrome() ? 6 : 14, y: 4)
     }
 
     /// Shared forward-skip budget wiring: Next greys out and locks once the budget is spent.
@@ -185,7 +259,8 @@ struct NowPlayingView: View {
                 Circle()
                     .fill(discGradient)
                     .padding(9)
-                    .shadow(color: Color.accentColor.opacity(0.55), radius: 18, y: 6)
+                    .shadow(color: Color.accentColor.opacity(AdaptiveQuality.prefersOpaqueChrome() ? 0.3 : 0.55),
+                            radius: AdaptiveQuality.prefersOpaqueChrome() ? 8 : 18, y: 4)
                 playPauseGlyph(size: 34)
             }
             .frame(width: 108, height: 108)
@@ -214,7 +289,7 @@ struct NowPlayingView: View {
             .foregroundStyle(.white.opacity(0.9))
             .padding(.vertical, 3)
             .padding(.horizontal, 9)
-            .continuityGlassCapsule()
+            .continuityGlassCapsule(reduceUnderPressure: true)
             .accessibilityLabel("\(player.skipsRemaining) skips remaining")
     }
 
@@ -234,7 +309,7 @@ struct NowPlayingView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .frame(height: 34)
-            .continuityGlass(cornerRadius: 20, interactive: true)
+            .continuityGlass(cornerRadius: 20, interactive: true, reduceUnderPressure: true)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Transition settings")
@@ -299,30 +374,41 @@ private struct ScrubberBar: View {
     @State private var scrubValue: Double = 0
 
     var body: some View {
+        let upper = max(Player.finite(player.duration), 0.1)
+        let pos = Player.clampedSeconds(isEditing ? scrubValue : player.position, upperBound: upper)
+        let fraction = CGFloat(pos / upper)
         VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    // Clamped into the slider's own range: a value outside it (or a non-finite
-                    // one from a disturbed render clock) is a layout trap, not a visual glitch.
-                    get: { min(max(isEditing ? scrubValue : player.position, 0), max(player.duration, 0.1)) },
-                    set: { scrubValue = $0 }
-                ),
-                in: 0...max(player.duration, 0.1),
-                onEditingChanged: { editing in
-                    if editing {
-                        isEditing = true
-                        scrubValue = player.position
-                    } else {
-                        player.seek(to: scrubValue)
-                        isEditing = false
-                    }
+            // Custom bar instead of Slider: UISlider's continuous layout work at 10–20 Hz was a
+            // measurable hitch on Air-class devices. Drag still seeks; idle ticks only resize a capsule.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(0.22))
+                        .frame(height: 4)
+                    Capsule()
+                        .fill(.white)
+                        .frame(width: max(0, geo.size.width * fraction), height: 4)
                 }
-            )
-            .tint(.white)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            isEditing = true
+                            let t = Double(min(max(0, value.location.x / max(geo.size.width, 1)), 1))
+                            scrubValue = upper * t
+                        }
+                        .onEnded { _ in
+                            player.seek(to: scrubValue)
+                            isEditing = false
+                        }
+                )
+            }
+            .frame(height: 28)
             .accessibilityLabel("Playback position")
-            .accessibilityValue(Theme.time(isEditing ? scrubValue : player.position))
+            .accessibilityValue(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
             HStack {
-                Text(Theme.time(isEditing ? scrubValue : player.position))
+                Text(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
                 Spacer()
                 Text(Theme.time(player.duration))
             }

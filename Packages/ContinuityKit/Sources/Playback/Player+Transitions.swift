@@ -6,13 +6,16 @@ import os
 
 extension Player {
     /// Starts the incoming track on the idle deck at zero gain; `tick()` then ramps the blend.
+    /// Returns false when the blend could not start — the incoming deck's schedule or start
+    /// was refused by AVFAudio — leaving the current deck untouched so callers can hard-advance.
+    @discardableResult
     func beginTransition(
         toIndex index: Int,
         outgoingPosition: Double,
         duration: TimeInterval,
         isUserInitiatedSkip: Bool
-    ) {
-        guard queue.indices.contains(index), duration > 0 else { return }
+    ) -> Bool {
+        guard queue.indices.contains(index), duration > 0 else { return false }
         // Automatic blends arrive from tick(); skip blends may materialize a staged session first.
         // Funnel both through the same lazy stack accessor.
         let audio = ensureAudioStack()
@@ -118,11 +121,25 @@ extension Player {
         // (avoids a low-end blip before the first tick).
         if blend.bassSwapEnabled { incoming.bassGainDB = bassSwapCutDB }
 
-        incoming.play()
+        // `needsRescheduleAfterEngineStart` here means load()/seek couldn't schedule; play()
+        // false means AVFAudio refused the start. Either way there is no incoming audio: undo
+        // the staging and report it rather than ramp a blend into silence.
+        guard !incoming.needsRescheduleAfterEngineStart, incoming.play() else {
+            Logger.audio.error("incoming deck refused to start — blend not started")
+            incoming.stop()
+            incoming.volume = 1; incoming.vocalsGain = 1; incoming.bassGainDB = 0
+            incoming.rate = 1; incoming.pitchCents = 0
+            incomingStartOffset = 0; incomingDeckElapsed = 0
+            incomingRate = 1; incomingPitchShiftSemitones = 0
+            activeBlendSettings = nil
+            votableTransition = nil
+            return false
+        }
         transitionTargetIndex = index
         activeTransitionDurationSeconds = duration
         isUserInitiatedSkipTransition = isUserInitiatedSkip
         isTransitioning = true
+        return true
     }
 
     /// Shapes the per-stem vocal gains during a blend per the chosen vocal mode. Only called when
@@ -172,8 +189,12 @@ extension Player {
         queueRefillAttempted = false   // deck promotion changes the current track sans startCurrentFresh
         // The incoming was seeked `incomingStartOffset` in for beat alignment, so its deck clock
         // (elapsed-since-start) is that much behind the true track position — offset the baseline.
-        baselineSeconds = incomingStartOffset
-        position = baselineSeconds + incoming.elapsed
+        // Hold a finite clock only — a poisoned baseline would republish through `position` and
+        // trap SwiftUI / Int conversion before the next tick can refuse the update.
+        let offset = Player.finite(incomingStartOffset)
+        let nextPosition = offset + incoming.elapsed
+        baselineSeconds = offset
+        position = nextPosition.isFinite && nextPosition >= 0 ? nextPosition : offset
         currentPitchShiftSemitones = incomingPitchShiftSemitones
         currentRate = incomingRate
         // The key-sync shift was only needed while both tracks overlapped. Now that the incoming
