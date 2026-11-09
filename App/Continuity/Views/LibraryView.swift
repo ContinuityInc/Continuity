@@ -11,7 +11,6 @@ struct LibraryView: View {
     @Query(sort: \Playlist.createdAt) private var playlists: [Playlist]
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
-    @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.pagerSafeAreaInsets) private var pagerInsets
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
@@ -96,14 +95,8 @@ struct LibraryView: View {
                         PlaylistCard(playlist: playlist)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(playlist.title)
                     .contextMenu {
-                        if playlist.tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
-                            Button {
-                                prepQueue.prioritize(playlist: playlist, in: modelContext)
-                            } label: {
-                                Label("Download First", systemImage: "arrow.up.to.line")
-                            }
-                        }
                         Button(role: .destructive) {
                             playlistPendingDelete = playlist
                         } label: {
@@ -146,8 +139,6 @@ private struct SearchResultsView: View {
     let playlists: [Playlist]
     let query: String
     @Environment(Player.self) private var player
-    @Environment(PreparationQueue.self) private var prepQueue
-    @Environment(\.modelContext) private var modelContext
     @Environment(MainPagerState.self) private var pagerState
 
     private var matchingPlaylists: [Playlist] {
@@ -195,15 +186,6 @@ private struct SearchResultsView: View {
                                 }
                             }
                         }
-                        .contextMenu {
-                            if playlist.tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
-                                Button {
-                                    prepQueue.prioritize(playlist: playlist, in: modelContext)
-                                } label: {
-                                    Label("Download First", systemImage: "arrow.up.to.line")
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -243,8 +225,6 @@ private struct SearchSongRow: View {
     let track: Track
     let play: () -> Void
     @Environment(Player.self) private var player
-    @Environment(PreparationQueue.self) private var prepQueue
-    @Environment(\.modelContext) private var modelContext
     @State private var isRenaming = false
 
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
@@ -254,8 +234,8 @@ private struct SearchSongRow: View {
         if isCurrent { parts.append("Now Playing") }
         if track.isDemo { parts.append("Demo") }
         switch track.prepState {
-        case .pending, .preparing: parts.append("Downloading")
-        case .failed: parts.append("Download failed")
+        case .pending, .preparing: parts.append("Preparing")
+        case .failed: parts.append("Unavailable")
         case .ready: break
         }
         return parts.joined(separator: ", ")
@@ -295,13 +275,6 @@ private struct SearchSongRow: View {
                 isRenaming = true
             } label: {
                 Label("Rename", systemImage: "pencil")
-            }
-            if !track.isDemo, track.prepState != .ready {
-                Button {
-                    prepQueue.prioritize(track, in: modelContext)
-                } label: {
-                    Label("Download First", systemImage: "arrow.up.to.line")
-                }
             }
         }
         .sheet(isPresented: $isRenaming) {
