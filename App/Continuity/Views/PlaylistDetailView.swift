@@ -7,13 +7,10 @@ import Domain
 struct PlaylistDetailView: View {
     @Bindable var playlist: Playlist
     @Environment(Player.self) private var player
-    @Environment(PreparationQueue.self) private var prepQueue
     @Environment(MainPagerState.self) private var pagerState
     @Environment(\.modelContext) private var modelContext
     /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
     @State private var trackPendingRename: Track?
-
-    private var isSyncing: Bool { prepQueue.syncingPlaylistIDs.contains(playlist.id) }
 
     var body: some View {
         // Resolved once per body evaluation: `orderedTracks` sorts and copies the whole
@@ -32,13 +29,9 @@ struct PlaylistDetailView: View {
                 TrackRow(track: track)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // A failed ingest can't be played — tapping it retries instead.
-                        if track.prepState == .failed {
-                            prepQueue.enqueue(track, in: modelContext)
-                        } else {
-                            player.play(tracks: tracks, startAt: index)
-                            pagerState.goToNowPlaying()
-                        }
+                        guard track.prepState != .failed else { return }
+                        player.play(tracks: tracks, startAt: index)
+                        pagerState.goToNowPlaying()
                     }
                     .contextMenu {
                         Button {
@@ -50,13 +43,6 @@ struct PlaylistDetailView: View {
                             trackPendingRename = track
                         } label: {
                             Label("Rename", systemImage: "pencil")
-                        }
-                        if !track.isDemo, track.prepState != .ready {
-                            Button {
-                                prepQueue.prioritize(track, in: modelContext)
-                            } label: {
-                                Label("Download First", systemImage: "arrow.up.to.line")
-                            }
                         }
                     }
                     .swipeActions(edge: .trailing) {
@@ -106,44 +92,8 @@ struct PlaylistDetailView: View {
                     .frame(maxWidth: 200)
             }
             .buttonStyle(.glassProminent)
+            .accessibilityLabel("Play \(playlist.title)")
             .padding(.top, 4)
-
-            if tracks.contains(where: { !$0.isDemo && $0.prepState != .ready }) {
-                Button {
-                    prepQueue.prioritize(playlist: playlist, in: modelContext)
-                } label: {
-                    Label("Download First", systemImage: "arrow.up.to.line")
-                        .frame(maxWidth: 200)
-                }
-                .buttonStyle(.bordered)
-            }
-
-            // Source-backed playlists mirror a remote list: manual sync + the auto-sync opt-out.
-            if playlist.isSourceBacked {
-                HStack(spacing: 16) {
-                    Button {
-                        Task { await prepQueue.syncPlaylist(playlist, in: modelContext) }
-                    } label: {
-                        Label(isSyncing ? "Syncing…" : "Sync", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.subheadline)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isSyncing)
-
-                    Toggle(isOn: $playlist.autoSyncEnabled) {
-                        Text("Auto-sync")
-                            .font(.subheadline)
-                    }
-                    .fixedSize()
-                }
-                .padding(.top, 2)
-
-                if let synced = playlist.lastSyncedAt {
-                    Text("Synced \(synced.formatted(.relative(presentation: .named)))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
@@ -194,6 +144,9 @@ private struct TrackRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(track.title), \(track.artist)")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
     /// Subtle trailing badge reflecting the track's ingest state. Ready tracks show nothing.
@@ -205,10 +158,10 @@ private struct TrackRow: View {
             ProgressView()
                 .controlSize(.mini)
         case .failed:
-            // Tapping the row retries a failed ingest — the retry glyph signals it's actionable.
-            Image(systemName: "arrow.clockwise")
+            Image(systemName: "exclamationmark.triangle")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
+                .accessibilityLabel("Unavailable")
         case .ready:
             EmptyView()
         }
