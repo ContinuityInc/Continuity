@@ -23,5 +23,10 @@ jobs:
       - name: AVFAudio exception boundary
         run: Scripts/check-avfaudio-boundary.sh
 
+      # YouTubeKit may only be imported by YouTubeStreamResolver (AudioStreamResolving).
+      # Also locks the exact: SPM pin so a floating dependency can't sneak in.
+      - name: YouTubeKit import boundary
+        run: Scripts/check-youtubekit-boundary.sh
+
       - name: swift test
         run: swift test --package-path Packages/ContinuityCore

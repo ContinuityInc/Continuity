@@ -82,7 +82,11 @@ struct ResolvedSpotifyPlaylist: Sendable, Equatable {
 }
 
 /// Resolves a YouTube video ID to a downloadable audio stream.
-/// Implemented by `YouTubeStreamResolver`.
+///
+/// YouTubeKit must only be imported by the concrete `YouTubeStreamResolver`
+/// implementation of this protocol — selection policy and host allowlisting live in
+/// ContinuityCore (`AudioStreamSelector` / `MediaDownloadPolicy`). CI:
+/// `Scripts/check-youtubekit-boundary.sh`.
 protocol AudioStreamResolving: Sendable {
     func resolveAudio(videoID: String) async throws -> ResolvedAudio
 }
