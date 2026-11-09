@@ -6,10 +6,10 @@ import ContinuityCore
 
 // MARK: - Model
 
-/// Drives the catalog search page: debounced iTunes-catalog queries, the two result lists,
-/// and a music-vocabulary suggestion engine (`CatalogAutocorrect`) that learns from catalog
-/// results plus the user's library. Input uses the system keyboard; suggestions sit above the
-/// results and never replace it.
+/// Drives the catalog search page: debounced iTunes Search/Lookup queries (with Core ranking
+/// + explicit artist-lookup upgrades), the two result lists, and a music-vocabulary suggestion
+/// engine (`CatalogAutocorrect`) that learns from catalog results plus the user's library.
+/// Input uses the system keyboard; suggestions sit above the results and never replace it.
 @Observable
 @MainActor
 final class CatalogSearchModel {
