@@ -153,6 +153,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
   posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
   residual crash class after the shim.
+- **20 Hz tick fields stay in leaf views.** `player.position` / `displayProgress` /
+  `transitionProgress` / `secondsUntilTransition` / `transitionCountdownSeconds` may only be
+  read by the allowlisted leaves (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`,
+  `BlendPlayhead`, `TransitionCountdownPill`). `Scripts/check-tick-leaf-readers.sh` fails CI
+  otherwise — extend that allowlist deliberately if a new leaf is intentional.
 - **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
   Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
   `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;

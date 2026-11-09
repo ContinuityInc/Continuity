@@ -28,5 +28,10 @@ jobs:
       - name: YouTubeKit import boundary
         run: Scripts/check-youtubekit-boundary.sh
 
+      # Only allowlisted leaf views may read Player tick fields (position / displayProgress /
+      # transitionProgress / …). New readers outside the list reintroduce 20 Hz parent churn.
+      - name: 20 Hz tick leaf readers
+        run: Scripts/check-tick-leaf-readers.sh
+
       - name: swift test
         run: swift test --package-path Packages/ContinuityCore
