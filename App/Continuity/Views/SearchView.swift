@@ -6,10 +6,11 @@ import ContinuityCore
 
 // MARK: - Model
 
-/// Drives the catalog search page: debounced iTunes Search/Lookup queries (with Core ranking
-/// + explicit artist-lookup upgrades), the two result lists, and a music-vocabulary suggestion
-/// engine (`CatalogAutocorrect`) that learns from catalog results plus the user's library.
-/// Input uses the system keyboard; suggestions sit above the results and never replace it.
+/// Drives the catalog search page: debounced iTunes Search queries (cheap while typing),
+/// Core ranking + explicit artist-lookup upgrades on submit/settle, result lists, and a
+/// music-vocabulary suggestion engine (`CatalogAutocorrect`) that learns from catalog results
+/// plus the user's library. Input uses the system keyboard; suggestions sit above the results
+/// and never replace it.
 @Observable
 @MainActor
 final class CatalogSearchModel {
@@ -89,27 +90,32 @@ final class CatalogSearchModel {
 
     // MARK: Searching
 
-    /// Debounced live search — every keystroke re-arms it, so only pauses in typing hit the
-    /// network.
+    /// Debounced live search — 350 ms pause → cheap primary Search (2 GETs). After results
+    /// settle another ~900 ms without typing, run the explicit upgrade pass. Artist lookups
+    /// never ride every keystroke (Apple Search ≈ 20 calls/min).
     private func scheduleSearch() {
         searchTask?.cancel()
         let term = query
         searchTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
-            await self?.run(term: term)
+            await self?.run(term: term, upgrade: false)
+            try? await Task.sleep(for: .milliseconds(900))
+            guard !Task.isCancelled, self?.query == term else { return }
+            await self?.run(term: term, upgrade: true)
         }
     }
 
+    /// Keyboard submit — full upgrade immediately (variants + cached artist lookups).
     func searchNow() {
         searchTask?.cancel()
         let term = query
         searchTask = Task { [weak self] in
-            await self?.run(term: term)
+            await self?.run(term: term, upgrade: true)
         }
     }
 
-    private func run(term: String) async {
+    private func run(term: String, upgrade: Bool) async {
         let trimmed = term.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             songs = []; albums = []; errorMessage = nil; isSearching = false
@@ -118,7 +124,7 @@ final class CatalogSearchModel {
         isSearching = true
         defer { isSearching = false }
         do {
-            let results = try await catalog.search(trimmed)
+            let results = try await catalog.search(trimmed, upgrade: upgrade)
             guard !Task.isCancelled, term == query else { return }   // stale response
             songs = results.songs
             albums = results.albums
@@ -129,7 +135,11 @@ final class CatalogSearchModel {
                 + results.albums.map(\.title) + results.albums.map(\.artist))
         } catch {
             guard term == query else { return }
-            errorMessage = LinkImporter.errorMessage(error, noun: "search")
+            // Upgrades are best-effort inside MusicCatalog; only primary Search failures
+            // reach here. Keep any already-shown cheap results instead of wiping them.
+            if !upgrade || (songs.isEmpty && albums.isEmpty) {
+                errorMessage = LinkImporter.errorMessage(error, noun: "search")
+            }
         }
     }
 

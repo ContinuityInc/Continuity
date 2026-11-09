@@ -69,41 +69,55 @@ public struct CatalogAlbum: Identifiable, Hashable, Sendable {
 ///
 /// **Explicit coverage:** the public `/search` endpoint currently returns `cleaned` /
 /// `notExplicit` song rows even with `explicit=Yes`. `/lookup?id=<artistId>&entity=song|album`
-/// still returns `explicit` siblings. This client fans out a few query variants, then upgrades
-/// top artists via lookup and merges through `CatalogSearch` (ContinuityCore). MusicKit would
-/// also see explicit catalog rows but needs the MusicKit App Service — that capability mismatches
-/// cloud signing for TestFlight, so we stay on the HTTP affiliate API.
+/// still returns `explicit` siblings. Interactive typing stays on the two primary Search
+/// GETs; query variants + artist-lookup upgrades run only on submit / settle, as
+/// best-effort extras that never discard primary hits. Lookups are cached per `artistID`
+/// for the session. MusicKit would also see explicit rows but needs the MusicKit App
+/// Service — that capability mismatches cloud signing for TestFlight, so we stay on the
+/// HTTP affiliate API.
 ///
-/// Stateless and Sendable: each call is GETs returning decoded results; errors map to
-/// the shared `IngestError` cases so the UI reuses the existing user-facing messages.
-public struct MusicCatalog: Sendable {
+/// One instance owns the session lookup cache (the search model holds it). Errors on the
+/// primary song/album Search map to shared `IngestError` cases for the UI.
+public final class MusicCatalog: Sendable {
+
+    private let artistCache = ArtistLookupCache()
 
     public init() {}
 
-    /// Searches songs and albums for a free-text term. Empty/whitespace terms return empty
-    /// results. Runs query variants + artist-lookup upgrades concurrently, then ranks/dedupes.
-    public func search(_ term: String, limit: Int = 25) async throws -> (songs: [CatalogSong], albums: [CatalogAlbum]) {
+    /// Searches songs and albums for a free-text term.
+    ///
+    /// - Parameters:
+    ///   - upgrade: When `false` (debounced typing), only the two primary Search GETs run —
+    ///     same cost as before. When `true` (submit / settle), also fans out best-effort
+    ///     query variants and artist lookups, then re-ranks through `CatalogSearch`.
+    public func search(
+        _ term: String,
+        limit: Int = 25,
+        upgrade: Bool = false
+    ) async throws -> (songs: [CatalogSong], albums: [CatalogAlbum]) {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return ([], []) }
 
         let variants = CatalogSearch.queryVariants(from: trimmed)
-        // Primary variant gets full song+album pulls; extra variants are song-only to keep
-        // the interactive search budget bounded (~6–8 GETs typical).
-        let primary = variants[0]
-        let extra = Array(variants.dropFirst())
+        let primary = variants.first ?? trimmed
 
         async let primarySongs = fetchHits(term: primary, entity: "song", limit: max(limit, 40))
         async let primaryAlbums = fetchHits(term: primary, entity: "album", limit: max(limit, 25))
-        async let variantSongBatches = fetchSongVariants(extra)
+        let (songsSeed, albumsSeed) = try await (primarySongs, primaryAlbums)
 
-        let (songsSeed, albumsSeed, extras) = try await (primarySongs, primaryAlbums, variantSongBatches)
+        guard upgrade else {
+            let rankedSongs = CatalogSearch.rankSongs(query: trimmed, batches: [songsSeed], limit: limit)
+            let rankedAlbums = CatalogSearch.rankAlbums(query: trimmed, batches: [albumsSeed], limit: limit)
+            return (rankedSongs.map(CatalogSong.init(hit:)), rankedAlbums.map(CatalogAlbum.init(hit:)))
+        }
 
-        // Artist lookup is what actually surfaces explicit rows the Search endpoint omits.
+        // Variants + artist lookup are optional coverage; a 403/timeout must not erase primary.
+        let extras = await fetchSongVariantsBestEffort(Array(variants.dropFirst()))
         let upgradeIDs = CatalogSearch.artistIDsForUpgrade(
             from: songsSeed + extras.flatMap { $0 } + albumsSeed,
             limit: 3
         )
-        let lookupBatches = try await lookupArtistCatalog(artistIDs: upgradeIDs)
+        let lookupBatches = await lookupArtistCatalogBestEffort(artistIDs: upgradeIDs)
 
         let rankedSongs = CatalogSearch.rankSongs(
             query: trimmed,
@@ -146,42 +160,54 @@ public struct MusicCatalog: Sendable {
         )
     }
 
-    private func fetchSongVariants(_ variants: [String]) async throws -> [[CatalogSearch.Hit]] {
+    /// Best-effort variant song searches — failures become empty batches.
+    private func fetchSongVariantsBestEffort(_ variants: [String]) async -> [[CatalogSearch.Hit]] {
         guard !variants.isEmpty else { return [] }
-        return try await withThrowingTaskGroup(of: (Int, [CatalogSearch.Hit]).self) { group in
+        return await withTaskGroup(of: (Int, [CatalogSearch.Hit]).self) { group in
             for (index, variant) in variants.enumerated() {
                 group.addTask {
-                    (index, try await self.fetchHits(term: variant, entity: "song", limit: 25))
+                    let hits = (try? await self.fetchHits(term: variant, entity: "song", limit: 25)) ?? []
+                    return (index, hits)
                 }
             }
             var pairs: [(Int, [CatalogSearch.Hit])] = []
-            for try await pair in group { pairs.append(pair) }
+            for await pair in group { pairs.append(pair) }
             return pairs.sorted { $0.0 < $1.0 }.map(\.1)
         }
     }
 
-    private func lookupArtistCatalog(artistIDs: [Int]) async throws -> (songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit]) {
+    /// Best-effort artist song+album lookups with a per-session `artistID` cache.
+    private func lookupArtistCatalogBestEffort(
+        artistIDs: [Int]
+    ) async -> (songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit]) {
         guard !artistIDs.isEmpty else { return ([], []) }
         var songBatches: [[CatalogSearch.Hit]] = []
         var albumBatches: [[CatalogSearch.Hit]] = []
         songBatches.reserveCapacity(artistIDs.count)
         albumBatches.reserveCapacity(artistIDs.count)
 
-        try await withThrowingTaskGroup(of: (songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit]).self) { group in
+        await withTaskGroup(of: (songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit]).self) { group in
             for id in artistIDs {
                 group.addTask {
-                    async let songs = self.fetch(
+                    if let cached = await self.artistCache.cached(artistID: id) {
+                        return cached
+                    }
+                    let songs = (try? await self.fetch(
                         path: "/lookup",
                         query: CatalogSearch.lookupQueryItems(id: id, entity: "song", limit: 100)
-                    )
-                    async let albums = self.fetch(
+                    )) ?? []
+                    let albums = (try? await self.fetch(
                         path: "/lookup",
                         query: CatalogSearch.lookupQueryItems(id: id, entity: "album", limit: 50)
-                    )
-                    return try await (songs, albums)
+                    )) ?? []
+                    // Cache even empty successful parses so we don't re-hammer a miss; a
+                    // thrown fetch already collapsed to [] above and is still worth caching
+                    // for this session to stay under Apple's ~20/min Search budget.
+                    await self.artistCache.store(artistID: id, songs: songs, albums: albums)
+                    return (songs, albums)
                 }
             }
-            for try await batch in group {
+            for await batch in group {
                 songBatches.append(batch.songs)
                 albumBatches.append(batch.albums)
             }
@@ -198,10 +224,22 @@ public struct MusicCatalog: Sendable {
         guard let album = echoed.first(where: { $0.kind == .album }) else { return albumID }
         if album.explicitness == .explicit { return album.id }
         guard let artistID = album.artistID else { return albumID }
-        let artistAlbums = try await fetch(
-            path: "/lookup",
-            query: CatalogSearch.lookupQueryItems(id: artistID, entity: "album", limit: 100)
-        )
+
+        let artistAlbums: [CatalogSearch.Hit]
+        if let cached = await artistCache.cached(artistID: artistID) {
+            artistAlbums = cached.albums
+        } else {
+            let songs = (try? await fetch(
+                path: "/lookup",
+                query: CatalogSearch.lookupQueryItems(id: artistID, entity: "song", limit: 100)
+            )) ?? []
+            let albums = (try? await fetch(
+                path: "/lookup",
+                query: CatalogSearch.lookupQueryItems(id: artistID, entity: "album", limit: 100)
+            )) ?? []
+            await artistCache.store(artistID: artistID, songs: songs, albums: albums)
+            artistAlbums = albums
+        }
         return CatalogSearch.preferredAlbumID(among: artistAlbums, matching: album)
     }
 
@@ -235,6 +273,26 @@ public struct MusicCatalog: Sendable {
             throw IngestError.decodeFailed("catalog response: invalid JSON")
         }
         return hits
+    }
+}
+
+// MARK: - Session artist-lookup cache
+
+/// Per-`MusicCatalog` instance cache so typing → settle → submit doesn't re-fetch the same
+/// artist's song/album lists within one search session.
+private actor ArtistLookupCache {
+    private var songsByArtist: [Int: [CatalogSearch.Hit]] = [:]
+    private var albumsByArtist: [Int: [CatalogSearch.Hit]] = [:]
+
+    func cached(artistID: Int) -> (songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit])? {
+        guard let songs = songsByArtist[artistID],
+              let albums = albumsByArtist[artistID] else { return nil }
+        return (songs, albums)
+    }
+
+    func store(artistID: Int, songs: [CatalogSearch.Hit], albums: [CatalogSearch.Hit]) {
+        songsByArtist[artistID] = songs
+        albumsByArtist[artistID] = albums
     }
 }
 
