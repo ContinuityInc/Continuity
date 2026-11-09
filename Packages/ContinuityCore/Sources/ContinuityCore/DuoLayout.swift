@@ -25,6 +25,24 @@ public enum DuoLayout {
         return max(0, minimum - max(0, topInset))
     }
 
+    /// Full-window page height when a `GeometryReader` sits *inside* the safe area while its
+    /// `ScrollView` ignores it. `proxy.size.height` is then short by exactly the vertical insets
+    /// it reports; adding them back makes each page (and the shared backdrop) match the window
+    /// that `containerRelativeFrame(.vertical)` tiles into. Non-finite insets clamp to 0; a
+    /// non-finite safe-area height yields 0 so callers never feed SwiftUI a NaN frame.
+    public static func pageHeight(
+        safeAreaHeight: Double,
+        topInset: Double,
+        bottomInset: Double
+    ) -> Double {
+        guard safeAreaHeight.isFinite else { return 0 }
+        let top = topInset.isFinite ? max(0, topInset) : 0
+        let bottom = bottomInset.isFinite ? max(0, bottomInset) : 0
+        let height = safeAreaHeight + top + bottom
+        guard height.isFinite, height > 0 else { return 0 }
+        return height
+    }
+
     /// X of the physical fold in the *content* coordinate space (origin at the leading content
     /// edge, after the leading safe-area inset has already been applied).
     ///
@@ -60,12 +78,15 @@ public enum DuoLayout {
     }
 
     /// Whether a library-style adaptive grid should split around the fold instead of tiling
-    /// cards across the hinge. Tall phone layouts and narrow windows keep the normal grid.
+    /// cards across the hinge. Tall phone layouts, narrow windows, and outer-display tent
+    /// landscape (wide-but-short, no physical fold) keep the normal adaptive grid.
     public static func usesFoldAwareGrid(width: Double, height: Double) -> Bool {
         guard width.isFinite, height.isFinite else { return false }
         guard width >= foldAwareGridMinWidth else { return false }
-        // Book / inner-display shapes are at least as wide as they are tall (or close).
-        return width >= height * 0.85
+        // Book / inner-display shapes are near-square: at least ~as wide as tall, but not the
+        // ultra-wide strip of a phone in landscape tent pose (no hinge there).
+        guard width >= height * 0.85 else { return false }
+        return height >= width * 0.55
     }
 
     /// Even column count for a fold-centered grid: the same number of flexible columns on each
