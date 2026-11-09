@@ -19,7 +19,14 @@ public struct TransitionPlan: Equatable, Sendable {
     ///   - trackDuration: total length of the outgoing track.
     ///   - hasNextTrack: whether there is a track to transition into.
     public func shouldStart(position: TimeInterval, trackDuration: TimeInterval, hasNextTrack: Bool) -> Bool {
-        guard hasNextTrack, duration > 0, trackDuration > 0 else { return false }
+        // Non-finite clocks (poisoned deck / unset duration) must not start a blend:
+        // `+inf >= trackDuration - duration` is true in Swift, which would fire a transition
+        // from a disturbed render clock the same way NaN used to poison progress.
+        guard hasNextTrack,
+              duration.isFinite, duration > 0,
+              trackDuration.isFinite, trackDuration > 0,
+              position.isFinite
+        else { return false }
         // Only crossfade when the track is meaningfully longer than the blend itself.
         guard trackDuration > duration else { return false }
         return position >= trackDuration - duration
