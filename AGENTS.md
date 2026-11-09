@@ -129,6 +129,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `CONTINUITY_LIVE_PROBE=1 … -only-testing:IngestTests/LiveIngestProbeTests` (simulator) —
   it prints the failing stage and exact error per track. Beware: a scratch SwiftPM harness
   that depends on `branch: "main"` silently resolves upstream HEAD, not the app's pin.
+- **YouTubeKit import site is `YouTubeStreamResolver` only** (the `AudioStreamResolving`
+  implementation). Map `YouTubeKit.Stream` → `AudioStreamCandidate`, then call
+  `AudioStreamSelector.selectDownloadable` — selection + host allowlist stay in ContinuityCore.
+  `Scripts/check-youtubekit-boundary.sh` fails CI on any other `import YouTubeKit`, on
+  `YouTubeKit.` type refs outside that file, or if the SPM pin leaves `exact:`.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures

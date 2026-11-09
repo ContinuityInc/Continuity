@@ -73,4 +73,16 @@ public enum AudioStreamSelector {
         let native = candidates.filter { $0.isAudioOnly && $0.isNativelyPlayable }
         return selectBest(from: native)
     }
+
+    /// Like `selectBest`, but drops candidates whose `urlString` fails `MediaDownloadPolicy`.
+    /// Extraction libraries can return arbitrary HTTPS URLs; Continuity only downloads allowlisted
+    /// media hosts. Keep this gate in Core so an extractor swap can't bypass it by accident.
+    public static func selectDownloadable(
+        from candidates: [AudioStreamCandidate]
+    ) -> AudioStreamCandidate? {
+        selectBest(from: candidates.filter { candidate in
+            guard let url = URL(string: candidate.urlString) else { return false }
+            return MediaDownloadPolicy.isAllowedStreamURL(url)
+        })
+    }
 }
