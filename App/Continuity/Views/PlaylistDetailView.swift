@@ -40,6 +40,10 @@ struct PlaylistDetailView: View {
                             pagerState.goToNowPlaying()
                         }
                     }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint(track.prepState == .failed
+                                       ? "Retries the download"
+                                       : "Plays this track")
                     .contextMenu {
                         Button {
                             player.playNext(track)
@@ -63,8 +67,9 @@ struct PlaylistDetailView: View {
                         Button(role: .destructive) {
                             delete(track)
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Delete \(track.title)", systemImage: "trash")
                         }
+                        .accessibilityLabel("Delete \(track.title)")
                     }
             }
         }
@@ -163,6 +168,7 @@ private struct TrackRow: View {
         HStack(spacing: 12) {
             RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
                 .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(.body)
@@ -179,6 +185,7 @@ private struct TrackRow: View {
                 // every open playlist detail while a track played.
                 Image(systemName: "waveform")
                     .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
             }
             if track.isDemo {
                 Text("DEMO")
@@ -187,13 +194,29 @@ private struct TrackRow: View {
                     .padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
             prepIndicator
             Text(Theme.time(track.durationSeconds))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+    }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [track.title, track.artist, Theme.time(track.durationSeconds)]
+        if isCurrent { parts.append("Now Playing") }
+        if track.isDemo { parts.append("Demo") }
+        switch track.prepState {
+        case .pending, .preparing: parts.append("Downloading")
+        case .failed: parts.append("Download failed, retry available")
+        case .ready: break
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// Subtle trailing badge reflecting the track's ingest state. Ready tracks show nothing.
@@ -204,11 +227,13 @@ private struct TrackRow: View {
             // Downloading/resolving — a quiet spinner sized to match the caption row.
             ProgressView()
                 .controlSize(.mini)
+                .accessibilityHidden(true)
         case .failed:
             // Tapping the row retries a failed ingest — the retry glyph signals it's actionable.
             Image(systemName: "arrow.clockwise")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
+                .accessibilityHidden(true)
         case .ready:
             EmptyView()
         }
