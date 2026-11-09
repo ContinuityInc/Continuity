@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Continuity collects nothing and phones home to no one: no analytics, no accounts,
+	     no tracking. Network use is limited to fetching the stem-separation model. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -24,6 +26,16 @@
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
 				<string>C617.1</string>
+			</array>
+		</dict>
+		<!-- System boot time (`mach_absolute_time`): Deck.play anchors stem playback to a
+		     fresh render clock so a stale hostTime after an engine restart cannot SIGABRT. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
 			</array>
 		</dict>
 	</array>

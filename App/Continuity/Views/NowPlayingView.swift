@@ -407,6 +407,8 @@ private struct ScrubberBar: View {
                 )
             }
             .frame(height: 28)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
             HStack {
                 Text(Theme.time(isEditing ? scrubValue : Player.finite(player.position)))
                 Spacer()
