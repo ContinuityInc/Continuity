@@ -19,6 +19,16 @@ settings:
     CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
+    # OAuth client ids for "Connect" sign-in (Spotify / Google-YouTube / SoundCloud). Empty by
+    # default → the import hub shows those services as "not set up". Fill them locally in an
+    # xcconfig or pass `SPOTIFY_CLIENT_ID=… xcodebuild …`; TestFlight injects them from secrets.
+    # Redirect URIs: continuity://auth/spotify, continuity://auth/soundcloud, and Google's
+    # reversed-client-id scheme (derived from GOOGLE_CLIENT_ID). SoundCloud still requires the
+    # client secret on the token exchange — shipping it in the binary is a known trade-off.
+    SPOTIFY_CLIENT_ID: ""
+    GOOGLE_CLIENT_ID: ""
+    SOUNDCLOUD_CLIENT_ID: ""
+    SOUNDCLOUD_CLIENT_SECRET: ""
 
 targets:
   Continuity:
@@ -62,10 +72,18 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # continuity://import?url=<encoded link> — deep-link entry into the import flow.
+        # The same scheme carries the Spotify/SoundCloud OAuth callbacks (continuity://auth/…),
+        # intercepted by ASWebAuthenticationSession rather than delivered via onOpenURL.
         CFBundleURLTypes:
           - CFBundleURLName: com.sanylax.continuity
             CFBundleURLSchemes:
               - continuity
+        # Read by Ingest.ServiceAuthConfiguration; see the SPOTIFY_CLIENT_ID… settings above.
+        ContinuityServiceAuth:
+          SpotifyClientID: "$(SPOTIFY_CLIENT_ID)"
+          GoogleClientID: "$(GOOGLE_CLIENT_ID)"
+          SoundCloudClientID: "$(SOUNDCLOUD_CLIENT_ID)"
+          SoundCloudClientSecret: "$(SOUNDCLOUD_CLIENT_SECRET)"
     # Shared scheme so `xcodebuild -scheme Continuity` works on a fresh checkout / CI without
     # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
     scheme:
@@ -122,7 +140,7 @@ targets:
     sources:
       - path: App/ShareExtension
     dependencies:
-      # Same YouTube/Spotify classifiers the app uses — keeps "Added to Continuity" honest.
+      # Same YouTube/Spotify/SoundCloud classifiers the app uses — keeps "Added to Continuity" honest.
       - package: ContinuityCore
     entitlements:
       path: App/ShareExtension/ContinuityShare.entitlements

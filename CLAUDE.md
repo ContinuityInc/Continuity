@@ -144,6 +144,15 @@ iTunes Search API (no key) for songs/albums; custom in-app keyboard with
 user's library. Songs → "From Search" playlist; albums → imported playlists. Both ride the
 existing `searchQuery` → YouTube ingest path.
 
+### Import hub + connected accounts (Oct 2026)
+The library toolbar's three add buttons (link / Apple Music / files) collapsed into one "+"
+(`ImportHubView`), which also hosts Spotify / YouTube / SoundCloud sign-in (`ServiceAuthManager`,
+OAuth PKCE via `ASWebAuthenticationSession`, Keychain) and a per-account playlist/likes picker.
+Pasted links of any of the three services prefer the account's API and fall back to scraping;
+SoundCloud sets/tracks are new (hydration-JSON scrape, metadata-only → YouTube audio). Client ids
+are build settings (see the AGENTS.md gotcha) and TestFlight secrets of the same names — until
+the owner adds them, "Connect" rows read "not set up" and everything else still works.
+
 ## CI / TestFlight operations
 
 - `.github/workflows/core-tests.yml`: assembles the non-Accelerate ContinuityCore subset and

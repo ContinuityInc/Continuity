@@ -12,3 +12,4 @@ public protocol MetadataSourcedTrack: Sendable {
 
 extension SpotifyTrack: MetadataSourcedTrack {}
 extension AppleMusicTrack: MetadataSourcedTrack {}
+extension SoundCloudTrack: MetadataSourcedTrack {}

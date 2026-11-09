@@ -37,6 +37,15 @@ public enum IngestError: Error, Sendable {
     case sourceUnavailable
     /// The user hasn't granted (or has revoked) access to their Apple Music library.
     case appleMusicAccessDenied
+    /// The operation needs a connected account for this service and there is none (or its
+    /// tokens were rejected and it was disconnected).
+    case notSignedIn(MusicService)
+    /// Sign-in can't start: no OAuth client id is configured for this service in the build.
+    case notConfigured(MusicService)
+    /// The user cancelled sign-in, or the provider refused it.
+    case authorizationFailed(String)
+    /// The API rejected our bearer token (401) — refresh and retry once, then disconnect.
+    case unauthorized
 
     /// Whether retrying the same request with backoff could plausibly succeed. Distinguishes a
     /// transient blip (worth retrying, and not the user's fault) from a definitively empty source.
@@ -88,6 +97,34 @@ protocol PlaylistResolving: Sendable {
 /// Implemented by `SpotifyPlaylistResolver`.
 protocol SpotifyPlaylistResolving: Sendable {
     func resolvePlaylist(_ link: SpotifyLink) async throws -> ResolvedSpotifyPlaylist
+    /// One song's metadata from its embed page (`link.kind == .track`).
+    func resolveTrack(_ link: SpotifyLink) async throws -> SpotifyTrack
+}
+
+/// What a service link resolved to: a whole collection or one song.
+enum ResolvedServiceLink: Sendable, Equatable {
+    case playlist(ServicePlaylistContents)
+    case track(ServiceTrack)
+}
+
+/// Resolves a SoundCloud link **anonymously** (page scrape + api-v2 stub fetch).
+/// Implemented by `SoundCloudPlaylistResolver`.
+protocol SoundCloudResolving: Sendable {
+    func resolve(_ link: SoundCloudLink) async throws -> ResolvedServiceLink
+}
+
+/// Reads the signed-in user's library on one service through its official API. The caller
+/// supplies a valid bearer token (see `ServiceAuthManager.accessToken(for:)`).
+/// Implemented by `SpotifyAPIClient`, `YouTubeDataAPIClient`, `SoundCloudAPIClient`.
+protocol ConnectedLibraryReading: Sendable {
+    var service: MusicService { get }
+    /// The account's playlists (and its Liked collection, first), for the import picker.
+    func playlists(token: String) async throws -> [ServicePlaylistSummary]
+    /// Full tracklist of one listed collection (follows pagination).
+    func contents(of summary: ServicePlaylistSummary, token: String) async throws -> ServicePlaylistContents
+    /// Resolves a pasted link that belongs to this service — full-length and private items the
+    /// anonymous scrape can't see. Nil when the link isn't one this service owns.
+    func resolveLink(_ raw: String, token: String) async throws -> ResolvedServiceLink?
 }
 
 /// Whether the user has let us read their Apple Music / iTunes library.

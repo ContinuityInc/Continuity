@@ -31,6 +31,17 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ContinuityServiceAuth</key>
+	<dict>
+		<key>GoogleClientID</key>
+		<string>$(GOOGLE_CLIENT_ID)</string>
+		<key>SoundCloudClientID</key>
+		<string>$(SOUNDCLOUD_CLIENT_ID)</string>
+		<key>SoundCloudClientSecret</key>
+		<string>$(SOUNDCLOUD_CLIENT_SECRET)</string>
+		<key>SpotifyClientID</key>
+		<string>$(SPOTIFY_CLIENT_ID)</string>
+	</dict>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSAppleMusicUsageDescription</key>

@@ -7,7 +7,8 @@ architecture, commands, conventions, and traps that aren't obvious from the code
 
 Native iOS 26 music app. Flagship: **transitions so smooth you don't notice the song changed** —
 stem-separated, beatmatched, harmonically-mixed DJ blends. Audio is sourced from YouTube;
-Spotify contributes tracklists only (its audio is DRM-locked). Personal prototype — not
+Spotify, SoundCloud and Apple Music contribute tracklists only (their audio is DRM-locked / not
+ours to stream). Personal prototype — not
 App-Store-shippable as-is (YouTube ToS). See `README.md` for the feature tour.
 
 ## Architecture
@@ -21,7 +22,7 @@ depend *downward*; the compiler blocks reaching into another layer.
 |---|---|---|---|
 | **ContinuityCore** | `Packages/ContinuityCore` | all scraping/parsing + all DSP/math. NO UIKit/AVFoundation/SwiftData. ~114 unit tests. | *(nothing)* |
 | **Domain** | `Packages/ContinuityKit/Sources/Domain` | `@Model` `Track`/`Playlist`, `TransitionSettings`, `AudioCache`/`StemCache` | ContinuityCore |
-| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
+| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, connected accounts (`ServiceAuth/`, `ConnectedLibraries`), download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
 | **Playback** | `Packages/ContinuityKit/Sources/Playback` | `Player`, `Deck`, `NowPlayingBridge`, `PlaybackStateStore`, `ToneSynth` | Domain, ContinuityCore |
 | **app target** | `App/Continuity` (`Views/*`, `Library/SampleData`) | SwiftUI, app wiring | all package products |
 
@@ -35,8 +36,12 @@ extension files (`Player+Transport.swift`, `PreparationQueue+Sync.swift`, …) s
 different concerns of the same type don't collide; stored properties + `init` stay in the core
 file, methods move to the extensions.
 
-Data flow: `AddMusicView` → `PreparationQueue` (resolve → download → analyze → stems, bounded
-concurrency) → SwiftData. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
+Data flow: `ImportHubView` (the single "+": pasted link / connected-account picker / Apple Music /
+files) → `PreparationQueue` (resolve → download → analyze → stems, bounded concurrency) →
+SwiftData. Every remote collection — YouTube, Spotify, SoundCloud, by link or by account — is
+normalised to `ContinuityCore.ServicePlaylistContents` and goes through
+`PreparationQueue.fetchRemoteContents` (official API when that service is connected, anonymous
+scrape otherwise) → `importServicePlaylist`; sync reuses the same fetch. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
 via `ContinuityCore.TransitionPlan`.
 
 ## Build & test
@@ -135,7 +140,24 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
  inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
  `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
  Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
-- **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
+- **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
+ Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
+ `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
+ TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
+ "Sign-in not set up in this build" and link imports still work via scrape. Redirect URIs to
+ register: `continuity://auth/spotify`, `continuity://auth/soundcloud`, and Google's
+ reversed-client-id scheme (iOS client type). Tokens live in the Keychain (`KeychainStore`);
+ the OAuth maths (`OAuthFlow`) and every API JSON parser are in ContinuityCore and Linux-tested.
+- **SoundCloud scraping has two moving parts.** Set/track pages embed `window.__sc_hydration`
+ with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
+ `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
+ `a-v2.sndcdn.com/assets/*.js` bundles (`SoundCloudPlaylist.clientID(inScript:)`). If every
+ SoundCloud import fails while Spotify/YouTube work, check those two first; `on.soundcloud.com`
+ short links are resolved by following the redirect. API-imported sets are keyed by permalink
+ path so they stay syncable after a disconnect; URN-only identities need the account.
+- **Spotify caps ~50 tracks** (anonymous embed API; a connected account reads the full list).
+ YouTube playlists paginate to ~500. Connected-account imports stop at 1 000 tracks
+ (`connectedLibraryMaxTracks`).
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`
 
