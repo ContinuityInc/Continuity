@@ -1,7 +1,6 @@
 import SwiftUI
 import Playback
 import Domain
-import Ingest
 import ContinuityCore
 
 /// The queue page (below Now Playing): what plays next, with drag-to-reorder and
@@ -9,8 +8,6 @@ import ContinuityCore
 /// key/tempo-compatible DJ sequence.
 struct UpNextView: View {
     @Environment(Player.self) private var player
-    @Environment(PreparationQueue.self) private var prepQueue
-    @Environment(\.modelContext) private var modelContext
     @Environment(MainPagerState.self) private var pagerState
     // Persisted as a mode label; toggling ON reorders once, toggling OFF is not an undo.
     @AppStorage("flowMode.v1") private var flowMode = false
@@ -93,18 +90,13 @@ struct UpNextView: View {
                 Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(track.title), \(track.artist)")
         .contextMenu {
             Button {
                 trackPendingRename = track
             } label: {
                 Label("Rename", systemImage: "pencil")
-            }
-            if !track.isDemo, track.prepState != .ready {
-                Button {
-                    prepQueue.prioritize(track, in: modelContext)
-                } label: {
-                    Label("Download First", systemImage: "arrow.up.to.line")
-                }
             }
         }
     }

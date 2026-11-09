@@ -15,20 +15,9 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "2"
-    DEVELOPMENT_TEAM: "KP832RV67A"
     CODE_SIGN_STYLE: Automatic
-    # OAuth client ids for "Connect" sign-in (Spotify / Google-YouTube / SoundCloud). Empty by
-    # default → the import hub shows those services as "not set up". Fill them locally in an
-    # xcconfig or pass `SPOTIFY_CLIENT_ID=… xcodebuild …`; TestFlight injects them from secrets.
-    # Redirect URIs: continuity://auth/spotify, continuity://auth/soundcloud, and Google's
-    # reversed-client-id scheme (derived from GOOGLE_CLIENT_ID). SoundCloud still requires the
-    # client secret on the token exchange — shipping it in the binary is a known trade-off.
-    SPOTIFY_CLIENT_ID: ""
-    GOOGLE_CLIENT_ID: ""
-    SOUNDCLOUD_CLIENT_ID: ""
-    SOUNDCLOUD_CLIENT_SECRET: ""
 
 targets:
   Continuity:
@@ -45,8 +34,8 @@ targets:
         product: Ingest
       - package: ContinuityKit
         product: Playback
-      - target: ContinuityShare
-    # App group shared with the extension — the share-sheet → app handoff channel.
+    # App group kept so existing installs can still migrate a legacy SwiftData store
+    # out of the group container. The share extension is not shipped in this build.
     entitlements:
       path: App/Continuity/Continuity.entitlements
       properties:
@@ -66,28 +55,12 @@ targets:
         UIBackgroundModes:
           - audio
         ITSAppUsesNonExemptEncryption: false
-        # MPMediaQuery reads playlist titles/artists only — Apple Music audio is DRM-protected,
-        # so imported songs are re-sourced from YouTube like the Spotify path.
-        NSAppleMusicUsageDescription: Continuity reads your Apple Music playlists so you can import them into your library.
         # Portrait plus landscape: Duo's outer display is often used tent-style in landscape,
         # and the inner display ignores this list anyway (size classes drive layout there).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # continuity://import?url=<encoded link> — deep-link entry into the import flow.
-        # The same scheme carries the Spotify/SoundCloud OAuth callbacks (continuity://auth/…),
-        # intercepted by ASWebAuthenticationSession rather than delivered via onOpenURL.
-        CFBundleURLTypes:
-          - CFBundleURLName: com.sanylax.continuity
-            CFBundleURLSchemes:
-              - continuity
-        # Read by Ingest.ServiceAuthConfiguration; see the SPOTIFY_CLIENT_ID… settings above.
-        ContinuityServiceAuth:
-          SpotifyClientID: "$(SPOTIFY_CLIENT_ID)"
-          GoogleClientID: "$(GOOGLE_CLIENT_ID)"
-          SoundCloudClientID: "$(SOUNDCLOUD_CLIENT_ID)"
-          SoundCloudClientSecret: "$(SOUNDCLOUD_CLIENT_SECRET)"
     # Shared scheme so `xcodebuild -scheme Continuity` works on a fresh checkout / CI without
     # relying on Xcode's per-user scheme auto-creation (which xcodebuild does not perform).
     scheme:
@@ -136,40 +109,5 @@ targets:
           done
           # Leave an empty Frameworks dir alone — other embeds (none today) may appear later.
 
-  # Share-sheet entry point: stashes the shared URL in the app group for the app to import.
-  ContinuityShare:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "26.0"
-    sources:
-      - path: App/ShareExtension
-    dependencies:
-      # Same YouTube/Spotify/SoundCloud classifiers the app uses — keeps "Added to Continuity" honest.
-      - package: ContinuityCore
-    entitlements:
-      path: App/ShareExtension/ContinuityShare.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.sanylax.continuity
-    info:
-      path: App/ShareExtension/Info.plist
-      properties:
-        CFBundleDisplayName: Continuity
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.share-services
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
-          NSExtensionAttributes:
-            # Activate when any attachment is a URL — dictionary rules that only declare
-            # WebURL miss Spotify/YouTube shares that also attach image/text. Runtime still
-            # rejects non-music links via ContinuityCore before showing success.
-            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
-    configFiles:
-      Release: Signing/ContinuityShare.release.xcconfig
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.sanylax.continuity.share
-        GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1"
-        SWIFT_EMIT_LOC_STRINGS: YES
+  # ContinuityShare is not built on the App Store cut — link import is gone, and App Review
+  # rejects a share extension that can only say "Import not available". Sources stay in-tree.
