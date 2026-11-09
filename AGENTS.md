@@ -158,15 +158,37 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   read by the allowlisted leaves (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`,
   `BlendPlayhead`, `TransitionCountdownPill`). `Scripts/check-tick-leaf-readers.sh` fails CI
   otherwise — extend that allowlist deliberately if a new leaf is intentional.
-- **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
+- **Connected accounts need client ids at build time (owner checklist).** "Sign-in not set
+  up in this build · links still work" in `ImportHubView` is intentional when those ids are
+  empty — not a broken OAuth path. Checklist:
 
-  Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
-  `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
-  TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
-  "Sign-in not set up in this build" and link imports still work via scrape. Redirect URIs to
-  register: `continuity://auth/spotify`, `continuity://auth/soundcloud`, and Google's
-  reversed-client-id scheme (iOS client type). Tokens live in the Keychain (`KeychainStore`);
-  the OAuth maths (`OAuthFlow`) and every API JSON parser are in ContinuityCore and Linux-tested.
+  1. **Secret / build-setting names** (same string in `project.yml`, Info.plist
+     `ContinuityServiceAuth`, and GitHub Actions secrets consumed by
+     `.github/workflows/testflight.yml`):
+     - `SPOTIFY_CLIENT_ID`
+     - `GOOGLE_CLIENT_ID` (iOS OAuth client for YouTube sign-in)
+     - `SOUNDCLOUD_CLIENT_ID`
+     - `SOUNDCLOUD_CLIENT_SECRET` (required for SoundCloud's token exchange; shipping it in
+       the binary is a known trade-off — see `project.yml` comment)
+  2. **Empty by design in `project.yml`.** Local builds stay scrape-only until you pass the
+     settings (`SPOTIFY_CLIENT_ID=… xcodebuild …` or a private xcconfig). Unset TestFlight
+     secrets expand to `""` the same way. `ServiceAuthConfiguration.fromBundle` treats
+     unexpanded `$(VAR)` placeholders as empty.
+  3. **Redirect URIs to register** with each provider console (callback intercepted by
+     `ASWebAuthenticationSession` — no extra Info.plist URL type beyond the existing
+     `continuity` scheme):
+     - Spotify: `continuity://auth/spotify`
+     - SoundCloud: `continuity://auth/soundcloud`
+     - Google: reversed-client-id scheme derived from `GOOGLE_CLIENT_ID` (iOS client type;
+       see `OAuthProviders.google`)
+  4. **Scrape still works when empty.** Pasted Spotify / YouTube / SoundCloud links keep
+     using the anonymous scrape / embed path; only the hub "Connect" button is disabled.
+  5. **Tokens live in Keychain** via `KeychainStore` after a successful sign-in — never in
+     UserDefaults or the repo. OAuth maths (`OAuthFlow`) and API JSON parsers stay in
+     ContinuityCore (Linux-tested).
+  6. **ASC signing secrets are separate.** `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8`
+     (Admin role) upload the build; they do not populate OAuth ids. See CLAUDE.md
+     "CI / TestFlight operations".
 - **SoundCloud scraping has two moving parts.** Set/track pages embed `window.__sc_hydration`
   with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
   `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
