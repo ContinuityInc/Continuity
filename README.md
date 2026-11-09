@@ -113,7 +113,8 @@ open Continuity.xcodeproj      # then build/run on an iOS 26 simulator or device
 
 ## Test the core
 
-The parsing and transition math compiles and tests without the app:
+The parsing and transition math compiles and tests without the app (Linux CI runs the same
+command; Accelerate BPM/key sources are excluded on Linux via `Package.swift`):
 
 ```sh
 cd Packages/ContinuityCore && swift test
