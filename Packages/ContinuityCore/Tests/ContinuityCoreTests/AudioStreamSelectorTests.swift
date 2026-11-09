@@ -54,4 +54,64 @@ final class AudioStreamSelectorTests: XCTestCase {
         let chosen = AudioStreamSelector.selectBest(from: [aac(140, bitrate: 128_000), aac(139, bitrate: 128_000)])
         XCTAssertEqual(chosen?.itag, 139) // lower itag wins ties
     }
+
+    private func candidate(
+        itag: Int,
+        bitrate: Int,
+        urlString: String,
+        audioOnly: Bool = true,
+        native: Bool = true
+    ) -> AudioStreamCandidate {
+        AudioStreamCandidate(
+            itag: itag,
+            container: "m4a",
+            audioCodec: "mp4a.40.2",
+            averageBitrate: bitrate,
+            isAudioOnly: audioOnly,
+            isNativelyPlayable: native,
+            urlString: urlString
+        )
+    }
+
+    func testSelectDownloadableRejectsDisallowedHosts() {
+        let evil = candidate(
+            itag: 140,
+            bitrate: 256_000,
+            urlString: "https://evil.example/audio.m4a"
+        )
+        let good = candidate(
+            itag: 139,
+            bitrate: 128_000,
+            urlString: "https://rr1---sn-abc.googlevideo.com/videoplayback"
+        )
+        // Higher bitrate but disallowed host must lose to the allowlisted stream.
+        let chosen = AudioStreamSelector.selectDownloadable(from: [evil, good])
+        XCTAssertEqual(chosen?.itag, 139)
+    }
+
+    func testSelectDownloadableReturnsNilWhenNoAllowedHost() {
+        let evil = candidate(
+            itag: 140,
+            bitrate: 128_000,
+            urlString: "https://evil.example/audio.m4a"
+        )
+        XCTAssertNil(AudioStreamSelector.selectDownloadable(from: [evil]))
+        XCTAssertNil(AudioStreamSelector.selectDownloadable(from: [
+            candidate(itag: 1, bitrate: 1, urlString: "not a url"),
+        ]))
+    }
+
+    func testSelectDownloadableKeepsAllowlistedWinner() {
+        let low = candidate(
+            itag: 139,
+            bitrate: 48_000,
+            urlString: "https://rr1---sn-abc.googlevideo.com/a"
+        )
+        let high = candidate(
+            itag: 140,
+            bitrate: 128_000,
+            urlString: "https://rr2---sn-abc.googlevideo.com/b"
+        )
+        XCTAssertEqual(AudioStreamSelector.selectDownloadable(from: [low, high])?.itag, 140)
+    }
 }
