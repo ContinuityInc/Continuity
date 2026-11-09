@@ -211,7 +211,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
 - **Nothing on the 20 Hz tick path but leaves.** `position`, `transitionProgress` and anything
   derived from them (`secondsUntilTransition`, `displayProgress`) may only be read by tiny leaf
   views: `TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`, `BlendPlayhead`,
-  `TransitionCountdownPill`. The Now Playing transition panel used to read the countdown, so
+  `TransitionCountdownPill`. `Scripts/check-tick-leaf-readers.sh` fails CI if a new reader
+  appears outside that allowlist. The Now Playing transition panel used to read the countdown, so
   every tick re-ran `TransitionPreview.make`, re-read both tracks' `beatTimes` out of SwiftData
   and redrew two Canvases. `Player.transitionCountdownSeconds` publishes the countdown at 1 Hz
   for exactly this reason; `TransitionVisualizationView` resolves beat positions and curve
