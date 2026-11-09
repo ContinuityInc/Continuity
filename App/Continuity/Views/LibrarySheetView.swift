@@ -33,6 +33,7 @@ struct LibrarySheetView: View {
                             Image(systemName: "magnifyingglass")
                         }
                         .accessibilityLabel("Search music")
+                        .accessibilityHint("Opens catalog search")
                     }
                     // One "+" for every way in: links, connected accounts, Apple Music, files.
                     // The hub sorts out which path a paste or tap takes (`ImportHubView`).
@@ -43,6 +44,7 @@ struct LibrarySheetView: View {
                             Image(systemName: "plus")
                         }
                         .accessibilityLabel("Add music")
+                        .accessibilityHint("Opens the import hub")
                     }
                 }
         }

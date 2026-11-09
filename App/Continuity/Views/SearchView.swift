@@ -205,12 +205,15 @@ struct SearchView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 TextField("Search", text: query)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .focused($searchFocused)
                     .onSubmit { model.searchNow() }
+                    .accessibilityLabel("Search")
+                    .accessibilityHint("Searches songs and albums. Activate Search on the keyboard to submit.")
             }
             .font(.body)
             .padding(.horizontal, 14)
@@ -330,6 +333,8 @@ private struct SuggestionBar: View {
                             .continuityGlass(cornerRadius: 8, interactive: true)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(word)
+                    .accessibilityHint("Accepts search suggestion")
                 }
             }
         }

@@ -231,15 +231,19 @@ struct ImportHubView: View {
                     Spacer()
                     if isImportingFiles {
                         ProgressView()
+                            .accessibilityLabel("Importing files")
                     } else {
                         Image(systemName: "chevron.right")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
                     }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Audio Files or Folder")
+            .accessibilityHint("Imports local audio into Local Files")
             .disabled(isImportingFiles)
         } header: {
             Text("Files")
@@ -353,6 +357,7 @@ private struct ServiceRowLabel: View {
                 .font(.title3)
                 .foregroundStyle(tint)
                 .frame(width: 28)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .foregroundStyle(.primary)
@@ -362,5 +367,6 @@ private struct ServiceRowLabel: View {
                     .lineLimit(2)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 }

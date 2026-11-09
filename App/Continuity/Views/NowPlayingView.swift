@@ -213,12 +213,12 @@ struct NowPlayingView: View {
     private var transport: some View {
         HStack(spacing: 48) {
             // Previous — unlimited, so no counter.
-            controlGlyph("backward.fill") { player.previous() }
+            controlGlyph("backward.fill", accessibility: "Previous") { player.previous() }
 
             playButton
 
             // Next — spends one of the limited forward skips; the remaining count rides below it.
-            skipGated(controlGlyph("forward.fill") { player.next() }, disabledOpacity: 0.3)
+            skipGated(controlGlyph("forward.fill", accessibility: "Next") { player.next() }, disabledOpacity: 0.3)
                 .overlay(alignment: .bottom) { skipBadge.offset(y: 30) }
         }
         .foregroundStyle(.white)
@@ -267,10 +267,11 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+        .accessibilityAddTraits(.startsMediaSession)
     }
 
     /// A plain white transport glyph with a comfortable tap target.
-    private func controlGlyph(_ system: String, action: @escaping () -> Void) -> some View {
+    private func controlGlyph(_ system: String, accessibility: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
                 .font(.system(size: 30, weight: .medium))
@@ -278,6 +279,7 @@ struct NowPlayingView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibility)
     }
 
     /// Remaining forward skips, as a subtle glass pill under Next. Real Liquid Glass — the
@@ -364,6 +366,7 @@ private struct TrackProgressRing: View {
             .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(-90))
             .animation(.linear(duration: 0.25), value: progress)
+            .accessibilityHidden(true)
     }
 }
 
@@ -411,8 +414,23 @@ private struct ScrubberBar: View {
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white.opacity(0.65))
+            .accessibilityHidden(true)
         }
         .padding(.horizontal, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(Theme.time(pos)) of \(Theme.time(upper))")
+        .accessibilityAdjustableAction { direction in
+            let step = min(5, upper / 20)
+            switch direction {
+            case .increment:
+                player.seek(to: min(pos + step, upper))
+            case .decrement:
+                player.seek(to: max(pos - step, 0))
+            @unknown default:
+                break
+            }
+        }
     }
 }
 
