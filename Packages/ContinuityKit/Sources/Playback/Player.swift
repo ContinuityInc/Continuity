@@ -545,11 +545,21 @@ public final class Player {
         // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
         // that ramps during PLAIN playback (no ingest/stems activity, so no other breadcrumb
         // fires). The decay slope across these lines names the leak rate; the value at the
-        // last line before a kill names the floor. Cheap enough to leave in release.
+        // last line before a kill names the floor. Mirrored into MemoryBudgetRecorder for the
+        // Diagnostics budget card. Cheap enough to leave in release.
         memTicks += 1
         if memTicks >= 200 {
             memTicks = 0
-            Logger.audio.info("mem[playback] \(os_proc_available_memory() / 1_048_576, privacy: .public) MB headroom")
+            let headroom = Int(os_proc_available_memory() / 1_048_576)
+            let rss = ProcessMemory.residentMB
+            MemoryBudgetRecorder.shared.record(
+                MemoryBreadcrumbSample(label: "playback", headroomMB: headroom, rssMB: rss)
+            )
+            if let rss {
+                Logger.audio.info("mem[playback] \(headroom, privacy: .public) MB headroom \(rss, privacy: .public) MB rss")
+            } else {
+                Logger.audio.info("mem[playback] \(headroom, privacy: .public) MB headroom")
+            }
         }
         // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
         ticksSincePersist += 1
