@@ -50,8 +50,12 @@ Requires **Xcode 26+**. `xcode-select` points at CommandLineTools, so prefix Xco
 `DEVELOPER_DIR`:
 
 ```sh
-# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change):
-cd Packages/ContinuityCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change).
+# On Linux CI / cloud agents the same command works; Package.swift excludes the
+# Accelerate sources (BeatTracker / KeyDetector) so the Foundation suite is first-class.
+cd Packages/ContinuityCore && swift test
+# On a Mac with CommandLineTools as default, prefix with Xcode's toolchain:
+#   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 # App + modules build (regenerate the project first if you added/removed/renamed a file):
 xcodegen generate
@@ -125,6 +129,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `CONTINUITY_LIVE_PROBE=1 … -only-testing:IngestTests/LiveIngestProbeTests` (simulator) —
   it prints the failing stage and exact error per track. Beware: a scratch SwiftPM harness
   that depends on `branch: "main"` silently resolves upstream HEAD, not the app's pin.
+- **YouTubeKit import site is `YouTubeStreamResolver` only** (the `AudioStreamResolving`
+  implementation). Map `YouTubeKit.Stream` → `AudioStreamCandidate`, then call
+  `AudioStreamSelector.selectDownloadable` — selection + host allowlist stay in ContinuityCore.
+  `Scripts/check-youtubekit-boundary.sh` fails CI on any other `import YouTubeKit`, on
+  `YouTubeKit.` type refs outside that file, or if the SPM pin leaves `exact:`.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures
@@ -144,7 +153,13 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
   posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
   residual crash class after the shim.
+- **20 Hz tick fields stay in leaf views.** `player.position` / `displayProgress` /
+  `transitionProgress` / `secondsUntilTransition` / `transitionCountdownSeconds` may only be
+  read by the allowlisted leaves (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`,
+  `BlendPlayhead`, `TransitionCountdownPill`). `Scripts/check-tick-leaf-readers.sh` fails CI
+  otherwise — extend that allowlist deliberately if a new leaf is intentional.
 - **Connected accounts need client ids at build time.** `ServiceAuthConfiguration` reads
+
   Info.plist `ContinuityServiceAuth`, filled from the `SPOTIFY_CLIENT_ID` / `GOOGLE_CLIENT_ID` /
   `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` build settings (empty in `project.yml`;
   TestFlight passes them from GitHub secrets of the same names). Empty → the hub row says
@@ -189,16 +204,14 @@ built or run here**. Plan work accordingly:
   code review + the ContinuityCore unit tests they rely on; real build/run must happen on a Mac.
 - **A Linux Swift toolchain is preinstalled** via `swiftly` (added to `~/.profile`, so `swift` is
   on `PATH` in login shells). Use `swift`, not `DEVELOPER_DIR`/`xcodebuild`, on this VM.
-- **`swift test` in `Packages/ContinuityCore` FAILS to compile on Linux**, even though the README
-  implies it's portable: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate` (Apple's
-  vDSP — no Linux module). Since SwiftPM compiles the target as a unit, those two files break the
-  whole build/test, including the 15 pure-Foundation files.
-- **To run the platform-agnostic tests on Linux**, build a throwaway SwiftPM package that includes
-  only the non-`Accelerate` sources + tests (exclude `BeatTracker.swift`, `KeyDetector.swift`,
-  `BeatTrackerTests.swift`, `KeyDetectorTests.swift`, `KeyDetectorAccuracyTests.swift`). That runs
-  **111 of ~114** real `XCTest` cases (Camelot/flow ordering, crossfade curves, transition plan,
-  loudness, silence trimming, YouTube/Spotify URL + page parsing). The BPM/beat-grid and
-  musical-key suites (Accelerate) can only be exercised on a Mac. Test fixtures are inline string
-  literals — no external resource files needed.
+- **`swift test` in `Packages/ContinuityCore` is first-class on Linux.** `Package.swift` uses
+  `#if os(Linux)` to `exclude` `BeatTracker.swift` / `KeyDetector.swift` (and their three test
+  files) — those `import Accelerate` (Apple vDSP). Run:
+  `cd Packages/ContinuityCore && swift test` (CI: `swift test --package-path Packages/ContinuityCore`).
+  That covers the Foundation suite (Camelot/flow ordering, crossfade curves, transition plan,
+  loudness, silence trimming, YouTube/Spotify/SoundCloud parsers, PlaybackClock, Duo layout, …).
+  New pure-Core files are picked up automatically; keep them Accelerate-free or add them to the
+  Linux `exclude` lists in `Package.swift`. The BPM/beat-grid and musical-key suites still need
+  a Mac (Xcode toolchain). Test fixtures are inline string literals — no external resource files.
 - **The core package has zero external SwiftPM dependencies**, so there is nothing to fetch on
   startup; the update script only warms the build graph.

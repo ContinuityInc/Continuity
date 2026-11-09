@@ -72,6 +72,10 @@ public enum AdaptiveQuality {
         }
     }
 
+    /// Mid-track abort floor (MB headroom). Ingest `StemSeparationBudget.windowFloorMB` reads this
+    /// so Diagnostics export and the separator gate cannot drift.
+    public static let stemWindowFloorMB = 600
+
     public static func stemHoldSeconds(for tier: AdaptiveQualityTier = current()) -> TimeInterval {
         switch tier {
         case .full: return 60

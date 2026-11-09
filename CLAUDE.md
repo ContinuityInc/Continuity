@@ -161,10 +161,10 @@ simulator: 0/8 tracks ready before, 8/8 after (full files, BPM analysed). See th
 gotcha for the diagnosis recipe.
 
 ### Catalog search (PR #108)
-iTunes Search API (no key) for songs/albums; custom in-app keyboard with
-`CatalogAutocorrect` (ContinuityCore, Linux-tested) learning vocabulary from results + the
-user's library. Songs → "From Search" playlist; albums → imported playlists. Both ride the
-existing `searchQuery` → YouTube ingest path.
+iTunes Search API (no key) for songs/albums; native keyboard with
+`CatalogAutocorrect` suggestion chips (ContinuityCore, Linux-tested) learning vocabulary from
+results + the user's library. Songs → "From Search" playlist; albums → imported playlists.
+Both ride the existing `searchQuery` → YouTube ingest path.
 
 ### Import hub + connected accounts (Oct 2026)
 The library toolbar's three add buttons (link / Apple Music / files) collapsed into one "+"
@@ -177,9 +177,9 @@ the owner adds them, "Connect" rows read "not set up" and everything else still 
 
 ## CI / TestFlight operations
 
-- `.github/workflows/core-tests.yml`: assembles the non-Accelerate ContinuityCore subset and
-  runs `swift test` on Linux for every PR. New pure Core files + tests are picked up
-  automatically (keep them Accelerate-free or add them to the exclusion list).
+- `.github/workflows/core-tests.yml`: runs `swift test --package-path Packages/ContinuityCore`
+  on Linux for every PR. `Package.swift` excludes Accelerate sources (`BeatTracker` /
+  `KeyDetector`) on Linux; keep new Core files Accelerate-free or add them to that list.
 - `.github/workflows/testflight.yml`: on every push to `main` (+ `workflow_dispatch`), builds
   on `macos-26` with **cloud signing** — no certs/profiles in the repo. Secrets: `ASC_KEY_ID`
   / `ASC_ISSUER_ID` / `ASC_KEY_P8` (base64 .p8). The API key **must be Admin role** — an App
@@ -211,7 +211,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
 - **Nothing on the 20 Hz tick path but leaves.** `position`, `transitionProgress` and anything
   derived from them (`secondsUntilTransition`, `displayProgress`) may only be read by tiny leaf
   views: `TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`, `BlendPlayhead`,
-  `TransitionCountdownPill`. The Now Playing transition panel used to read the countdown, so
+  `TransitionCountdownPill`. `Scripts/check-tick-leaf-readers.sh` fails CI if a new reader
+  appears outside that allowlist. The Now Playing transition panel used to read the countdown, so
   every tick re-ran `TransitionPreview.make`, re-read both tracks' `beatTimes` out of SwiftData
   and redrew two Canvases. `Player.transitionCountdownSeconds` publishes the countdown at 1 Hz
   for exactly this reason; `TransitionVisualizationView` resolves beat positions and curve
@@ -233,9 +234,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
   hydrates every row's `beatTimes`.
 - **Liquid Glass is the real API, everywhere.** `glassEffect` via `continuityGlass` /
   `continuityGlassCapsule` — no `Material` stand-ins, no hand-drawn hairlines. Groups of glass
-  elements (the keyboard's key grid, the transition chips) sit in a `GlassEffectContainer` with
-  `spacing: 0` so they composite in one pass without merging into blobs, and glass is never
-  layered directly on glass (the keyboard plane stays an opaque fill).
+  elements (the transition chips) sit in a `GlassEffectContainer` with `spacing: 0` so they
+  composite in one pass without merging into blobs, and glass is never layered directly on glass.
 - `CatalogAutocorrect` and `LoudnessMeter` are allocation-/division-light on purpose; both have
   differential checks behind them (identical suggestions over thousands of fuzzed queries;
   bit-identical LUFS). Re-verify the same way before changing their loops.

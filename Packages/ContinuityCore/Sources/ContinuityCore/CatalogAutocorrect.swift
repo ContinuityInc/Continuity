@@ -1,16 +1,18 @@
 import Foundation
 
-/// Autocorrect/suggestion engine for the in-app music-search keyboard, tuned to the catalog
-/// being searched rather than general English: the vocabulary is *learned* from catalog
-/// results (song titles, artists, album names), so "weeknd", "beyonce" or "sza" are first-class
-/// words instead of typos. Pure Swift (no UIKit) so it unit-tests on Linux CI.
+/// Autocorrect/suggestion engine for catalog search, tuned to the music vocabulary being
+/// searched rather than general English: words are *learned* from catalog results (song
+/// titles, artists, album names), so "weeknd", "beyonce" or "sza" are first-class instead of
+/// typos. Pure Swift (no UIKit) so it unit-tests on Linux CI. The search UI uses the system
+/// keyboard with English autocorrect off; this engine feeds an in-app suggestion bar and
+/// optional space-bar repairs without a custom key grid.
 ///
 /// Two operations, both word-level:
 /// - `suggestions(for:)` ranks likely intended words for the partial word being typed
 ///   (prefix completions first, then close misspellings) — feeds the suggestion bar.
 /// - `correction(for:)` returns a replacement only when it is *confidently* wrong: the typed
-///   word is unknown and exactly one edit away from a known word — applied on space, like a
-///   conventional keyboard autocorrect, but against the music vocabulary.
+///   word is unknown and exactly one edit away from a known word — applied when the user
+///   types a trailing space, against the music vocabulary.
 ///
 /// Both run a bounded Levenshtein against the WHOLE vocabulary, and `suggestions` runs on every
 /// keystroke — with the user's library seeded in, that vocabulary is thousands of words. So the

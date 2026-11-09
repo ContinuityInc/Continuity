@@ -27,8 +27,9 @@ Artists receive a minimum **80% revenue share**.
 - **Harmonic mixing** — nudges the incoming track up to ±1 semitone into a Camelot-compatible
   key (DJ "key sync"); chained transitions track the effective key
 - **Vocal-aware blends** — tracks are split into vocals + accompaniment stems on-device
-  (HT-Demucs via ONNX Runtime; CoreML/Neural Engine on hardware), so the outgoing vocal can
-  duck under the incoming instrumental: duck / instrumental-overlap / hard-swap modes
+  (HT-Demucs via ONNX Runtime, CPU execution provider only — CoreML EP is banned; it
+  jetsams at session creation), so the outgoing vocal can duck under the incoming
+  instrumental: duck / instrumental-overlap / hard-swap modes
 - **Loudness leveling** — integrated loudness is measured per track (BS.1770 K-weighting +
   gating) and per-deck makeup gain brings every track to −14 LUFS, so a quiet master never
   lurches into a loud one mid-blend
@@ -113,7 +114,8 @@ open Continuity.xcodeproj      # then build/run on an iOS 26 simulator or device
 
 ## Test the core
 
-The parsing and transition math compiles and tests without the app:
+The parsing and transition math compiles and tests without the app (Linux CI runs the same
+command; Accelerate BPM/key sources are excluded on Linux via `Package.swift`):
 
 ```sh
 cd Packages/ContinuityCore && swift test
@@ -122,12 +124,16 @@ cd Packages/ContinuityCore && swift test
 ## Caveats
 
 - **YouTube sourcing violates YouTube's ToS.** Acceptable only because this is a private
-  prototype; it is not shippable as-is. The engine is source-agnostic — local files would
-  drop in with no engine changes.
-- **First stem separation downloads the model** (~165 MB, HT-Demucs fp16, cached after).
-- **On the Simulator**, stem separation runs on CPU (~2–4 min/track); on hardware it uses
-  the CoreML execution provider (Neural Engine). Sim CoreML is deliberately disabled — it's
-  pathologically slow there.
+  prototype on `main`; it is not App-Store-shippable as-is. The engine is source-agnostic —
+  local files drop in with no engine changes. The App Store / local-files line lives on
+  `release/app-store*` and `appStoreReleaseCandidate` (YouTube downloading stripped; see
+  those branches for the shippable variant).
+- **First stem separation downloads the model** (~165 MB, HT-Demucs fp16, cached after in
+  Application Support).
+- **Stem separation is CPU-only** on device and Simulator (ORT CPU execution provider;
+  ~2–4 min/track on sim). Never enable ORT's CoreML EP — session creation alone has hit
+  the per-process jetsam limit (~3.4 GB). A future native Core ML `.mlpackage` path is a
+  separate experiment, not flipping that EP.
 - **Spotify playlists cap at ~50 tracks without an account** (anonymous embed API limit);
   connecting Spotify lifts it. OAuth client ids come from `SPOTIFY_CLIENT_ID` /
   `GOOGLE_CLIENT_ID` / `SOUNDCLOUD_CLIENT_ID` (+ `SOUNDCLOUD_CLIENT_SECRET`) build settings —
@@ -138,8 +144,8 @@ cd Packages/ContinuityCore && swift test
 
 All planned milestones (M0–M5) are built: scaffold, YouTube/Spotify ingestion, dual-deck
 crossfades, analysis + beatmatching, on-device stem separation with vocal-aware blends, and
-config/persistence/stability polish. Remaining: validation on a physical device (Neural
-Engine stem-separation timing, memory behavior under Jetsam).
+config/persistence/stability polish. Device validation continues (CPU stem-separation timing
+under `StemSeparationBudget`, memory behavior under Jetsam).
 
 ## Screenshots
 
