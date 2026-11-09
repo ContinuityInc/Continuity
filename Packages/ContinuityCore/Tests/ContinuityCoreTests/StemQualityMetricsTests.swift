@@ -36,11 +36,11 @@ final class StemQualityMetricsTests: XCTestCase {
         XCTAssertGreaterThan(score, 80)
     }
 
-    func testEnergyRatioHalfPowerIsMinusThree() throws {
+    func testEnergyRatioHalfAmplitudeIsMinusSix() throws {
         let mix = [Float](repeating: 1, count: 100)
-        let half = [Float](repeating: 0.5, count: 100) // energy ratio 0.25 → -6 dB
+        let half = [Float](repeating: 0.5, count: 100) // energy ratio 0.25 → 10*log10(1/4)
         let ratio = try XCTUnwrap(StemQualityMetrics.energyRatioDB(numerator: half, denominator: mix))
-        XCTAssertEqual(ratio, -6, accuracy: 1e-4)
+        XCTAssertEqual(ratio, 10 * log10(0.25), accuracy: 1e-9)
     }
 
     func testMaxAbsDiff() {
