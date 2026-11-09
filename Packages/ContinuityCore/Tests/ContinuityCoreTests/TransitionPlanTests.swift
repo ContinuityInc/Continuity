@@ -36,6 +36,14 @@ final class TransitionPlanTests: XCTestCase {
         XCTAssertEqual(plan.progress(position: 190, startPosition: 192), 0, accuracy: 1e-9) // clamped
     }
 
+    func testProgressRejectsNonFiniteInputs() {
+        // A poisoned deck clock must not produce NaN progress (min/max do not clear NaN).
+        XCTAssertEqual(plan.progress(position: .nan, startPosition: 192), 0, accuracy: 1e-9)
+        XCTAssertEqual(plan.progress(position: 196, startPosition: .infinity), 0, accuracy: 1e-9)
+        let badDuration = TransitionPlan(curve: .equalPower, duration: .nan)
+        XCTAssertEqual(badDuration.progress(position: 10, startPosition: 0), 1, accuracy: 1e-9)
+    }
+
     func testGainsAreEqualPowerAtMidpoint() {
         let g = plan.gains(position: 196, startPosition: 192) // t = 0.5
         XCTAssertEqual(g.outgoing, cos(.pi / 4), accuracy: 1e-9)

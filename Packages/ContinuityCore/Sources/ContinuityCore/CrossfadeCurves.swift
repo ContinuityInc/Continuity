@@ -35,6 +35,8 @@ extension CrossfadeCurve {
     /// Returns the outgoing/incoming gains at normalized progress `t`.
     /// `t` is clamped to `0...1`.
     public func gains(at t: Double) -> CrossfadeGains {
+        // `min(NaN, 1)` is NaN — reject non-finite progress before the trig path.
+        guard t.isFinite else { return CrossfadeGains(outgoing: 1, incoming: 0) }
         let x = min(max(t, 0), 1)
         switch self {
         case .linear:
