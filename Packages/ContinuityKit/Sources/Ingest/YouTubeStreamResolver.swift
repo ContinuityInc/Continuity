@@ -2,19 +2,18 @@ import Foundation
 import YouTubeKit
 import ContinuityCore
 
-/// Resolves a YouTube video ID to a single downloadable audio stream via the
-/// `YouTubeKit` extraction library.
+/// Sole YouTubeKit import site. Implements `AudioStreamResolving` by mapping
+/// `YouTubeKit.Stream` onto `ContinuityCore.AudioStreamCandidate` and delegating
+/// selection + download-host policy to `AudioStreamSelector.selectDownloadable`.
 ///
 /// **Fragility note:** `YouTubeKit` scrapes/extracts stream URLs from YouTube's
 /// player response, so it is inherently brittle — YouTube can change its player
 /// at any time and break extraction without warning. Treat resolve failures as
 /// expected, recoverable runtime errors rather than programmer errors.
 ///
-/// This type deliberately contains *no* selection policy: it only maps every
-/// `YouTubeKit.Stream` onto the library-agnostic `ContinuityCore.AudioStreamCandidate`
-/// and delegates the actual "which stream do we download" decision to
-/// `ContinuityCore.AudioStreamSelector`, which is unit-tested and free of any
-/// dependency on YouTubeKit's (changeable) shape.
+/// CI enforces the import boundary (`Scripts/check-youtubekit-boundary.sh`): no other
+/// Swift file may `import YouTubeKit`. Keep the pin `exact:` in ContinuityKit's
+/// Package.swift until an intentional, probed bump.
 final class YouTubeStreamResolver: AudioStreamResolving {
 
     public init() {}
@@ -57,7 +56,7 @@ final class YouTubeStreamResolver: AudioStreamResolving {
             )
         }
 
-        guard let best = AudioStreamSelector.selectBest(from: candidates) else {
+        guard let best = AudioStreamSelector.selectDownloadable(from: candidates) else {
             throw IngestError.noPlayableStream
         }
 
