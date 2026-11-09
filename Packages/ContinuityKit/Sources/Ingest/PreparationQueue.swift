@@ -2,7 +2,6 @@ import AVFoundation
 import Domain
 import Foundation
 import SwiftData
-import ContinuityCore
 import os
 
 extension Logger {
@@ -12,13 +11,12 @@ extension Logger {
     static let stems = Logger(subsystem: "com.continuity.app", category: "stems")
 }
 
-/// Prepares library tracks for playback: local-file import (`importLocalAudio`), launch-time
+/// Prepares library tracks for playback: local-file import (`importLocalFiles`), launch-time
 /// healing of persisted tracks, background analysis, and demand-driven stem separation —
 /// writing the resulting `prepState` / `localRelativePath` / analysis / stem paths back onto
 /// the SwiftData model.
 ///
-/// On `main` this type also drives the YouTube/Spotify resolve → download pipeline; this
-/// branch ships without remote ingest, so audio only enters via the Files importer.
+/// This App Store cut ships without remote ingest, so audio only enters via the Files importer.
 ///
 /// Lives on the main actor because it mutates `@Model` objects bound to the UI's
 /// `ModelContext`; the actual DSP happens off-actor inside the awaited calls.
@@ -35,38 +33,40 @@ public final class PreparationQueue {
     /// Heals a persisted library at launch: trues up stem links and display details for tracks
     /// whose audio is present, and marks tracks whose audio file went missing (or that were
     /// interrupted mid-pipeline by a kill) as `.failed` — this build can't re-download them.
-    public func resumePreparation(in context: ModelContext) {
+    ///
+    /// Yields every 40 rows so a thousand-track library doesn't occupy the main actor for the
+    /// whole pass before the first frame can land.
+    public func resumePreparation(in context: ModelContext) async {
         guard let tracks = try? context.fetch(FetchDescriptor<Track>()) else { return }
-        for track in tracks {
-            // Demo tracks have no source and play synthesized audio — there is nothing to
-            // resume. Heal any that a past build left non-ready.
+        let cacheIndex = CacheIndex.snapshot()
+        var needsSave = false
+        for (i, track) in tracks.enumerated() {
             if track.isDemo {
-                if track.prepState != .ready { track.prepState = .ready; try? context.save() }
+                if track.prepState != .ready {
+                    track.prepState = .ready
+                    needsSave = true
+                }
                 continue
             }
             switch track.prepState {
             case .ready:
-                let hasAudio = track.localRelativePath.map {
-                    FileManager.default.fileExists(atPath: AudioCache.url(forRelativePath: $0).path)
-                } ?? false
+                let hasAudio = track.localRelativePath.map { cacheIndex.hasAudio($0) } ?? false
                 if hasAudio {
-                    // Stems are demand-driven from the play queue (`ensureStems`) — never
-                    // separated library-wide at launch. Just true-up links vs the disk.
-                    reconcileStemLinks(track, in: context)
+                    reconcileStemLinks(track, in: context, using: cacheIndex)
                     backfillTrackDetails(track, in: context)
                 } else {
-                    // Audio gone and this build can't re-download — surface as failed rather
-                    // than leaving a "ready" track that silently won't play.
                     track.prepState = .failed
-                    try? context.save()
+                    needsSave = true
                 }
             case .pending, .preparing:
-                track.prepState = .failed                // can't resume a download this build won't do
-                try? context.save()
+                track.prepState = .failed
+                needsSave = true
             case .failed:
                 break
             }
+            if i.isMultiple(of: 40) { await Task.yield() }
         }
+        if needsSave { try? context.save() }
     }
 
     /// Coordination hook: when tracks are deleted, the live `Player` must drop them from its
@@ -74,15 +74,8 @@ public final class PreparationQueue {
     public var onTracksDeleted: ((Set<UUID>) -> Void)?
 
     /// Best-effort, fire-and-forget healing of a ready track's display details:
-    /// - `durationSeconds` from the local audio file when the model still says 0 ("0:00" rows),
-    /// - audible bounds for gapless transitions,
-    /// - re-analysis when `TrackAnalyzer.analysisVersion` has moved.
-    ///
-    /// Runs post-`.ready` (never blocks playability) from both the import path and
-    /// `resumePreparation`. Every heavy step is gated by `ingestLimiter` so a large library's
-    /// launch backfill can't fan out into dozens of simultaneous file opens / PCM decodes
-    /// (which hitch launch and thrash memory).
-    private func backfillTrackDetails(_ track: Track, in context: ModelContext) {
+    /// duration, audible bounds, and re-analysis when `TrackAnalyzer.analysisVersion` moved.
+    func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
         let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil
         let needsReanalysis = track.localRelativePath != nil
@@ -91,8 +84,6 @@ public final class PreparationQueue {
 
         Task {
             guard track.modelContext != nil else { return }
-            // Duration header + silence scan used to run ungated — one Task per ready track at
-            // every launch. SilenceScan alone decodes ~20 MB of PCM per track.
             if needsDuration || needsSilenceScan, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
@@ -101,9 +92,11 @@ public final class PreparationQueue {
                     track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
                 }
                 if needsSilenceScan, track.modelContext != nil {
+                    MemoryFootprint.breadcrumb("silence scan begin")
                     let bounds = await Task.detached(priority: .utility) {
                         SilenceScan.audibleBounds(fileURL: url)
                     }.value
+                    MemoryFootprint.breadcrumb("silence scan end")
                     if let bounds, track.modelContext != nil {
                         track.audibleStartSeconds = bounds.audibleStart
                         track.audibleEndSeconds = bounds.audibleEnd
@@ -111,15 +104,14 @@ public final class PreparationQueue {
                 }
                 await ingestLimiter.release()
             }
-            // Stale analysis: results computed by an older analyzer (e.g. pre-fix key detection)
-            // are refreshed so fixes reach the existing library. CPU-heavy → limiter-gated,
-            // off the main actor.
             if needsReanalysis, track.modelContext != nil, let relativePath = track.localRelativePath {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
+                MemoryFootprint.breadcrumb("analysis begin")
                 let analysis = try? await Task.detached(priority: .utility) {
                     try TrackAnalyzer.analyze(fileURL: url)
                 }.value
+                MemoryFootprint.breadcrumb("analysis end")
                 await ingestLimiter.release()
                 if let analysis, track.modelContext != nil {
                     track.bpm = analysis.bpm > 0 ? analysis.bpm : nil
@@ -137,8 +129,11 @@ public final class PreparationQueue {
 
     // MARK: Stems (demand-driven)
 
-    /// Stem keys for the current play-queue neighborhood — protected from cache eviction.
     var protectedStemKeys: Set<String> = []
-    /// Tracks whose separation is currently running (dedup across repeated `ensureStems` calls).
-    var stemsInFlight: Set<UUID> = []
+    var stemsInFlight: Set<String> = []
+    var separationAllowedAt: Date?
+    var stemsRetryScheduled = false
+    var budgetPassInFlight = false
+    var budgetPassRequested = false
+    var budgetExtraProtectedKeys: Set<String> = []
 }

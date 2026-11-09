@@ -32,13 +32,18 @@ extension Player {
             audio.current.stop()
         }
         currentPitchShiftSemitones = 0
+        currentRate = 1
+        cancelPitchSettle()   // restaging supersedes any in-flight post-transition settle
         queueRefillAttempted = false   // restaged track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
         pendingSeekSeconds = nil
         isPlaying = false
         persistState()
-        notifyUpcoming()
+        // Do NOT call notifyUpcoming() here. prepare/restore run at cold launch while paused;
+        // kicking stem separation then loads the ~158 MB HT-Demucs ORT session and has jetsammed
+        // real devices at the ~3.4 GB per-process limit (SIGKILL) before the user ever hits play.
+        // Stems start from ensureCurrentLoaded / startCurrentFresh on first real audio.
     }
 
     /// Rebuilds the previous session from persisted state (missing tracks dropped), leaving the
@@ -58,17 +63,25 @@ extension Player {
         prepare(tracks: tracks, startAt: index)
 
         // Stage the saved spot; ensureCurrentLoaded() applies it when audio first materializes.
-        let target = max(0, min(state.positionSeconds, duration > 0 ? duration : state.positionSeconds))
-        if target > 0 {
-            baselineSeconds = target
-            position = target
-            pendingSeekSeconds = target
+        // `min`/`max` do not sanitize NaN — a corrupt persisted Double must not poison `position`.
+        let raw = state.positionSeconds
+        if raw.isFinite {
+            let upper = duration > 0 ? duration : raw
+            let target = Player.clampedSeconds(raw, upperBound: upper)
+            if target > 0 {
+                baselineSeconds = target
+                position = target
+                pendingSeekSeconds = target
+            }
         }
         persistState()
     }
 
     public func togglePlayPause() {
         guard currentTrack != nil else { return }
+        // The user has taken control: a pending "resume when the interruption ends" must not
+        // override an explicit pause (or double-fire after an explicit resume).
+        resumeAfterInterruption = false
         if isPlaying {
             // isPlaying implies the stack exists; guard-let keeps the pause structurally safe.
             if let audio {
@@ -80,13 +93,22 @@ extension Player {
         } else {
             // First real audio need: build the stack, load the staged track, apply pending seek.
             guard ensureCurrentLoaded(), let audio else { isPlaying = false; return }
-            // If the queue had ended (the deck fully drained), replay from the start instead of
-            // calling play() on an empty node, which would just be silent.
-            if !isTransitioning, duration > 0, position >= duration - 0.05 {
+            // If the queue had ended, replay from the start instead of resuming into what's left.
+            // Compare against the same trimmed end tick() stops at — with silence trimming the
+            // playhead parks before the file's full duration, and resuming there would just play
+            // trailing silence until the next tick stops it again (a dead play button).
+            if !isTransitioning, effectiveEndSeconds > 0, position >= effectiveEndSeconds - 0.05 {
                 startCurrentFresh()
             } else {
-                audio.current.play()
-                if isTransitioning { audio.idle.play() }
+                deckStartFailures = 0   // explicit user play: fresh retry budget
+                // Refusal is handled (staged + paused + deferred retry) by the failure funnel.
+                guard startCurrentDeck(context: "togglePlayPause") else { return }
+                if isTransitioning, !audio.idle.play() {
+                    // The outgoing deck is sounding; a blend whose incoming deck won't start
+                    // is dropped rather than left half-faded with a silent partner.
+                    Logger.audio.error("incoming deck refused to resume — discarding paused blend")
+                    cancelTransition()
+                }
                 isPlaying = true
                 startTimer()
             }
@@ -96,16 +118,68 @@ extension Player {
 
     public func next() {
         guard !queue.isEmpty, skipsRemaining > 0 else { return }
-        skipsRemaining -= 1
+        // A second press during an explicit skip would only restart the same incoming track,
+        // spending another skip without advancing farther.
+        guard !isUserInitiatedSkipTransition else { return }
+        // If an automatic blend is already underway, restart it as a five-second user skip.
         cancelTransition()
+        skipsRemaining -= 1
         pushHistory(currentTrack)
-        currentIndex = (currentIndex + 1) % queue.count
-        startCurrentFresh()
+        let targetIndex = (currentIndex + 1) % queue.count
+
+        // Skipping from a paused/staged session still needs the outgoing deck materialized so
+        // there is audio to fade away. If CoreAudio cannot start, preserve the old hard-advance
+        // behavior rather than leaving the transport on the track the user skipped.
+        guard ensureCurrentLoaded(), let audio else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        // A refused start of the outgoing deck gets the same hard-advance fallback as a dead
+        // engine: there is no audio to fade, so just go to the target.
+        if !isPlaying, !audio.current.play() {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !isPlaying {
+            isPlaying = true
+            startTimer()
+        }
+        resumeAfterInterruption = false
+        // Clamp the fade to the audio actually LEFT on the outgoing track: a 5 s blend with
+        // only 4 s of outgoing audio ends in the file draining at ~30% gain — an audible hard
+        // cut instead of a fade (short tracks / hot endings). Under a second remaining isn't
+        // enough to read as a blend at all — hard-advance instead.
+        let remaining = effectiveEndSeconds - position
+        guard remaining > 1 else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        // The incoming deck refusing to start is a hard-advance too — the skip must still land.
+        if !beginTransition(
+            toIndex: targetIndex,
+            outgoingPosition: position,
+            duration: min(Player.skipTransitionDurationSeconds, remaining),
+            isUserInitiatedSkip: true
+        ) {
+            currentIndex = targetIndex
+            startCurrentFresh()
+        }
         persistState()
     }
 
     public func previous() {
         guard !queue.isEmpty else { return }
+        // A second press during an explicit skip would cancel the in-flight blend and walk the
+        // history a second time — dropping the entry it already consumed and double-refunding the
+        // skip. Ignore it until the blend lands, mirroring next().
+        guard !isUserInitiatedSkipTransition else { return }
+        // If an automatic blend is already underway, restart it as a user skip-back.
         cancelTransition()
         // Restart the current track if we're more than 3s in; otherwise step back through the
         // play history (unlimited), falling back to the previous queue slot when history is empty
@@ -114,18 +188,70 @@ extension Player {
             startCurrentFresh()
             return
         }
+        // Walk back to the most recent history entry still in the queue, consuming ONLY that
+        // entry. Non-matching entries (older playlists/queues) must survive the walk — popping
+        // them would let one previous() press after a playlist switch destroy the entire
+        // persistent history, which also feeds the queue-exhausted refill loop.
         var backIndex: Int?
-        while let lastID = historyIDs.popLast() {
-            if let found = queue.firstIndex(where: { $0.id == lastID }) {
-                backIndex = found
-                break
-            }
+        if let historyIdx = historyIDs.lastIndex(where: { id in queue.contains { $0.id == id } }) {
+            backIndex = queue.firstIndex { $0.id == historyIDs[historyIdx] }
+            historyIDs.remove(at: historyIdx)
         }
-        currentIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
+        let targetIndex = backIndex ?? (currentIndex - 1 + queue.count) % queue.count
         // Stepping back a track refunds a forward skip (capped) — undoing a skip shouldn't
-        // leave the budget spent. Restart-current (above) deliberately doesn't refund.
+        // leave the budget spent. Restart-current (above) deliberately doesn't refund. A skip
+        // blend spends nothing on completion (finishTransition skips the refund for user skips),
+        // so this single refund holds whether we blend or hard-cut below.
         skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
-        startCurrentFresh()
+
+        // No distinct earlier track to blend into (single-track queue, or the most recent history
+        // entry is the current track) — a self-blend would just echo the same audio, so restart
+        // instead, exactly as the >3s branch does.
+        guard targetIndex != currentIndex else {
+            startCurrentFresh()
+            persistState()
+            return
+        }
+
+        // Blend back into the previous track exactly like next() blends forward: materialize the
+        // outgoing deck so there is audio to fade, then hand off on the idle deck. Skipping from a
+        // paused/staged session still needs the outgoing deck so there is something to fade away;
+        // if CoreAudio cannot start, hard-advance to the target rather than stranding the transport.
+        guard ensureCurrentLoaded(), let audio else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !isPlaying, !audio.current.play() {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !isPlaying {
+            isPlaying = true
+            startTimer()
+        }
+        resumeAfterInterruption = false
+        // Clamp the fade to the audio actually LEFT on the outgoing track (short tracks / hot
+        // endings), and hard-advance when under a second remains — too little to read as a blend.
+        let remaining = effectiveEndSeconds - position
+        guard remaining > 1 else {
+            currentIndex = targetIndex
+            startCurrentFresh()
+            persistState()
+            return
+        }
+        if !beginTransition(
+            toIndex: targetIndex,
+            outgoingPosition: position,
+            duration: min(Player.skipTransitionDurationSeconds, remaining),
+            isUserInitiatedSkip: true
+        ) {
+            currentIndex = targetIndex
+            startCurrentFresh()
+        }
         persistState()
     }
 
@@ -187,6 +313,9 @@ extension Player {
     }
 
     public func seek(to seconds: TimeInterval) {
+        // A non-finite scrub target is not a position — ignore it rather than reinterpret it as
+        // zero. `min`/`max` don't sanitize NaN, and everything below feeds a frame conversion.
+        guard seconds.isFinite else { return }
         let clamped = max(0, min(seconds, duration))
         cancelTransition() // re-evaluate the transition window from the new position
         // Paused pre-audio scrub: metadata-only — move the clock and stage the seek for when
@@ -199,13 +328,32 @@ extension Player {
             return
         }
         pendingSeekSeconds = nil   // a live deck seek supersedes any staged one
+        guard audio.engine.isRunning else {
+            // A system event invalidated the schedule before the seek reached the deck. Leave the
+            // requested position staged for a clean reload instead of touching stopped nodes.
+            pendingSeekSeconds = clamped
+            audio.current.stop()
+            baselineSeconds = clamped
+            position = clamped
+            isPlaying = false
+            stopTimer()
+            persistState()
+            return
+        }
         if audio.current.seekRealFile(to: clamped) {
             baselineSeconds = clamped
             position = clamped
-            if isPlaying {
-                guard ensureRunning() else { isPlaying = false; return }
-                audio.current.play()
-            }
+            // A refusal here (engine stopped after the reschedule) stages `clamped`, pauses
+            // and persists via the failure funnel — nothing left to do in this call.
+            if isPlaying, !startCurrentDeck(context: "seek") { return }
+        } else if audio.current.hasRealFile {
+            // The engine stopped between the initial check and segment scheduling.
+            pendingSeekSeconds = clamped
+            baselineSeconds = clamped
+            position = clamped
+            audio.current.stop()
+            isPlaying = false
+            stopTimer()
         } else {
             // Synth deck: looped audio is identical at any offset, so just move the clock.
             baselineSeconds = clamped - audio.current.elapsed

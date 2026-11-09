@@ -3,25 +3,46 @@ import Playback
 import Domain
 import ContinuityCore
 
-/// The queue sheet: what plays next, with drag-to-reorder and swipe-to-remove, plus the Flow
-/// toggle that reorders the upcoming tracks into a key/tempo-compatible DJ sequence.
+/// The queue page (below Now Playing): what plays next, with drag-to-reorder and
+/// swipe-to-remove, plus the Flow toggle that reorders the upcoming tracks into a
+/// key/tempo-compatible DJ sequence.
 struct UpNextView: View {
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
     // Persisted as a mode label; toggling ON reorders once, toggling OFF is not an undo.
     @AppStorage("flowMode.v1") private var flowMode = false
+    /// Track whose rename sheet is up — set from the row's context menu, cleared on dismiss.
+    @State private var trackPendingRename: Track?
 
     var body: some View {
-        NavigationStack {
+        // Capture once: upcomingTracks allocates a fresh array slice per access, and body
+        // read it twice (emptiness check + list).
+        let upcoming = player.upcomingTracks
+        return NavigationStack {
             Group {
-                if player.upcomingTracks.isEmpty {
+                if upcoming.isEmpty {
                     ContentUnavailableView("Nothing up next", systemImage: "list.bullet")
                 } else {
-                    queueList
+                    queueList(upcoming)
                 }
             }
             .navigationTitle("Up Next")
             .navigationBarTitleDisplayMode(.inline)
+            // Same as Library: visible bar so its fill extends under the status bar once
+            // the pager restores safe-area insets on this full-bleed page.
+            .toolbarBackground(.visible, for: .navigationBar)
+            .restorePagerSafeArea()
             .toolbar {
+                if pagerState.page == .upNext {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            pagerState.goToNowPlaying()
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .accessibilityLabel("Now Playing")
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Toggle("Flow", systemImage: "wand.and.stars", isOn: $flowMode)
                 }
@@ -32,13 +53,14 @@ struct UpNextView: View {
             .onChange(of: flowMode) { _, isOn in
                 if isOn { applyFlowOrdering() }
             }
+            .renameTrackSheet(for: $trackPendingRename)
         }
     }
 
-    private var queueList: some View {
+    private func queueList(_ upcoming: [Track]) -> some View {
         List {
             Section {
-                ForEach(player.upcomingTracks) { track in
+                ForEach(upcoming) { track in
                     row(track)
                 }
                 .onMove { player.moveUpcoming(fromOffsets: $0, toOffset: $1) }
@@ -49,7 +71,12 @@ struct UpNextView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .listStyle(.insetGrouped)
+        // Plain + hidden scroll background: edge-to-edge rows over the shared pager
+        // backdrop (no insetGrouped card margins / rounded seam against Now Playing).
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        // Duo inner display: keep row labels reachable instead of stretching to ~900pt.
+        .readableScrollColumn()
     }
 
     /// Same 44pt artwork + title/artist treatment as the library's track rows.
@@ -63,6 +90,15 @@ struct UpNextView: View {
                 Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(track.title), \(track.artist)")
+        .contextMenu {
+            Button {
+                trackPendingRename = track
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+        }
     }
 
     /// Reorders only the upcoming tracks. The current track is passed as the chain's anchor —
@@ -73,7 +109,9 @@ struct UpNextView: View {
         let tracks = [current] + player.upcomingTracks
         let items = tracks.map { FlowItem(id: $0.id, bpm: $0.bpm, camelotCode: $0.camelotCode) }
         let ordered = FlowOrdering.order(items, startingAt: current.id)
-        let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        // `uniquingKeysWith`, not `uniqueKeysWithValues`: a repeated id in the queue would trap
+        // the app on a Flow toggle rather than just ordering one track once.
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         player.replaceUpcoming(with: ordered.filter { $0 != current.id }.compactMap { byID[$0] })
     }
 }

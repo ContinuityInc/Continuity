@@ -2,12 +2,18 @@
 
 Anyone who merges a PR gets a free copy of the premium version of Continuity
 
+<p align="center">
+  <a href="docs/screenshots/NowPlaying.png"><img src="docs/screenshots/NowPlaying.png" alt="Continuity Now Playing screen" width="46%"></a>
+</p>
+
 A minimal native iOS music app whose one differentiating feature is **transitions so smooth
 you don't notice a song changed** — a configurable, higher-quality take on Apple Music's
 Automix: stem-separated, beatmatched, harmonically-mixed DJ blends.
 
 This is a **personal portfolio prototype**. iOS 26+, SwiftUI + `AVAudioEngine`. Music is
 sourced from YouTube (see [Caveats](#caveats)).
+
+Artists receive a minimum **80% revenue share**.
 
 ## What it does
 
@@ -41,20 +47,25 @@ unlimited and walk a persistent play history. The full library (playlists, mini 
 detailed Now Playing with live transition settings and presets) lives in a sheet.
 
 **Up Next** — a queue sheet shows what plays next: drag to reorder, swipe to remove, and
-"Play Next" context menus throughout the library. A **Flow** toggle reorders the upcoming
+"Play Next" / "Rename" context menus throughout the library (a rename edits only the
+displayed title and artist — audio, stems and analysis stay put). A **Flow** toggle reorders the upcoming
 tracks by key and tempo, like a DJ set — Camelot-wheel compatibility plus BPM proximity
 (half/double-time pairs count as equal tempo), anchored on the current track. Pure logic in
 `ContinuityCore/FlowOrdering`.
 
-**Ingestion** — paste a YouTube video/playlist link or a Spotify playlist/album link.
-Playlists paginate (~500-track cap); Spotify contributes the tracklist and each song's audio
-is matched from YouTube. Tracks download (ranged, throttle-resistant), analyze, and
-stem-separate in the background with bounded concurrency. Source-backed playlists **sync**
-with their remote (opt-out auto-sync at launch, manual per-playlist and library-wide sync).
+**Ingestion** — one "+" hub: paste a YouTube video/playlist, Spotify playlist/album/track,
+or SoundCloud set/track link; **connect** a Spotify, YouTube or SoundCloud account (OAuth +
+PKCE) and pick from its playlists and likes through the official APIs — pasted links then
+resolve through the account too (private lists, full length), falling back to the anonymous
+page scrape when signed out; or import from Apple Music / local files. Spotify, SoundCloud and
+Apple Music contribute tracklists only; each song's audio is matched from YouTube. Tracks
+download (ranged, throttle-resistant), analyze, and stem-separate in the background with
+bounded concurrency. Source-backed playlists **sync** with their remote (opt-out auto-sync at
+launch, manual per-playlist and library-wide sync).
 
 **Link redirection** — three ways links reach the app besides pasting: a `continuity://`
 URL scheme (`continuity://import?url=…`); a share extension, so "share → Continuity" works
-from Spotify or YouTube; and clipboard detection at launch — an importable link on the
+from Spotify, YouTube or SoundCloud; and clipboard detection at launch — an importable link on the
 clipboard triggers an import offer. Clipboard reads are privacy-conscious: pattern detection
 (banner-free) runs *before* any read, each clipboard generation is inspected once, and every
 path confirms with the user before importing.
@@ -71,11 +82,13 @@ App/ShareExtension/              ContinuityShare target ("share → Continuity")
 Packages/ContinuityCore/         pure-Swift, dependency-free core: crossfade curves,
                                  transition plan, beat/tempo math, BPM tracker, key
                                  detector, Camelot + flow ordering, loudness meter, silence
-                                 trimming, and all YouTube/Spotify link/page parsing
+                                 trimming, YouTube/Spotify/SoundCloud link/page + API parsing,
+                                 OAuth PKCE flow
 Packages/ContinuityKit/Sources/
   Domain/                        SwiftData models (Playlist, Track), TransitionSettings,
                                  audio/stem caches
-  Ingest/                        resolvers (YouTube/Spotify/oEmbed), downloader,
+  Ingest/                        resolvers (YouTube/Spotify/SoundCloud/oEmbed), connected
+                                 accounts (OAuth, Keychain) + API clients, downloader,
                                  preparation queue, analysis, stem separation (ONNX),
                                  playlist sync
   Playback/                      dual-deck engine (Player, Deck), Now Playing bridge,
@@ -108,17 +121,17 @@ cd Packages/ContinuityCore && swift test
 
 ## Caveats
 
-- **This branch disables YouTube / Spotify→YouTube audio download** for App Store /
-  External TestFlight distribution. Use **Add Music → Choose Audio Files** to import
-  local M4A/MP3/WAV/AIFF into an "Imported" playlist. Demo tracks still play via ToneSynth.
-- **YouTube sourcing violates YouTube's ToS** on `main`. Acceptable only as a private
+- **YouTube sourcing violates YouTube's ToS.** Acceptable only because this is a private
   prototype; it is not shippable as-is. The engine is source-agnostic — local files would
   drop in with no engine changes.
 - **First stem separation downloads the model** (~165 MB, HT-Demucs fp16, cached after).
 - **On the Simulator**, stem separation runs on CPU (~2–4 min/track); on hardware it uses
   the CoreML execution provider (Neural Engine). Sim CoreML is deliberately disabled — it's
   pathologically slow there.
-- **Spotify playlists cap at ~50 tracks** (anonymous embed API limit; more needs OAuth).
+- **Spotify playlists cap at ~50 tracks without an account** (anonymous embed API limit);
+  connecting Spotify lifts it. OAuth client ids come from `SPOTIFY_CLIENT_ID` /
+  `GOOGLE_CLIENT_ID` / `SOUNDCLOUD_CLIENT_ID` (+ `SOUNDCLOUD_CLIENT_SECRET`) build settings —
+  empty in a plain checkout, so "Connect" shows as not set up until you fill them in.
 - Playlist sync is **polling** (launch + manual) — push would need server infrastructure.
 
 ## Status
@@ -128,8 +141,10 @@ crossfades, analysis + beatmatching, on-device stem separation with vocal-aware 
 config/persistence/stability polish. Remaining: validation on a physical device (Neural
 Engine stem-separation timing, memory behavior under Jetsam).
 
-## App Store release branch
+## Screenshots
 
-Branched from `release/external-testflight` (YouTube download already disabled).
-Use this branch for App Store–specific work (metadata, local-file ingest, review notes)
-without mixing that into External TestFlight or `main`.
+<p align="center">
+  <a href="docs/screenshots/LibraryNew.png"><img src="docs/screenshots/LibraryNew.png" alt="Continuity music library" width="31%"></a>
+  <a href="docs/screenshots/Playlist.png"><img src="docs/screenshots/Playlist.png" alt="Continuity playlist detail" width="31%"></a>
+  <a href="docs/screenshots/Queue.png"><img src="docs/screenshots/Queue.png" alt="Continuity Up Next queue" width="31%"></a>
+</p>

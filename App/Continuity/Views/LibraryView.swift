@@ -2,6 +2,7 @@ import SwiftUI
 import Ingest
 import Playback
 import Domain
+import ContinuityCore
 import SwiftData
 
 /// Minimal library: a grid of playlist/album cards. Tap a card to open its track list;
@@ -10,11 +11,37 @@ struct LibraryView: View {
     @Query(sort: \Playlist.createdAt) private var playlists: [Playlist]
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.pagerSafeAreaInsets) private var pagerInsets
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
     @State private var playlistPendingDelete: Playlist?
+    /// Visible ScrollView size (not the LazyVGrid content height) — fold/unfold rewrites this;
+    /// never on the 20 Hz tick path.
+    @State private var viewportSize: CGSize = .zero
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+    /// Phone: adaptive columns. Duo inner display: even columns on each side of the fold so a
+    /// card never sits on the hinge (see `DuoLayout.foldAwareColumnCount`).
+    private var columns: [GridItem] {
+        let width = Double(viewportSize.width)
+        let height = Double(viewportSize.height)
+        if let fold = DuoLayout.foldAwareColumnCount(
+            viewportWidth: width,
+            viewportHeight: height,
+            leadingInset: Double(pagerInsets.leading),
+            trailingInset: Double(pagerInsets.trailing)
+        ) {
+            var items = Array(
+                repeating: GridItem(.flexible(), spacing: DuoLayout.libraryCardSpacing),
+                count: fold.perSide * 2
+            )
+            // Widen the central gutter so the hinge falls between cards, not through one.
+            if fold.perSide > 0 {
+                items[fold.perSide - 1] = GridItem(.flexible(), spacing: fold.gutter)
+            }
+            return items
+        }
+        return [GridItem(.adaptive(minimum: DuoLayout.libraryCardMinimum), spacing: DuoLayout.libraryCardSpacing)]
+    }
 
     private var trimmedSearch: String {
         searchText.trimmingCharacters(in: .whitespaces)
@@ -60,7 +87,7 @@ struct LibraryView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: DuoLayout.libraryCardSpacing) {
                 ForEach(sortedPlaylists) { playlist in
                     NavigationLink {
                         PlaylistDetailView(playlist: playlist)
@@ -68,6 +95,7 @@ struct LibraryView: View {
                         PlaylistCard(playlist: playlist)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(playlist.title)
                     .contextMenu {
                         Button(role: .destructive) {
                             playlistPendingDelete = playlist
@@ -79,6 +107,15 @@ struct LibraryView: View {
             }
             .padding(16)
         }
+        // Measure the ScrollView viewport — measuring the LazyVGrid would use content height
+        // (always tall) and permanently disable the fold-aware column split.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            let r = DuoLayout.roundedSize(
+                width: Double(proxy.size.width),
+                height: Double(proxy.size.height)
+            )
+            return CGSize(width: r.width, height: r.height)
+        } action: { viewportSize = $0 }
         .scrollContentBackground(.hidden)
     }
 
@@ -87,11 +124,11 @@ struct LibraryView: View {
     /// surviving track shares.
     private func delete(_ playlist: Playlist) {
         let trackIDs = Set(playlist.tracks.map(\.id))
-        let files = playlist.tracks.map(LibraryCleanup.DeletedTrackFiles.init)
+        let keys = playlist.tracks.map(\.stemKey)
         player.handleDeleted(trackIDs: trackIDs)
         modelContext.delete(playlist)   // cascade deletes its tracks
         try? modelContext.save()
-        LibraryCleanup.removeOrphanedFiles(for: files, in: modelContext)
+        LibraryCleanup.removeOrphanedFiles(keys: keys, in: modelContext)
     }
 }
 
@@ -101,18 +138,27 @@ private struct SearchResultsView: View {
     let playlists: [Playlist]
     let query: String
     @Environment(Player.self) private var player
+    @Environment(MainPagerState.self) private var pagerState
 
     private var matchingPlaylists: [Playlist] {
         playlists.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 
     /// Track matches by title or artist, capped so pathological queries stay snappy.
+    ///
+    /// Filters first and orders only the matches: `orderedTracks` sorts and copies every track
+    /// in a playlist, and this whole scan re-runs on each keystroke, so the old shape paid a
+    /// full library sort per character typed.
     private var matchingTracks: [Track] {
         var results: [Track] = []
         for playlist in playlists {
-            for track in playlist.orderedTracks
-            where track.title.localizedCaseInsensitiveContains(query)
-                || track.artist.localizedCaseInsensitiveContains(query) {
+            var matches = playlist.tracks.filter {
+                $0.title.localizedCaseInsensitiveContains(query)
+                    || $0.artist.localizedCaseInsensitiveContains(query)
+            }
+            if matches.isEmpty { continue }
+            matches.sort { $0.sortIndex < $1.sortIndex }
+            for track in matches {
                 results.append(track)
                 if results.count >= 100 { return results }
             }
@@ -147,34 +193,7 @@ private struct SearchResultsView: View {
             if !trackMatches.isEmpty {
                 Section("Songs") {
                     ForEach(trackMatches) { track in
-                        Button {
-                            play(track)
-                        } label: {
-                            HStack(spacing: 12) {
-                                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol,
-                                                  seed: track.gradientSeed, cornerRadius: 8)
-                                    .frame(width: 44, height: 44)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(track.title)
-                                        .foregroundStyle(player.currentTrack?.id == track.id
-                                                         ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                                        .lineLimit(1)
-                                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                Text(Theme.time(track.durationSeconds))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button {
-                                player.playNext(track)
-                            } label: {
-                                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                            }
-                        }
+                        SearchSongRow(track: track) { play(track) }
                     }
                 }
             }
@@ -183,7 +202,10 @@ private struct SearchResultsView: View {
                 ContentUnavailableView.search(text: query)
             }
         }
-        .listStyle(.insetGrouped)
+        // Same edge-to-edge treatment as Up Next / playlist detail — no insetGrouped
+        // card margins that read as a seam against the pager backdrop.
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     /// Plays the tapped track in its playlist context, so what follows is its real neighbors.
@@ -192,6 +214,54 @@ private struct SearchResultsView: View {
         let queue = playlist.orderedTracks
         guard let index = queue.firstIndex(where: { $0.id == track.id }) else { return }
         player.play(tracks: queue, startAt: index)
+        pagerState.goToNowPlaying()
+    }
+}
+
+/// One song result. Reads the now-playing highlight itself, so a track change re-renders the
+/// affected rows instead of re-running the whole library scan in `SearchResultsView.body`.
+private struct SearchSongRow: View {
+    let track: Track
+    let play: () -> Void
+    @Environment(Player.self) private var player
+    @State private var isRenaming = false
+
+    var body: some View {
+        Button(action: play) {
+            HStack(spacing: 12) {
+                RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol,
+                                  seed: track.gradientSeed, cornerRadius: 8)
+                    .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .foregroundStyle(player.currentTrack?.id == track.id
+                                         ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                        .lineLimit(1)
+                    Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                Text(Theme.time(track.durationSeconds))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(track.title), \(track.artist)")
+        .contextMenu {
+            Button {
+                player.playNext(track)
+            } label: {
+                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            Button {
+                isRenaming = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameTrackSheet(track: track)
+        }
     }
 }
 
@@ -209,7 +279,7 @@ private struct PlaylistCard: View {
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .continuityGlassCapsule()
                             .padding(8)
                     }
                 }

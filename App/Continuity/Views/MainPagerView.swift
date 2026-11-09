@@ -1,0 +1,246 @@
+import SwiftUI
+import Playback
+import ContinuityCore
+
+/// Vertical three-page shell: Library ↑, Now Playing (home), Up Next ↓.
+/// Sticky paging — one full screen at a time via `scrollTargetBehavior(.paging)`.
+/// From home, scroll up for Library and down for Up Next. Nested library/queue lists keep
+/// their own scroll; jump home via the mini player, chevrons, or starting playback.
+struct MainPagerView: View {
+    @State private var pagerState = MainPagerState()
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        // Full-screen pages: the pager ignores the safe area so each page tiles exactly one
+        // screen (no neighbor bleed into the status-bar / home-indicator bands). Library and
+        // Up Next restore those insets onto their own UINavigationControllers so bars extend
+        // under the status bar; Now Playing re-applies them as hard padding (no nav bar).
+        GeometryReader { proxy in
+            let insets = proxy.safeAreaInsets
+            // The ScrollView below ignores the safe area, so it — and therefore every page's
+            // `containerRelativeFrame(.vertical)` — is the FULL window height. This
+            // GeometryReader is laid out inside the safe area, so `proxy.size.height` is short
+            // by exactly the insets it reports. Measuring the backdrop with the short value
+            // made it three insets' worth shorter than the content it backs; centred as a
+            // `.background`, that left an uncovered band of flat `systemGroupedBackground` at
+            // the top and bottom (black in dark mode) and slid the album gradient out of
+            // register with the Now Playing page. Add the insets back so the backdrop spans
+            // exactly the three pages it is drawing.
+            let pageHeight = proxy.size.height + insets.top + insets.bottom
+            ScrollView(.vertical) {
+                // Library / Up Next are full-bleed NavigationStacks: a safe-area restorer
+                // re-injects the window insets so their bars extend under the status bar
+                // (hard top padding left a dead band above the bar that read as a seam).
+                // Now Playing has no nav bar, so it still uses hard insets — overlays and
+                // the column sit clear of the status bar / home indicator without UIKit help.
+                // NavigationStack pages also clear their opaque UIKit fills so the shared
+                // `PagerBackdrop` gradient bleed shows through at page boundaries.
+                VStack(spacing: 0) {
+                    //
+                    // On balanced/constrained tiers only the current page + neighbors mount their
+                    // heavy chrome, so offscreen MiniProgressLine / glass / @Query work tears down.
+                    mounted(.library) { LibrarySheetView() }
+                        .pagerNavigationPage(insets: insets)
+                        .id(MainPagerState.Page.library)
+                    mounted(.nowPlaying) { NowPlayingView() }
+                        .padding(.top, insets.top)
+                        .padding(.bottom, insets.bottom)
+                        // iPhone Duo's inner display puts the status bar on the RIGHT edge, so
+                        // the side insets are real there (and in landscape-shaped windows).
+                        .padding(.leading, insets.leading)
+                        .padding(.trailing, insets.trailing)
+                        // Now Playing reads these for Duo top-chrome compensation; Library /
+                        // Up Next already get them via `pagerNavigationPage`.
+                        .environment(\.pagerSafeAreaInsets, insets)
+                        .containerRelativeFrame(.vertical)
+                        .id(MainPagerState.Page.nowPlaying)
+                    mounted(.upNext) { UpNextView() }
+                        .pagerNavigationPage(insets: insets)
+                        .id(MainPagerState.Page.upNext)
+                }
+                .scrollTargetLayout()
+                // One shared backdrop behind all three pages, sized to the full content height
+                // (three pages). Static and position-based, so it needs no per-scroll-frame state.
+                .background {
+                    PagerBackdrop(url: player.currentTrack?.artworkURL,
+                                  seed: player.currentTrack?.gradientSeed ?? 0,
+                                  pageHeight: pageHeight)
+                }
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: pageBinding)
+            .scrollIndicators(.hidden)
+            // Three equal pages → center lands on Now Playing (the home screen).
+            .defaultScrollAnchor(.center)
+            // Matches the backdrop's flat fill so overscroll doesn't flash black in light mode.
+            .background(Color(uiColor: .systemGroupedBackground))
+            .ignoresSafeArea()
+        }
+        .environment(pagerState)
+    }
+
+    /// Bridges `MainPagerState` ↔ `scrollPosition` so chrome (mini player, chevrons, play)
+    /// can jump pages programmatically and stay in sync with user scrolling.
+    private var pageBinding: Binding<MainPagerState.Page?> {
+        Binding(
+            get: { pagerState.page },
+            set: { newValue in
+                if let newValue {
+                    pagerState.page = newValue
+                }
+            }
+        )
+    }
+
+    /// The page's scroll slot is always laid out by its caller; only the heavy content inside
+    /// it is conditional — mounted when the page is current or adjacent (or when the device
+    /// tier mounts everything).
+    @ViewBuilder
+    private func mounted<Content: View>(
+        _ page: MainPagerState.Page,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if pagerState.shouldMount(page) {
+            content()
+        } else {
+            Color.clear
+        }
+    }
+}
+
+/// Single shared backdrop behind the whole three-page scroll content. It renders the
+/// now-playing album gradient at full strength over the center page and bleeds a muted band of
+/// the gradient's edge colors halfway into the Library (above) and Up Next (below) pages before
+/// settling into the flat `systemGroupedBackground`, so paging between screens never hits a flat
+/// wall. Position-based and static: it scrolls WITH the content, so the gradient stays continuous
+/// across page boundaries with no seam — and it needs no per-scroll-frame state (the old
+/// `scrollFraction` crossfade is gone), keeping heavy views off the per-tick invalidation path.
+private struct PagerBackdrop: View {
+    let url: URL?
+    let seed: Int
+    /// One page's height; the backdrop spans three of these (Library, Now Playing, Up Next).
+    let pageHeight: CGFloat
+
+    /// Resolved palette for the current artwork; nil until the async render lands. Shares the
+    /// per-URL cache with `AlbumBackdrop`, so resolving it here is a cheap cache hit after the
+    /// first fetch — and yields the exact same edge colors the backdrop draws.
+    @State private var style: BackdropStyle?
+
+    var body: some View {
+        let flat = Color(uiColor: .systemGroupedBackground)
+        // Edge colors the neighbor extensions continue from the now-playing gradient. While the
+        // artwork palette is still resolving (or absent, for demo tracks), fall back to the
+        // deterministic seed palette — the same source `AlbumBackdrop` falls back to — so the
+        // bleed is ALWAYS present and roughly matches, never a flat gap that pops when art lands.
+        let palette = Theme.gradientColors(seed: seed)
+        let topEdge = style?.colors.first ?? palette.first ?? flat
+        let bottomEdge = style?.colors.last ?? palette.last ?? flat
+        // The extensions must meet the backdrop's RENDERED edge, not its raw palette: `AlbumBackdrop`
+        // scrims its gradient by black at 0.30 (top) / 0.35 (bottom), so darken the extension
+        // endpoints by the same factors to kill the brightness seam at the page boundary. The top
+        // edge also carries a 55% blurred-art tint that this flat extension only approximates, so a
+        // faint softness may remain at the top boundary (acceptable); the bottom is an exact match.
+        let topEdgeScrimmed = topEdge.darkened(by: 0.30)
+        let bottomEdgeScrimmed = bottomEdge.darkened(by: 0.35)
+
+        // Tuned for dark mode (primary usage): each extension holds full edge color across the near
+        // half of its neighbor and only BEGINS fading at the neighbor's midpoint, so now-playing plus
+        // the near half of Library/Up Next read as one continuous surface; only the far half dissolves
+        // to flat, keeping library/queue text legible over the settled background.
+        // Light mode may need tuning — the systemGroupedBackground is near-white there.
+        ZStack(alignment: .top) {
+            // Base flat fill across the full content height (the far halves of the neighbors).
+            flat
+
+            // Top extension across the FULL Library page [0, 1.0h]: full color held from the page
+            // boundary up through the Library MIDPOINT (so now-playing + the near/bottom half of
+            // Library read as one continuous surface), then fading to flat over the far/top half.
+            LinearGradient(
+                stops: [
+                    .init(color: flat, location: 0.0),            // Library top (y=0) → flat background
+                    .init(color: topEdgeScrimmed, location: 0.5), // Library midpoint — full color reached
+                    .init(color: topEdgeScrimmed, location: 1.0)  // page boundary (y=1h) — hold full color
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: pageHeight)
+            .offset(y: 0)
+
+            // Now-playing gradient at FULL strength over the center page [1.0h, 2.0h] — reuses
+            // `AlbumBackdrop`, so the now-playing look is unchanged from before.
+            AlbumBackdrop(url: url, seed: seed)
+                .frame(height: pageHeight)
+                .offset(y: pageHeight)
+
+            // Bottom extension across the FULL Up Next page [2.0h, 3.0h]: full color held from the
+            // page boundary through the Up Next MIDPOINT (so now-playing + the near/top half of Up
+            // Next read as one continuous surface), then fading to flat over the far/bottom half.
+            LinearGradient(
+                stops: [
+                    .init(color: bottomEdgeScrimmed, location: 0.0), // page boundary (y=2h) — hold full color
+                    .init(color: bottomEdgeScrimmed, location: 0.5), // Up Next midpoint — full color held
+                    .init(color: flat, location: 1.0)                // Up Next bottom (y=3h) → flat background
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: pageHeight)
+            .offset(y: pageHeight * 2)
+        }
+        .frame(height: pageHeight * 3, alignment: .top)
+        .task(id: url) {
+            guard let url else { style = nil; return }
+            // Shared with `AlbumBackdrop` (which this view hosts), so one render serves both.
+            // It outlives either view's task, hence the explicit cancellation check before
+            // adopting a result that may now be for the previous track.
+            let resolved = await BackdropRenderer.style(for: url)
+            guard !Task.isCancelled else { return }
+            style = resolved
+        }
+    }
+}
+
+private extension Color {
+    /// Mixes the color toward black by `fraction` (0 = unchanged, 1 = black), preserving alpha.
+    /// Used to reproduce `AlbumBackdrop`'s black scrim on the flat bleed extensions so their
+    /// boundary color matches the composited backdrop edge. Falls back to the original color if
+    /// the components can't be resolved.
+    func darkened(by fraction: CGFloat) -> Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a) else { return self }
+        let scale = 1 - fraction
+        return Color(.sRGB, red: r * scale, green: g * scale, blue: b * scale, opacity: a)
+    }
+}
+
+/// Shared page selection for the vertical shell — injected so library/queue chrome can jump home.
+@Observable
+@MainActor
+final class MainPagerState {
+    enum Page: Int, Hashable, CaseIterable {
+        case library = 0
+        case nowPlaying = 1
+        case upNext = 2
+    }
+
+    var page: Page = .nowPlaying
+
+    /// Current page plus immediate neighbors on constrained tiers; everything on `.full`.
+    func shouldMount(_ candidate: Page) -> Bool {
+        if AdaptiveQuality.mountsAllPagerPages() { return true }
+        return abs(candidate.rawValue - page.rawValue) <= 1
+    }
+
+    func goToNowPlaying() {
+        withAnimation(.snappy(duration: 0.35)) {
+            page = .nowPlaying
+        }
+    }
+
+    func go(to page: Page) {
+        withAnimation(.snappy(duration: 0.35)) {
+            self.page = page
+        }
+    }
+}

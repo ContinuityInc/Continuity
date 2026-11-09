@@ -20,3 +20,11 @@ xcuserdata/
 /Cache/
 *.m4a
 *.caf
+
+# TestFlight CI signing material. The .p12 stays in the Actions cache.
+.signing/
+Signing/ExportOptions.plist
+
+# Python (ASC listing script)
+__pycache__/
+*.py[cod]

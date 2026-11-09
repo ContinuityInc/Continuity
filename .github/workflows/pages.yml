@@ -1,0 +1,31 @@
+# Optional public site for the privacy policy + support pages Apple wants
+# as HTTPS URLs. Enable Pages once: Settings → Pages → Source = GitHub Actions,
+# then run this workflow. Until then the listing workflow falls back to
+# PRIVACY.md on GitHub and github.com/ContinuityInc/Continuity/issues.
+name: GitHub Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site
+      - id: deployment
+        uses: actions/deploy-pages@v4

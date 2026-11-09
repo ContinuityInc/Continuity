@@ -45,7 +45,15 @@ final class AudioStack {
 @Observable
 public final class Player {
     // MARK: Observable state
-    var queue: [Track] = []
+    var queue: [Track] = [] {
+        didSet { cachedQueueIDs = nil }   // persistState() rebuilds the ID array lazily
+    }
+    /// Cached `queue.map(\.id)` for the periodic persist — each `.id` is a SwiftData read,
+    /// so re-mapping an unchanged queue every ~5 s was pure managed-object churn.
+    @ObservationIgnored var cachedQueueIDs: [UUID]?
+    /// Cached `audibleEndSeconds` of the loaded track (refreshed ~1 Hz in `tick()`), so the
+    /// 20 Hz `effectiveEndSeconds` reads don't hit SwiftData property machinery every tick.
+    @ObservationIgnored var trimCache: (track: Track, end: Double?)?
     var currentIndex = 0
     public internal(set) var isPlaying = false
     public internal(set) var isTransitioning = false
@@ -74,9 +82,64 @@ public final class Player {
     }
     /// Never zero while a track is loaded — uses the deck's resolved duration, falling back to the
     /// model whenever no deck is loaded (pre-audio staging, or before the first load).
+    ///
+    /// Guaranteed finite: this is the scrubber's range, the divisor for every progress fraction,
+    /// and the basis of the transition schedule, and SwiftUI traps rather than degrades when a
+    /// non-finite number reaches layout.
     public var duration: TimeInterval {
-        if let deck = audio?.current, deck.loadedDuration > 0 { return deck.loadedDuration }
-        return currentTrack?.durationSeconds ?? 0
+        let resolved: TimeInterval
+        if let deck = audio?.current, deck.loadedDuration > 0 {
+            resolved = deck.loadedDuration
+        } else {
+            resolved = currentTrack?.durationSeconds ?? 0
+        }
+        return resolved.isFinite && resolved > 0 ? resolved : 0
+    }
+
+    /// Clamps a progress fraction into `0...1`, mapping any non-finite value to 0.
+    ///
+    /// `min`/`max` do NOT sanitize NaN — `min(NaN, 1)` is NaN — so every fraction this type
+    /// publishes goes through here. A NaN reaching `Shape.trim` or a SwiftUI `frame(width:)`
+    /// is a hard crash, not a visual glitch.
+    public static func fraction(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, 0), 1)
+    }
+
+    /// Maps non-finite doubles to `fallback`. Use before any `min`/`max` clamp or `Int(_:)` —
+    /// those do not clear NaN and will trap (or poison SwiftUI layout) downstream.
+    public static func finite(_ value: Double, fallback: Double = 0) -> Double {
+        value.isFinite ? value : fallback
+    }
+
+    /// Clamps a time into `0...upperBound`, mapping non-finite inputs (either side) to 0.
+    public static func clampedSeconds(_ value: Double, upperBound: Double) -> Double {
+        let upper = finite(upperBound)
+        let raw = finite(value)
+        guard upper > 0 else { return max(0, raw) }
+        return min(max(0, raw), upper)
+    }
+
+    /// Progress fraction (0…1) for UI rings/bars. During a blend it MORPHS from the outgoing
+    /// track's fraction toward the incoming track's, weighted by the blend progress — by the
+    /// moment the decks swap, the displayed value already equals the incoming fraction, so the
+    /// indicator glides into the next song instead of snapping to it.
+    public var displayProgress: Double {
+        let current = duration > 0 ? Player.fraction(position / duration) : 0
+        guard isTransitioning, let audio,
+              queue.indices.contains(transitionTargetIndex) else { return current }
+        let incoming = queue[transitionTargetIndex]
+        let incomingDuration = audio.idle.loadedDuration > 0
+            ? audio.idle.loadedDuration : incoming.durationSeconds
+        guard incomingDuration.isFinite, incomingDuration > 0 else { return current }
+        // The tick's snapshot, not a fresh `Deck.elapsed`: every reader of this property is a
+        // 20 Hz leaf, and each `elapsed` call round-trips through AVAudioEngine for a render
+        // timestamp and a player time. Three progress views during a blend meant six of those
+        // per tick for a value that only moves once per tick anyway.
+        let incomingPosition = incomingStartOffset + incomingDeckElapsed
+        let incomingFraction = Player.fraction(incomingPosition / incomingDuration)
+        let weight = Player.fraction(transitionProgress)
+        return Player.fraction(current + (incomingFraction - current) * weight)
     }
 
     // MARK: Engine / decks
@@ -91,9 +154,19 @@ public final class Player {
     var baselineSeconds: TimeInterval = 0
     /// Queue index the in-flight transition is moving to.
     var transitionTargetIndex = 0
+    /// Duration captured when a blend starts. Skip blends are always five seconds; automatic
+    /// blends keep using the user's configured duration.
+    var activeTransitionDurationSeconds: TimeInterval = 0
+    /// Skip blends spend their budget and record history when they start, so completion must not
+    /// award the natural-track-finish refund a scheduled blend receives.
+    var isUserInitiatedSkipTransition = false
     /// Seconds the incoming deck was seeked into its track for beat alignment — becomes the
     /// promoted deck's clock baseline when the transition completes.
     var incomingStartOffset: TimeInterval = 0
+    /// The incoming deck's elapsed time as of the current tick, so the 20 Hz progress leaves
+    /// share one reading instead of each querying the engine's render clock. Bookkeeping only —
+    /// the views that read `displayProgress` are already invalidated by `position`.
+    @ObservationIgnored var incomingDeckElapsed: TimeInterval = 0
     /// Low-shelf cut (dB) applied to the incoming deck's low end at the start of a bass-swap blend,
     /// ramped back to flat over the first part of the transition.
     let bassSwapCutDB: Float = -9
@@ -103,10 +176,38 @@ public final class Player {
     /// Pitch shift staged on the incoming deck; promoted to `currentPitchShiftSemitones` when the
     /// transition completes.
     var incomingPitchShiftSemitones = 0
+    /// Beatmatch playback rate the CURRENT track is sounding at (1 when unmatched). Like the
+    /// pitch shift, a matched rate persists for the whole track (Deck.load resets it), so the
+    /// next transition must tempo-match and beat-align against this, not the stored BPM.
+    var currentRate: Double = 1
+    /// Rate staged on the incoming deck; promoted to `currentRate` when the transition completes.
+    var incomingRate: Double = 1
+    /// Post-transition pitch settle. The harmonic key-sync shift is only needed while the two
+    /// tracks overlap; once the promoted track plays solo, holding the detune repitches its whole
+    /// remaining duration (the audible "plays a little higher" bug). After a blend finishes we
+    /// glide the now-current deck from its shifted pitch back to true (0 cents) over
+    /// `pitchSettleDurationSeconds`, driven tick-by-tick, then clear `currentPitchShiftSemitones`.
+    /// Bookkeeping only (never read by views); 0 ticks remaining = no settle in progress.
+    @ObservationIgnored var pitchSettleTicksRemaining = 0
+    @ObservationIgnored var pitchSettleTotalTicks = 0
+    @ObservationIgnored var pitchSettleStartCents: Float = 0
 
     /// True when playback was paused by an interruption/route change and should resume when the
     /// system says the coast is clear.
     var resumeAfterInterruption = false
+
+    /// Refused deck starts since the current track was (re)started by the user — bounds the
+    /// automatic retries in `Player+DeckFailure`. Reset by `startCurrentFresh` and user play.
+    @ObservationIgnored var deckStartFailures = 0
+
+    /// Coalesces nested `recoverPlayback` entries. `engine.start()` / session activation can
+    /// post `.AVAudioEngineConfigurationChange` synchronously on the main queue; without this
+    /// flag the observer re-enters recovery mid-reschedule and double-touches the decks.
+    @ObservationIgnored var isRecoveringPlayback = false
+
+    /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
+    /// can drop the old registrations instead of stacking duplicate handlers.
+    var audioEnvironmentObservers: [NSObjectProtocol] = []
 
     /// Publishes state to the lock screen / Control Center and routes remote commands back here.
     let nowPlayingBridge = NowPlayingBridge()
@@ -126,12 +227,36 @@ public final class Player {
     /// Reset wherever the current track changes (startCurrentFresh, finishTransition, prepare).
     var queueRefillAttempted = false
 
+    // MARK: Transition voting
+
+    /// The blend currently (or most recently) available for a thumbs-up/down. Set when a
+    /// transition starts, timestamped on completion, cleared on cancel; the UI decides how long
+    /// a completed record stays votable. Changes rarely — safe for non-leaf views to observe.
+    public internal(set) var votableTransition: TransitionRecord?
+    /// The (possibly vote-adapted) settings the in-flight blend runs with. Falls back to the
+    /// user's configured settings outside a blend.
+    @ObservationIgnored var activeBlendSettings: TransitionSettings?
+    /// Settings the in-flight blend uses everywhere `transitionSettings` used to be read mid-blend.
+    var blendSettings: TransitionSettings { activeBlendSettings ?? transitionSettings }
+    /// Backing storage for `transitionVoteHistory` (see Player+Voting).
+    @ObservationIgnored var transitionVoteHistoryStorage: ((UUID, UUID) -> [Bool])?
+    /// Per-pair adaptation cache: (pair, base settings it was derived from, result).
+    @ObservationIgnored var adaptationCache: (fromID: UUID, toID: UUID, base: TransitionSettings, settings: TransitionSettings, level: Int)?
+
     /// How far ahead stems are prepared. At ~2–4 min per separation and ~3.5 min per song, three
     /// tracks of lead time keeps the next blend's stems ready even right after a skip.
     private static let upcomingStemWindow = 3
 
+    /// Armed the first time this process actually starts audio (`ensureCurrentLoaded` /
+    /// `startCurrentFresh`). Pre-play queue edits still call `notifyUpcoming`, but must not
+    /// open the ORT session — that jetsammed cold launches at the per-process limit.
+    var audioHasStartedThisProcess = false
+
     /// Reports the play-position neighborhood to `onUpcomingTracks`.
     func notifyUpcoming() {
+        // Queue bookkeeping (Up Next / Flow / delete) runs before the first play; only the
+        // first real audio need is allowed to kick stem separation.
+        guard audioHasStartedThisProcess else { return }
         guard !queue.isEmpty, queue.indices.contains(currentIndex) else { return }
         let count = min(Player.upcomingStemWindow, queue.count)
         let tracks = (0..<count).map { queue[(currentIndex + $0) % queue.count] }
@@ -153,7 +278,7 @@ public final class Player {
     ///   - play(tracks:) / next() / previous() / hardAdvance() → startCurrentFresh()
     ///   - togglePlayPause() play direction (incl. remotePlay / lock screen) → ensureCurrentLoaded()
     ///   - seek() with a live deck → ensureRunning() (paused pre-audio scrubs stay metadata-only)
-    ///   - beginTransition() → called here directly (tick() only runs while playing, post-build)
+    ///   - beginTransition() → automatic blends are post-build; next() loads the current deck first
     ///   - recoverPlayback() / pauseForEnvironment() → observers are only registered here, so
     ///     they cannot fire pre-build
     ///   - handleDeleted() / prepare() / restore() / persistState() never build — they guard on
@@ -177,21 +302,57 @@ public final class Player {
         guard let track = currentTrack else { return false }
         let audio = ensureAudioStack()
         guard ensureRunning() else { return false }
+        if isTransitioning && audio.idle.needsRescheduleAfterEngineStart {
+            // A paused blend cannot survive an engine stop: both node schedules were invalidated.
+            // Keep the outgoing track and discard the incoming deck before manual/remote resume.
+            Logger.audio.info("engine restart invalidated paused transition — discarding incoming deck")
+            cancelTransition()
+        }
         if audio.current.track?.id != track.id {
             audio.current.load(track)
             applyLoudness(to: audio.current)
             currentPitchShiftSemitones = 0
+            currentRate = 1
+            cancelPitchSettle()   // load() reset the deck's pitch; drop any in-flight settle
         }
         if let pending = pendingSeekSeconds {
             pendingSeekSeconds = nil
-            if pending > 0, audio.current.seekRealFile(to: pending) {
+            if audio.current.seekRealFile(to: pending) {
                 baselineSeconds = pending
+            } else if audio.current.hasRealFile {
+                // The engine stopped again between ensureRunning() and scheduling. Preserve the
+                // staged seek and force a fresh load on the next play attempt.
+                pendingSeekSeconds = pending
+                audio.current.stop()
+                return false
             } else {
                 // Synth deck: looped audio is identical at any offset, so just move the clock.
                 baselineSeconds = pending - audio.current.elapsed
             }
             position = pending
+        } else if audio.current.needsRescheduleAfterEngineStart {
+            // The track stayed loaded while a system event stopped the engine, invalidating its
+            // player-node schedules. Rebuild them before any manual/remote resume can call play().
+            if audio.current.seekRealFile(to: position) {
+                baselineSeconds = position
+            } else if audio.current.hasRealFile {
+                pendingSeekSeconds = position
+                audio.current.stop()
+                return false
+            } else {
+                // Synth loops cannot seek; reloading is position-agnostic, then retain the logical
+                // clock and any rate/pitch inherited from the previous transition.
+                audio.current.load(track)
+                applyLoudness(to: audio.current)
+                audio.current.rate = Float(currentRate)
+                audio.current.pitchCents = Float(currentPitchShiftSemitones * 100)
+                baselineSeconds = position
+            }
         }
+        // First real audio need (play from a prepare/restore staging) — start JIT stems here,
+        // not at launch. prepare() deliberately skips notifyUpcoming to avoid ORT jetsam.
+        audioHasStartedThisProcess = true
+        notifyUpcoming()
         return true
     }
 
@@ -217,12 +378,19 @@ public final class Player {
     /// Radio-style forward-skip budget: `next()` spends one; finishing a track naturally earns
     /// one back (capped). Previous-skips are unlimited and walk the persistent play history.
     static let maxSkips = 3
+    static let skipTransitionDurationSeconds: TimeInterval = 5
+    /// Cosmetic window over which a post-transition track glides from its harmonic key-sync pitch
+    /// back to true pitch (0 cents). Short — just long enough that the un-detune isn't an audible
+    /// pitch pop at the handoff.
+    static let pitchSettleDurationSeconds: TimeInterval = 2
     public internal(set) var skipsRemaining = Player.maxSkips
     /// IDs of previously played tracks, most recent last. Persisted, so "previous" works across
     /// launches.
     var historyIDs: [UUID] = []
     /// Ticks since the last periodic state save (persist every ~5 s while playing).
     private var ticksSincePersist = 0
+    /// Tick counter for the ~10 s playback memory heartbeat.
+    private var memTicks = 0
 
     // MARK: Internals
 
@@ -236,7 +404,13 @@ public final class Player {
         let audio = ensureAudioStack()
         if audio.engine.isRunning { return true }
         try? AVAudioSession.sharedInstance().setActive(true)
-        do { try audio.engine.start(); return true } catch { return false }
+        // Guarded: besides its thrown errors, start() RAISES when the output hardware format
+        // is momentarily invalid (a Bluetooth route dropping mid-restart) — see AVFAudioGuard.
+        guard audio.engine.guardedStart() else { return false }
+        let start = mach_absolute_time()
+        audio.deckA.markEngineStarted(at: start)
+        audio.deckB.markEngineStarted(at: start)
+        return true
     }
 
     /// Starts the current track from scratch on the current deck (play / next / previous / restart).
@@ -251,20 +425,32 @@ public final class Player {
         audio.current.load(track)   // load() resets rate/pitch, so the fresh track plays true
         applyLoudness(to: audio.current)
         currentPitchShiftSemitones = 0
+        currentRate = 1
+        cancelPitchSettle()   // a fresh start supersedes any in-flight post-transition settle
         queueRefillAttempted = false   // new current track earns a fresh exhaustion refill
         baselineSeconds = 0
         position = 0
-        audio.current.play()
-        isPlaying = true
-        startTimer()
+        deckStartFailures = 0          // a user-driven (re)start earns a fresh retry budget
+        resumeAfterInterruption = false   // an explicit (re)start supersedes any pending auto-resume
+        // A refused start leaves the transport paused at 0 with a deferred retry staged
+        // (Player+DeckFailure) instead of claiming to play — or, before the shim, aborting.
+        if startCurrentDeck(context: "startCurrentFresh") {
+            isPlaying = true
+            startTimer()
+        }
+        audioHasStartedThisProcess = true
         notifyUpcoming()
     }
 
     func startTimer() {
         stopTimer()
         // 20 Hz: smooth enough for the volume ramp and the scrubber.
+        // The timer fires on RunLoop.main, i.e. already on the main actor — run tick()
+        // synchronously (same pattern as the audio-session notification handlers). Wrapping
+        // it in Task {} allocated and re-queued 20 tasks/second, deferring each tick to a
+        // later scheduling slot — measurable churn exactly when the device is under load.
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
         displayTimer = timer
@@ -278,40 +464,122 @@ public final class Player {
     /// The moment transitions treat as the current track's end. With silence trimming on, that's
     /// the last audible moment (gapless) rather than the file's end — a blend into trailing
     /// silence reads as a gap. Falls back to the full duration when unscanned or disabled.
-    private var effectiveEndSeconds: TimeInterval {
+    /// Internal (not private): transport's "queue ended, replay from start" check must use the
+    /// same end tick() stops at, or resume plays into trailing silence and immediately re-stops.
+    var effectiveEndSeconds: TimeInterval {
         let full = duration
         // Pre-audio the staged track carries the same trim metadata as the loaded deck would.
         let track = audio?.current.track ?? currentTrack
-        guard transitionSettings.trimSilenceEnabled,
-              let audibleEnd = track?.audibleEndSeconds,
-              audibleEnd > 1, audibleEnd < full else { return full }
+        guard transitionSettings.trimSilenceEnabled, let track else { return full }
+        // Hot path (20 Hz from tick + UI): use the ~1 Hz cache instead of a SwiftData read.
+        // Cache misses (pre-audio, track just changed) fall through to the direct read.
+        let end = trimCache?.track === track ? trimCache?.end : track.audibleEndSeconds
+        guard let audibleEnd = end, audibleEnd > 1, audibleEnd < full else { return full }
         return audibleEnd
+    }
+
+    /// Seconds until the next automatic transition begins, or nil if none is scheduled
+    /// (already transitioning, no next track, or the current track/settings can't blend).
+    ///
+    /// Derived from `position`, so any view that reads this is pulled into the 20 Hz tick
+    /// loop. UI should read `transitionCountdownSeconds` instead.
+    public var secondsUntilTransition: TimeInterval? {
+        guard !isTransitioning, nextIndex != nil else { return nil }
+        let dur = effectiveEndSeconds
+        let fade = transitionSettings.durationSeconds
+        guard dur > 0, fade > 0, dur > fade else { return nil }
+        return max(0, (dur - fade) - position)
+    }
+
+    /// Whole-second mirror of `secondsUntilTransition` for the Now Playing countdown, written
+    /// only when the displayed second actually changes.
+    ///
+    /// The countdown is the only thing on that panel that moves while a blend is merely
+    /// *scheduled*, and reading `secondsUntilTransition` for it dragged the whole transition
+    /// visualization — a `TransitionPreview` rebuild, two `Canvas` redraws, and a read of both
+    /// tracks' `beatTimes` arrays out of SwiftData — into every one of the 20 ticks a second.
+    /// Publishing it at 1 Hz keeps that panel off the tick path entirely.
+    public internal(set) var transitionCountdownSeconds: Int?
+
+    /// Republishes the coarse countdown. Called from `tick()` and from `persistState()` (the
+    /// funnel every playback discontinuity already goes through), so it can never go stale.
+    func refreshTransitionCountdown() {
+        // `Int(_: Double)` traps on infinity and NaN; `min`/`max` do not clear NaN, so a
+        // poisoned `position` used to blow up here. Non-finite → nil (no countdown), not a trap.
+        let seconds: Int?
+        if let until = secondsUntilTransition, until.isFinite {
+            seconds = Int(min(max(0, until), 86_400).rounded())
+        } else {
+            seconds = nil
+        }
+        if transitionCountdownSeconds != seconds { transitionCountdownSeconds = seconds }
     }
 
     private func tick() {
         guard isPlaying, let audio else { return }
+        // Configuration changes can report the engine as running in their callback, then stop it
+        // asynchronously. Never let transition scheduling touch player nodes in that gap.
+        guard audio.engine.isRunning else {
+            Logger.audio.error("playback tick found stopped engine — recovering")
+            // Async: the tick runs under the display timer; keep recovery off this call stack
+            // so a nested configuration-change notification cannot reenter mid-tick.
+            scheduleRecoverPlayback(force: true)
+            return
+        }
+        // If the clock baseline has been corrupted (a stale render time survived long enough
+        // to poison it), hold the last good position rather than publish a number that traps
+        // SwiftUI layout on its way to the scrubber.
         let elapsed = baselineSeconds + audio.current.elapsed
-        position = elapsed
+        if elapsed.isFinite, elapsed >= 0 {
+            // Blend math below uses the local `elapsed`; UI leaves read `position`. On
+            // balanced/constrained tiers, publish position at 10 Hz when not blending so
+            // scrubber/ring/mini-line invalidations halve without starving transition scheduling.
+            let fullRate = isTransitioning || AdaptiveQuality.allowsFullTickRate()
+            if fullRate || memTicks % 2 == 0 {
+                position = elapsed
+            }
+        }
+        // Cosmetic: ease a just-transitioned track's key-sync pitch back to true. Touches only the
+        // deck's timePitch node (never `position`), so it stays off the heavy-view tick path.
+        advancePitchSettle()
+        // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
+        // that ramps during PLAIN playback (no ingest/stems activity, so no other breadcrumb
+        // fires). The decay slope across these lines names the leak rate; the value at the
+        // last line before a kill names the floor. Cheap enough to leave in release.
+        memTicks += 1
+        if memTicks >= 200 {
+            memTicks = 0
+            Logger.audio.info("mem[playback] \(os_proc_available_memory() / 1_048_576, privacy: .public) MB headroom")
+        }
         // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
         ticksSincePersist += 1
         if ticksSincePersist >= 100 {
             ticksSincePersist = 0
             persistState()
         }
+        // Refresh the trim cache on track change and ~1 Hz: audibleEndSeconds only ever moves
+        // when the silence scan backfills it (minutes before it matters at track end), so a
+        // ≤1 s pickup delay is imperceptible — and it keeps SwiftData reads off the 20 Hz path.
+        if let track = audio.current.track, trimCache?.track !== track || memTicks % 20 == 0 {
+            trimCache = (track, track.audibleEndSeconds)
+        }
         let dur = effectiveEndSeconds
-        let plan = TransitionPlan(curve: transitionSettings.curve, duration: transitionSettings.durationSeconds)
-
         if isTransitioning {
+            let plan = TransitionPlan(
+                curve: blendSettings.curve,
+                duration: activeTransitionDurationSeconds
+            )
             // Drive the blend off the INCOMING deck's clock — it keeps advancing even after the
             // outgoing file drains, so the transition can never get stuck half-faded.
             let incomingElapsed = audio.idle.elapsed
+            incomingDeckElapsed = incomingElapsed
             let gains = plan.gains(position: incomingElapsed, startPosition: 0)
             audio.current.volume = Float(gains.outgoing)
             audio.idle.volume = Float(gains.incoming)
-            let progress = plan.progress(position: incomingElapsed, startPosition: 0)
+            let progress = Player.fraction(plan.progress(position: incomingElapsed, startPosition: 0))
             transitionProgress = progress
             // Bass-swap: fade the incoming low end in so two basslines don't stack into mud.
-            if transitionSettings.bassSwapEnabled {
+            if blendSettings.bassSwapEnabled {
                 applyBassSwap(progress: progress)
             }
             // When both decks have stems, shape the per-stem gains so the outgoing vocals duck out
@@ -323,8 +591,24 @@ public final class Player {
                 finishTransition()
             }
         } else if let next = nextIndex {
+            // Vote-adapted per pair: a downvoted blend gets simpler (shorter fade, fewer
+            // effects) the next time this pair comes around. Cached, so no fetch per tick.
+            let adapted = adaptedTransitionSettings(from: currentTrack, to: queue[next]).settings
+            let plan = TransitionPlan(
+                curve: adapted.curve,
+                duration: adapted.durationSeconds
+            )
             if plan.shouldStart(position: elapsed, trackDuration: dur, hasNextTrack: true) {
-                beginTransition(toIndex: next, outgoingPosition: elapsed)
+                // A blend the incoming deck refused to start is not retried every tick (each
+                // attempt reopens the files and logs a fault); the track hard-advances instead.
+                if !beginTransition(
+                    toIndex: next,
+                    outgoingPosition: elapsed,
+                    duration: adapted.durationSeconds,
+                    isUserInitiatedSkip: false
+                ) {
+                    hardAdvance(toIndex: next)
+                }
             } else if dur > 0 && elapsed >= dur - 0.05 {
                 // Reached the end without a crossfade (blend off, or track too short to blend) → hard cut.
                 hardAdvance(toIndex: next)
@@ -343,8 +627,14 @@ public final class Player {
             }
         } else if dur > 0 && elapsed >= dur - 0.05 {
             // Last track and no history to loop into: stop at the end (resume will restart it).
+            // A natural completion like finishTransition/hardAdvance — earn a skip back (capped)
+            // and record the history step, so the session's final track pays out too.
+            skipsRemaining = min(Player.maxSkips, skipsRemaining + 1)
+            pushHistory(currentTrack)
             stopPlayback()
         }
+        // Last thing in the tick, so it reflects any transition this tick started or finished.
+        refreshTransitionCountdown()
     }
 
 }
