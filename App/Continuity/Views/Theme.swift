@@ -161,6 +161,10 @@ enum SharedCIContext {
 /// list row, the mini player and Now Playing decoded three times over. Here one decode per URL
 /// is shared by every view, bounded by count and bytes, and dropped automatically under memory
 /// pressure (NSCache) so it can never contribute to a jetsam.
+///
+/// Concurrent consumers of the **same URL** (hero at 900 px + backdrop at 512 px) share one
+/// in-flight fetch+decode at `ArtworkDecodeCoalesce.sharedMaxPixel` — a larger bitmap always
+/// satisfies a smaller request, so track changes no longer double-decode.
 @MainActor
 final class ArtworkImageStore {
     static let shared = ArtworkImageStore()
@@ -175,8 +179,18 @@ final class ArtworkImageStore {
         return cache
     }()
 
-    /// One load per URL+pixel-budget even when several views ask at once.
-    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    /// In-flight loads keyed by URL (not URL+budget). Concurrent hero + backdrop join one task
+    /// decoded at the max of their pixel budgets.
+    private var inFlight: [String: InFlightLoad] = [:]
+
+    /// Largest decode size we have cached for each URL — lets a 512 px backdrop reuse a 900 px
+    /// hero hit without probing every AdaptiveQuality budget key.
+    private var cachedMaxPixelByURL: [String: CGFloat] = [:]
+
+    private struct InFlightLoad {
+        var maxPixel: CGFloat
+        let task: Task<UIImage?, Never>
+    }
 
     private init() {}
 
@@ -184,31 +198,90 @@ final class ArtworkImageStore {
         "\(url.absoluteString)#p=\(Int(maxPixel))" as NSString
     }
 
+    private func urlKey(_ url: URL) -> String { url.absoluteString }
+
     /// Synchronous cache hit, so a re-created row draws its art immediately instead of
-    /// flashing the placeholder for a frame.
+    /// flashing the placeholder for a frame. Also returns a larger decode for the same URL
+    /// when one exists (hero bitmap satisfies backdrop / row budgets).
     func cachedImage(for url: URL, maxPixel: CGFloat) -> UIImage? {
-        cache.object(forKey: cacheKey(url: url, maxPixel: maxPixel))
+        let key = cacheKey(url: url, maxPixel: maxPixel)
+        if let hit = cache.object(forKey: key) { return hit }
+        let uKey = urlKey(url)
+        guard let recorded = cachedMaxPixelByURL[uKey],
+              ArtworkDecodeCoalesce.cachedSatisfiesRequest(
+                cachedMaxPixel: Double(recorded),
+                requestedMaxPixel: Double(maxPixel)
+              ) else {
+            return nil
+        }
+        if let hit = cache.object(forKey: cacheKey(url: url, maxPixel: recorded)) {
+            return hit
+        }
+        // NSCache dropped the bitmap under pressure — forget the stale size so we don't
+        // keep probing a key that is gone.
+        cachedMaxPixelByURL[uKey] = nil
+        return nil
+    }
+
+    /// Join a cached or in-flight decode for `url` when it already meets `minPixel`.
+    /// Does **not** start a network fetch — backdrop uses this so a hero already loading the
+    /// stored `hqdefault` wins over climbing maxres/sd on a second connection.
+    func existingImage(for url: URL, minPixel: CGFloat) async -> UIImage? {
+        if let hit = cachedImage(for: url, maxPixel: minPixel) { return hit }
+        let uKey = urlKey(url)
+        guard let flight = inFlight[uKey],
+              ArtworkDecodeCoalesce.cachedSatisfiesRequest(
+                cachedMaxPixel: Double(flight.maxPixel),
+                requestedMaxPixel: Double(minPixel)
+              ) else {
+            return nil
+        }
+        return await flight.task.value
     }
 
     func image(for url: URL, maxPixel: CGFloat) async -> UIImage? {
-        let key = cacheKey(url: url, maxPixel: maxPixel)
-        if let hit = cache.object(forKey: key) { return hit }
-        let flightKey = key as String
-        if let existing = inFlight[flightKey] { return await existing.value }
+        if let hit = cachedImage(for: url, maxPixel: maxPixel) { return hit }
 
-        // Detached: fetching and decoding must not run on the main actor, and this load is
-        // shared, so it must not inherit (or be cancelled with) whichever view asked first.
+        let uKey = urlKey(url)
+
+        if let flight = inFlight[uKey] {
+            if ArtworkDecodeCoalesce.cachedSatisfiesRequest(
+                cachedMaxPixel: Double(flight.maxPixel),
+                requestedMaxPixel: Double(maxPixel)
+            ) {
+                return await flight.task.value
+            }
+            // In-flight decode is too small (backdrop raced ahead of hero). Wait for it so the
+            // small budget is populated, then fall through to a larger decode for this caller.
+            _ = await flight.task.value
+            if let hit = cachedImage(for: url, maxPixel: maxPixel) { return hit }
+        }
+
+        let decodePixel = maxPixel
         let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
             guard let data = await ArtworkDecoder.data(for: url) else { return nil }
-            return ArtworkDecoder.image(from: data, maxPixel: maxPixel)
+            return ArtworkDecoder.image(from: data, maxPixel: decodePixel)
         }
-        inFlight[flightKey] = task
+        inFlight[uKey] = InFlightLoad(maxPixel: decodePixel, task: task)
         let image = await task.value
-        inFlight[flightKey] = nil
+        // Only clear if we are still the recorded flight (a larger follow-up may have replaced us).
+        if inFlight[uKey]?.maxPixel == decodePixel {
+            inFlight[uKey] = nil
+        }
         if let image {
-            cache.setObject(image, forKey: key, cost: ArtworkDecoder.byteCost(image))
+            remember(image, url: url, maxPixel: decodePixel)
         }
         return image
+    }
+
+    private func remember(_ image: UIImage, url: URL, maxPixel: CGFloat) {
+        let key = cacheKey(url: url, maxPixel: maxPixel)
+        cache.setObject(image, forKey: key, cost: ArtworkDecoder.byteCost(image))
+        let uKey = urlKey(url)
+        let previous = cachedMaxPixelByURL[uKey] ?? 0
+        if maxPixel >= previous {
+            cachedMaxPixelByURL[uKey] = maxPixel
+        }
     }
 }
 
@@ -326,6 +399,8 @@ enum BackdropRenderer {
         // One detached task for the whole render: fetch, decode, palette sample and gaussian
         // all belong off the main actor, and this work is shared between backdrops, so it must
         // not be cancelled along with whichever view happened to ask for it first.
+        // Source pixels come from `ArtworkImageStore` so the Now Playing hero and this palette
+        // pass share one ImageIO decode when they race on the same track URL.
         let task = Task.detached(priority: .userInitiated) { () -> BackdropStyle? in
             guard let source = await Self.fetchBestArtwork(url) else { return nil }
             guard let colors = Self.samplePalette(source) else { return nil }
@@ -367,24 +442,25 @@ enum BackdropRenderer {
         return UIImage(cgImage: cg)
     }
 
-    /// YouTube thumbnails come in quality tiers; try the sharper variants first (they 404 for
-    /// some videos), falling back to the stored URL.
+    /// Prefer a decode the hero (or any other view) already started for the stored URL, then
+    /// climb YouTube quality tiers through `ArtworkImageStore` — never a private ImageIO path.
     private nonisolated static func fetchBestArtwork(_ url: URL) async -> UIImage? {
-        var candidates: [URL] = []
-        let raw = url.absoluteString
-        if raw.contains("/hqdefault") {
-            for tier in ["/maxresdefault", "/sddefault"] {
-                if let upgraded = URL(string: raw.replacingOccurrences(of: "/hqdefault", with: tier)) {
-                    candidates.append(upgraded)
-                }
-            }
+        let budget = CGFloat(AdaptiveQuality.backdropArtworkMaxPixel())
+
+        // Hero and backdrop share the track's stored artwork URL. If that decode is cached or
+        // in flight at a usable size, reuse it — skipping maxres/sd saves a second download on
+        // every track change where Now Playing already asked for the cover.
+        if let shared = await ArtworkImageStore.shared.existingImage(for: url, minPixel: budget) {
+            return shared
         }
-        candidates.append(url)
-        for candidate in candidates {
-            guard let data = await ArtworkDecoder.data(for: candidate) else { continue }
-            // Bounded decode: the palette is an area average and the blur renders at 160 px, so
-            // fully decoding a 1280×720 maxres frame (≈3.7 MB of bitmap) buys nothing.
-            if let image = ArtworkDecoder.image(from: data, maxPixel: 512) { return image }
+
+        for candidate in ArtworkThumbnailCandidates.urls(for: url) {
+            // Bounded decode via the shared store: palette is an area average and the blur
+            // renders at 160 px, so a 512 px budget is enough; a larger hero hit still wins
+            // above via `existingImage`.
+            if let image = await ArtworkImageStore.shared.image(for: candidate, maxPixel: budget) {
+                return image
+            }
         }
         return nil
     }
