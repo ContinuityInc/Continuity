@@ -1,0 +1,12 @@
+# Mac-only conversion / offline parity environment for Phase 3a.
+# coremltools needs macOS to compile & predict ML Programs reliably.
+#
+# Pin ranges match community HTDemucs→Core ML converters (dexxdean / john-rocky, 2025–2026).
+coremltools>=8.0,<10
+torch>=2.2,<2.7
+torchaudio>=2.2,<2.7
+numpy>=1.26
+onnx>=1.16
+onnxruntime>=1.17
+soundfile>=0.12
+demucs>=4.0.1
