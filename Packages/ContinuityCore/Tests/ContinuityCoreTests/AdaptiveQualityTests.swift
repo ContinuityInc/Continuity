@@ -48,6 +48,7 @@ final class AdaptiveQualityTests: XCTestCase {
             .constrained
         )
         XCTAssertTrue(AdaptiveQuality.shouldDeferStemSeparation(for: .constrained))
+        XCTAssertEqual(AdaptiveQuality.stemWindowFloorMB, 600)
         XCTAssertGreaterThan(
             AdaptiveQuality.stemRequiredStartMB(for: .constrained),
             AdaptiveQuality.stemRequiredStartMB(for: .full)
