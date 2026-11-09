@@ -10,8 +10,6 @@ import Foundation
 public enum DuoLayout {
     /// Readable content column — Apple's HIG-ish width, below the ~867pt of an unfolded Duo.
     public static let readableColumnMaxWidth: Double = 640
-    /// Cap for the in-app search keyboard key grid (the opaque plane still spans full width).
-    public static let keyboardMaxWidth: Double = 640
     /// Minimum top chrome clearance when the top safe-area inset collapses to ~0 (Duo inner /
     /// landscape phones). On a normal portrait iPhone the inset already covers this.
     public static let minimumTopChrome: Double = 24

@@ -52,7 +52,7 @@ struct LibrarySheetView: View {
         .sheet(isPresented: $showingDownloads) {
             DownloadsView()
         }
-        // Full-screen: the page owns its whole layout (pill / results / custom keyboard).
+        // Full-screen: search owns its layout (field + system keyboard / results).
         .fullScreenCover(isPresented: $showingSearch) {
             SearchView()
         }

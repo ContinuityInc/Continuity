@@ -7,12 +7,21 @@ import ContinuityCore
 // MARK: - Model
 
 /// Drives the catalog search page: debounced iTunes-catalog queries, the two result lists,
-/// and the keyboard's autocorrect engine (which learns its vocabulary from the catalog
-/// results themselves plus the user's library, so corrections favor real music words).
+/// and a music-vocabulary suggestion engine (`CatalogAutocorrect`) that learns from catalog
+/// results plus the user's library. Input uses the system keyboard; suggestions sit above the
+/// results and never replace it.
 @Observable
 @MainActor
 final class CatalogSearchModel {
-    private(set) var query = ""
+    /// Bound to the search field. Space applies a confident music-vocabulary correction when
+    /// the finished word is unknown; every change re-arms the debounced catalog query.
+    var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            handleQueryEdit(from: oldValue, to: query)
+        }
+    }
+
     private(set) var songs: [CatalogSong] = []
     private(set) var albums: [CatalogAlbum] = []
     private(set) var isSearching = false
@@ -26,6 +35,8 @@ final class CatalogSearchModel {
     private var autocorrect = CatalogAutocorrect()
     private let catalog = MusicCatalog()
     private var searchTask: Task<Void, Never>?
+    /// Guards re-entrant `query` writes when space-bar correction rewrites the finished word.
+    private var isApplyingCorrection = false
 
     /// The word currently being typed (after the last space) — what suggestions complete.
     private var partialWord: String {
@@ -43,30 +54,6 @@ final class CatalogSearchModel {
         autocorrect.learn(phrases: titles, weight: 5)
     }
 
-    // MARK: Keyboard input
-
-    func type(_ text: String) {
-        query += text
-        scheduleSearch()
-    }
-
-    func backspace() {
-        guard !query.isEmpty else { return }
-        query.removeLast()
-        scheduleSearch()
-    }
-
-    /// Space applies the confident autocorrect to the word just finished (like a system
-    /// keyboard), except against the music vocabulary instead of English.
-    func space() {
-        let word = partialWord
-        if let fixed = autocorrect.correction(for: word), !word.isEmpty {
-            query = String(query.dropLast(word.count)) + fixed
-        }
-        query += " "
-        scheduleSearch()
-    }
-
     /// Replaces the in-progress word with a tapped suggestion and searches immediately.
     func accept(suggestion: String) {
         query = String(query.dropLast(partialWord.count)) + suggestion + " "
@@ -75,6 +62,28 @@ final class CatalogSearchModel {
 
     func clear() {
         query = ""
+    }
+
+    // MARK: Query edits
+
+    private func handleQueryEdit(from oldValue: String, to newValue: String) {
+        if isApplyingCorrection {
+            scheduleSearch()
+            return
+        }
+        // Trailing space just typed: confident music-vocab repair on the finished word
+        // (system autocorrect is disabled on the field so English doesn't fight artist names).
+        if newValue.hasSuffix(" "),
+           newValue.count == oldValue.count + 1,
+           String(newValue.dropLast()) == oldValue {
+            let word = String(oldValue.split(separator: " ").last ?? "")
+            if !word.isEmpty, let fixed = autocorrect.correction(for: word), fixed != word.lowercased() {
+                isApplyingCorrection = true
+                query = String(oldValue.dropLast(word.count)) + fixed + " "
+                isApplyingCorrection = false
+                return
+            }
+        }
         scheduleSearch()
     }
 
@@ -114,7 +123,7 @@ final class CatalogSearchModel {
             songs = results.songs
             albums = results.albums
             errorMessage = nil
-            // Every result set teaches the keyboard the vocabulary the user is exploring.
+            // Every result set teaches the suggestion engine the vocabulary being explored.
             autocorrect.learn(phrases:
                 results.songs.map(\.title) + results.songs.map(\.artist)
                 + results.albums.map(\.title) + results.albums.map(\.artist))
@@ -149,21 +158,22 @@ final class CatalogSearchModel {
 
 // MARK: - Page
 
-/// Full-screen catalog search: expanding pill search bar up top, results split into two
-/// always-equal halves (songs / albums), and the app's own catalog-tuned keyboard at the
-/// bottom — the system keyboard never appears (there is no focused text field).
+/// Full-screen catalog search: glass search field (system keyboard), optional music-vocabulary
+/// suggestions, and results split into two always-equal halves (songs / albums).
 struct SearchView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(PreparationQueue.self) private var prepQueue
 
     @State private var model = CatalogSearchModel()
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
-            header
+            header(query: $model.query)
+            SuggestionBar(model: model)
             resultsSplit
-            MusicKeyboardView(model: model)
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .task {
@@ -174,48 +184,45 @@ struct SearchView: View {
             descriptor.propertiesToFetch = [\.title, \.artist]
             let tracks = (try? modelContext.fetch(descriptor)) ?? []
             model.seedVocabulary(titles: tracks.map(\.title) + tracks.map(\.artist))
+            searchFocused = true
         }
     }
 
-    // MARK: Search pill
+    // MARK: Search field
 
-    private var header: some View {
+    private func header(query: Binding<String>) -> some View {
         HStack(spacing: 10) {
-            // The pill hugs its content — a compact circle-ish pill when empty that grows
-            // with the text (fixedSize gives it its natural width inside the leading slot).
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                if model.query.isEmpty {
-                    Text("Search")
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text(model.query)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-                // Blinking caret — this is a live input surface, just not a system one.
-                Caret()
+                TextField("Search", text: query)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($searchFocused)
+                    .onSubmit { model.searchNow() }
             }
             .font(.body)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .continuityGlassCapsule()
-            .fixedSize(horizontal: true, vertical: false)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(.snappy(duration: 0.2), value: model.query)
 
             if !model.query.isEmpty {
                 Button {
                     model.clear()
+                    searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityLabel("Clear search")
             }
-            Button("Done") { dismiss() }
-                .fontWeight(.semibold)
+            Button("Done") {
+                searchFocused = false
+                dismiss()
+            }
+            .fontWeight(.semibold)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -286,21 +293,38 @@ struct SearchView: View {
     }
 }
 
-/// Blinking text caret for the pill (purely cosmetic — input comes from the custom keyboard).
-private struct Caret: View {
-    @State private var visible = true
+// MARK: - Suggestion bar
+
+/// Leaf: music-vocabulary completions for the in-progress word. Sits under the field and
+/// above results — never a custom key grid. Invalidates on keystroke without rebuilding the
+/// result halves' chrome.
+private struct SuggestionBar: View {
+    let model: CatalogSearchModel
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 1)
-            .fill(Color.accentColor)
-            .frame(width: 2, height: 20)
-            .opacity(visible ? 1 : 0)
-            .task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(530))
-                    withAnimation(.easeInOut(duration: 0.15)) { visible.toggle() }
+        HStack(spacing: 6) {
+            let suggestions = model.suggestions
+            if suggestions.isEmpty {
+                // Fixed height so the results pane never jumps as suggestions come and go.
+                Color.clear.frame(height: 32)
+            } else {
+                ForEach(suggestions, id: \.self) { word in
+                    Button {
+                        model.accept(suggestion: word)
+                    } label: {
+                        Text(word)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 32)
+                            .continuityGlass(cornerRadius: 8, interactive: true)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
     }
 }
 
@@ -393,157 +417,5 @@ private struct CatalogArtwork: View {
     private var placeholder: some View {
         RoundedRectangle(cornerRadius: 8).fill(.quaternary)
             .overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
-    }
-}
-
-// MARK: - Custom keyboard
-
-/// One shared, pre-armed feedback generator for the in-app keyboard.
-///
-/// The keyboard used to hold `let haptic = UIImpactFeedbackGenerator(...)` as a stored property,
-/// which cost twice: the Taptic Engine was re-armed from cold on every keypress (so the first
-/// tap of each was late), and — because `SearchView.body` re-runs on every keystroke — the new
-/// object reference made SwiftUI treat the keyboard as changed and re-evaluate all ~40 keys,
-/// which is exactly what the `SuggestionBar` leaf split was meant to prevent.
-@MainActor
-private enum KeyboardHaptics {
-    private static let generator: UIImpactFeedbackGenerator = {
-        let generator = UIImpactFeedbackGenerator(style: .light)
-        generator.prepare()
-        return generator
-    }()
-
-    /// Fires, then re-arms for the next keypress.
-    static func tap() {
-        generator.impactOccurred()
-        generator.prepare()
-    }
-}
-
-/// The app's own keyboard: a QWERTY grid rendered in SwiftUI (the system keyboard never
-/// appears). Its suggestion bar and space-bar autocorrect run against the catalog vocabulary
-/// via `CatalogAutocorrect`, so it repairs toward music words, not English ones.
-private struct MusicKeyboardView: View {
-    let model: CatalogSearchModel
-    @State private var showNumbers = false
-
-    private static let letterRows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
-    private static let numberRows = ["1234567890", "-'&.,?!/", "@:;()$#"]
-
-    var body: some View {
-        // One container for the whole key grid: sibling Liquid Glass elements inside a
-        // container are composited in a single pass rather than each sampling what is behind
-        // it — which is what ~40 separate material backdrops used to cost, every frame the
-        // keyboard was on screen. Spacing 0 keeps neighbouring keys from merging into blobs.
-        GlassEffectContainer(spacing: 0) {
-            VStack(spacing: 7) {
-                // Leaf view: suggestions change on every keystroke; inlined, they re-built the
-                // entire ~40-button key grid per keypress instead of just this bar.
-                SuggestionBar(model: model)
-                ForEach(showNumbers ? Self.numberRows : Self.letterRows, id: \.self) { row in
-                    keyRow(row)
-                }
-                bottomRow
-            }
-            // Phone-sized keys on wide windows (iPhone Duo inner display): stretched across
-            // ~800pt the rows become a reach test. The opaque plane still spans the full width.
-            .frame(maxWidth: CGFloat(DuoLayout.keyboardMaxWidth))
-            .frame(maxWidth: .infinity)
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
-        // The plane the glass keys sit on stays an opaque fill — Liquid Glass layered directly
-        // on more Liquid Glass is exactly what Apple's guidance rules out.
-        .background(Color(uiColor: .secondarySystemBackground))
-    }
-
-    private func keyRow(_ characters: String) -> some View {
-        HStack(spacing: 5) {
-            ForEach(Array(characters), id: \.self) { character in
-                key(String(character)) {
-                    model.type(String(character))
-                }
-            }
-        }
-        // Center shorter rows (like the system keyboard's a…l row).
-        .padding(.horizontal, characters.count < 10 ? 14 : 0)
-    }
-
-    private var bottomRow: some View {
-        // Space is the only flexible key; the modifiers keep fixed widths like the system
-        // keyboard's bottom row.
-        HStack(spacing: 5) {
-            key(showNumbers ? "abc" : "123", width: 56) {
-                showNumbers.toggle()
-            }
-            key("space") {
-                model.space()
-            }
-            key(symbol: "delete.left", width: 52) {
-                model.backspace()
-            }
-            key(symbol: "magnifyingglass", width: 52, prominent: true) {
-                model.searchNow()
-            }
-        }
-    }
-
-    private func key(_ label: String = "", symbol: String? = nil, width: CGFloat? = nil,
-                     prominent: Bool = false, action: @escaping () -> Void) -> some View {
-        Button {
-            KeyboardHaptics.tap()
-            action()
-        } label: {
-            Group {
-                if let symbol {
-                    Image(systemName: symbol)
-                } else {
-                    Text(label)
-                }
-            }
-            .font(label.count > 1 ? .subheadline : .title3)
-            .frame(maxWidth: width ?? .infinity)
-            .frame(width: width, height: 42)
-            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .glassEffect(
-                prominent ? .regular.tint(Color.accentColor).interactive() : .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-            )
-        }
-        .buttonStyle(.plain)
-        // Holding backspace repeats, like the real thing.
-        .buttonRepeatBehavior(symbol == "delete.left" ? .enabled : .disabled)
-    }
-}
-
-/// Leaf: the keyboard's only per-keystroke invalidation surface (see MusicKeyboardView.body).
-private struct SuggestionBar: View {
-    let model: CatalogSearchModel
-
-    var body: some View {
-        HStack(spacing: 6) {
-            let suggestions = model.suggestions
-            if suggestions.isEmpty {
-                // Fixed height so the keyboard never jumps as suggestions come and go.
-                Color.clear.frame(height: 32)
-            } else {
-                ForEach(suggestions, id: \.self) { word in
-                    Button {
-                        KeyboardHaptics.tap()
-                        model.accept(suggestion: word)
-                    } label: {
-                        Text(word)
-                            .font(.subheadline)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 32)
-                            .continuityGlass(cornerRadius: 8, interactive: true)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(.horizontal, 4)
     }
 }
