@@ -137,7 +137,9 @@ cd Packages/ContinuityCore && swift test
 - **Spotify playlists cap at ~50 tracks without an account** (anonymous embed API limit);
   connecting Spotify lifts it. OAuth client ids come from `SPOTIFY_CLIENT_ID` /
   `GOOGLE_CLIENT_ID` / `SOUNDCLOUD_CLIENT_ID` (+ `SOUNDCLOUD_CLIENT_SECRET`) build settings —
-  empty in a plain checkout, so "Connect" shows as not set up until you fill them in.
+  empty in a plain checkout / unset TestFlight secrets on purpose, so the hub shows
+  "Sign-in not set up in this build · links still work" until you fill them (owner checklist
+  in `AGENTS.md`).
 - Playlist sync is **polling** (launch + manual) — push would need server infrastructure.
 
 ## Status
