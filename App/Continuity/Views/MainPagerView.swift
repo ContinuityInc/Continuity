@@ -24,9 +24,13 @@ struct MainPagerView: View {
             // made it three insets' worth shorter than the content it backs; centred as a
             // `.background`, that left an uncovered band of flat `systemGroupedBackground` at
             // the top and bottom (black in dark mode) and slid the album gradient out of
-            // register with the Now Playing page. Add the insets back so the backdrop spans
-            // exactly the three pages it is drawing.
-            let pageHeight = proxy.size.height + insets.top + insets.bottom
+            // register with the Now Playing page. `DuoLayout.pageHeight` adds the insets back
+            // (Linux-tested) so the backdrop spans exactly the three pages it is drawing.
+            let pageHeight = CGFloat(DuoLayout.pageHeight(
+                safeAreaHeight: Double(proxy.size.height),
+                topInset: Double(insets.top),
+                bottomInset: Double(insets.bottom)
+            ))
             ScrollView(.vertical) {
                 // Library / Up Next are full-bleed NavigationStacks: a safe-area restorer
                 // re-injects the window insets so their bars extend under the status bar

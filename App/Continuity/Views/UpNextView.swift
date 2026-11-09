@@ -62,6 +62,9 @@ struct UpNextView: View {
             Section {
                 ForEach(upcoming) { track in
                     row(track)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(track.title), \(track.artist)")
+                        .accessibilityHint("Swipe to delete from Up Next")
                 }
                 .onMove { player.moveUpcoming(fromOffsets: $0, toOffset: $1) }
                 .onDelete { player.removeUpcoming(atOffsets: $0) }

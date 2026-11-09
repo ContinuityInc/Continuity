@@ -172,8 +172,9 @@ The library toolbar's three add buttons (link / Apple Music / files) collapsed i
 OAuth PKCE via `ASWebAuthenticationSession`, Keychain) and a per-account playlist/likes picker.
 Pasted links of any of the three services prefer the account's API and fall back to scraping;
 SoundCloud sets/tracks are new (hydration-JSON scrape, metadata-only → YouTube audio). Client ids
-are build settings (see the AGENTS.md gotcha) and TestFlight secrets of the same names — until
-the owner adds them, "Connect" rows read "not set up" and everything else still works.
+are build settings / TestFlight secrets of the same names — until filled, hub rows say
+"Sign-in not set up in this build · links still work" (intentional; scrape still works). Owner
+checklist: AGENTS.md gotcha **"Connected accounts need client ids at build time"**.
 
 ## CI / TestFlight operations
 
@@ -187,6 +188,10 @@ the owner adds them, "Connect" rows read "not set up" and everything else still 
   'com.sanylax.continuity'". Build number = `github.run_number`; export method
   `app-store-connect`, destination `upload`, team `KP832RV67A`. Internal testers get builds
   automatically after processing.
+- **OAuth client secrets (optional, separate from ASC):** `SPOTIFY_CLIENT_ID`,
+  `GOOGLE_CLIENT_ID`, `SOUNDCLOUD_CLIENT_ID`, `SOUNDCLOUD_CLIENT_SECRET`. Empty → Connect
+  disabled, link imports still scrape. Register redirect URIs before expecting sign-in to
+  work once filled — full checklist in the AGENTS.md connected-accounts gotcha.
 - Known failure modes already hit: App-Manager-role key (fixed — Admin key created);
   empty/placeholder secrets from copy-pasted commands; **ITMS error 90382 "Upload limit
   reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix;

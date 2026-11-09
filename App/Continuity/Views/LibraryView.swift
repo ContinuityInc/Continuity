@@ -102,6 +102,7 @@ struct LibraryView: View {
                         } label: {
                             Label("Delete Playlist", systemImage: "trash")
                         }
+                        .accessibilityLabel("Delete \(playlist.title)")
                     }
                 }
             }

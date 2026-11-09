@@ -267,6 +267,7 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+        .accessibilityAddTraits(.startsMediaSession)
     }
 
     /// A plain white transport glyph with a comfortable tap target.
@@ -365,6 +366,7 @@ private struct TrackProgressRing: View {
             .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(-90))
             .animation(.linear(duration: 0.25), value: progress)
+            .accessibilityHidden(true)
     }
 }
 
@@ -414,8 +416,23 @@ private struct ScrubberBar: View {
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white.opacity(0.65))
+            .accessibilityHidden(true)
         }
         .padding(.horizontal, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(Theme.time(pos)) of \(Theme.time(upper))")
+        .accessibilityAdjustableAction { direction in
+            let step = min(5, upper / 20)
+            switch direction {
+            case .increment:
+                player.seek(to: min(pos + step, upper))
+            case .decrement:
+                player.seek(to: max(pos - step, 0))
+            @unknown default:
+                break
+            }
+        }
     }
 }
 

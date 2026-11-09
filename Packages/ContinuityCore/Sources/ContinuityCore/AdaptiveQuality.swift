@@ -102,6 +102,15 @@ public enum AdaptiveQuality {
         }
     }
 
+    /// Backdrop palette + pre-blur working budget. CIAreaAverage and the 160 px gaussian
+    /// do not benefit from a larger bitmap; keep this ≤ every tier's hero budget so a
+    /// hero decode can always satisfy the backdrop without a second ImageIO pass.
+    public static func backdropArtworkMaxPixel(for tier: AdaptiveQualityTier = current()) -> Double {
+        switch tier {
+        case .full, .balanced, .constrained: return 512
+        }
+    }
+
     /// Mount only the current pager page + its immediate neighbors when not `.full`.
     public static func mountsAllPagerPages(for tier: AdaptiveQualityTier = current()) -> Bool {
         tier == .full

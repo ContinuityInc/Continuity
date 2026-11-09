@@ -16,8 +16,15 @@ struct MiniPlayerView: View {
             barContent
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(player.currentTrack.map { "\($0.title) by \($0.artist)" } ?? "Now Playing")
+        .accessibilityLabel(nowPlayingAccessibilityLabel)
         .accessibilityHint("Opens Now Playing")
+    }
+
+    private var nowPlayingAccessibilityLabel: String {
+        if let track = player.currentTrack {
+            return "\(track.title), \(track.artist)"
+        }
+        return "Now Playing"
     }
 
     private var barContent: some View {
@@ -25,10 +32,12 @@ struct MiniPlayerView: View {
             if let track = player.currentTrack {
                 RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol, seed: track.gradientSeed, cornerRadius: 8)
                     .frame(width: 40, height: 40)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(track.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .accessibilityHidden(true)
                 Spacer(minLength: 8)
                 Button {
                     player.togglePlayPause()
@@ -39,6 +48,7 @@ struct MiniPlayerView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                .accessibilityAddTraits(.startsMediaSession)
                 Button {
                     player.next()
                 } label: {
@@ -123,5 +133,6 @@ private struct MiniProgressLine: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 4)
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

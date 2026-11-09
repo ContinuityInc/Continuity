@@ -126,6 +126,8 @@ struct TransitionSettingsView: View {
                     ) {
                         Label("Export Diagnostics Report", systemImage: "square.and.arrow.up")
                     }
+                    .accessibilityLabel("Export Diagnostics Report")
+                    .accessibilityHint("Shares a diagnostics file with crash and audio-fault details")
                 } header: {
                     Text("Diagnostics")
                 } footer: {
