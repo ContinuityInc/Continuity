@@ -7,6 +7,9 @@
 # fails CI if `import YouTubeKit` appears anywhere else, or if the SPM pin floats off
 # `exact:`.
 #
+# App Store cut (`release/app-store`): Package.swift has no YouTubeKit dependency. In that
+# case the script verifies total absence (no import / product / package pin) and exits 0.
+#
 # Usage: Scripts/check-youtubekit-boundary.sh   (exit 0 = clean, 1 = violations listed)
 set -eu
 
@@ -16,6 +19,30 @@ ALLOWLIST='Packages/ContinuityKit/Sources/Ingest/YouTubeStreamResolver.swift'
 PACKAGE=Packages/ContinuityKit/Package.swift
 
 status=0
+
+if [ ! -f "$PACKAGE" ]; then
+  echo "error: ContinuityKit Package.swift missing ($PACKAGE)" >&2
+  exit 1
+fi
+
+# App Store line strips YouTubeKit entirely. Confirm it stayed gone.
+if ! grep -qE 'YouTubeKit' "$PACKAGE"; then
+  importers=$(grep -rln --include='*.swift' '^import YouTubeKit$' . \
+    | grep -v '^\./\.build/' \
+    | grep -v '/\.build/' \
+    || true)
+  if [ -n "$importers" ]; then
+    echo "error: YouTubeKit imported on App Store cut (Package.swift has no YouTubeKit):" >&2
+    echo "$importers" >&2
+    exit 1
+  fi
+  if grep -q 'YouTubeKit' Packages/ContinuityKit/Package.resolved 2>/dev/null; then
+    echo "error: Package.resolved still pins YouTubeKit on App Store cut" >&2
+    exit 1
+  fi
+  echo "YouTubeKit absent (App Store cut) — boundary OK"
+  exit 0
+fi
 
 if [ ! -f "$ALLOWLIST" ]; then
   echo "error: YouTubeKit allowlist file missing ($ALLOWLIST)" >&2
@@ -56,11 +83,6 @@ if [ -n "$type_refs" ]; then
   echo "error: YouTubeKit type references outside $ALLOWLIST:" >&2
   echo "$type_refs" >&2
   status=1
-fi
-
-if [ ! -f "$PACKAGE" ]; then
-  echo "error: ContinuityKit Package.swift missing ($PACKAGE)" >&2
-  exit 1
 fi
 
 # Keep the exact: pin — branch:/from:/upToNextMajor would silently track upstream HEAD.
