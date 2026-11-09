@@ -78,6 +78,8 @@ struct UpNextView: View {
         // backdrop (no insetGrouped card margins / rounded seam against Now Playing).
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // Duo inner display: keep row labels reachable instead of stretching to ~900pt.
+        .readableScrollColumn()
     }
 
     /// Same 44pt artwork + title/artist treatment as the library's track rows.

@@ -69,8 +69,12 @@ targets:
         # MPMediaQuery reads playlist titles/artists only — Apple Music audio is DRM-protected,
         # so imported songs are re-sourced from YouTube like the Spotify path.
         NSAppleMusicUsageDescription: Continuity reads your Apple Music playlists so you can import them into your library.
+        # Portrait plus landscape: Duo's outer display is often used tent-style in landscape,
+        # and the inner display ignores this list anyway (size classes drive layout there).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # continuity://import?url=<encoded link> — deep-link entry into the import flow.
         # The same scheme carries the Spotify/SoundCloud OAuth callbacks (continuity://auth/…),
         # intercepted by ASWebAuthenticationSession rather than delivered via onOpenURL.

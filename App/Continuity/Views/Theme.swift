@@ -80,6 +80,28 @@ extension View {
             self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
         }
     }
+
+    /// Caps a `List`/`Form`'s scroll content at `DuoLayout.readableColumnMaxWidth` on wide
+    /// windows (Duo inner display / iPhone Mirroring) without breaking edge scrolling. Measuring
+    /// live so a fold/unfold re-centres the column; no-op on phone widths.
+    func readableScrollColumn(maxWidth: CGFloat = CGFloat(DuoLayout.readableColumnMaxWidth)) -> some View {
+        modifier(ReadableScrollColumnModifier(maxWidth: maxWidth))
+    }
+}
+
+private struct ReadableScrollColumnModifier: ViewModifier {
+    let maxWidth: CGFloat
+    @State private var columnWidth: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        let margin = max(0, (columnWidth - maxWidth) / 2)
+        content
+            .contentMargins(.horizontal, margin, for: .scrollContent)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                let w = Double(proxy.size.width)
+                return CGFloat(w.isFinite ? w.rounded() : 0)
+            } action: { columnWidth = $0 }
+    }
 }
 
 // MARK: - Image decoding
