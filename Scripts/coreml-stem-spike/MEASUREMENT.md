@@ -56,12 +56,16 @@ pip install -r requirements.txt
 # Path A — often fails; useful negative evidence
 python convert_onnx_try.py --onnx "$ONNX" --out ./out/from_onnx.mlpackage
 
-# Path B — community PyTorch rewrite
-python convert_pytorch_path.py --out ./out/htdemucs_ft_vocals.mlpackage
+# Path B — community PyTorch rewrite (Mac only; Linux stops at ct.convert)
+python convert_pytorch_path.py --converter-repo ~/src/htdemucs-coreml --fp16 \
+    --out ./out/htdemucs_7p8_fp16.mlpackage
 
-# Parity (required before device)
-python parity_check.py --onnx "$ONNX" --mlpackage ./out/htdemucs_ft_vocals.mlpackage
+# Parity (required before device) — use ORT of the *same* weights you converted
+python parity_check.py --onnx "$ONNX_OR_MATCHING" --mlpackage ./out/htdemucs_7p8_fp16.mlpackage
 ```
+
+**dexxdean adaptations:** input/output names `audio`/`sources`; source order
+vocals-first (index 0) vs Continuity ORT index 3; plain `htdemucs` ≠ StemSplitio FT.
 
 Optional: drop the `.mlpackage` into Application Support
 `StemModelCoreML/htdemucs_ft_vocals.mlpackage` (`CoreMLStemModelStore`) and temporarily

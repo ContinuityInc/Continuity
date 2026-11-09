@@ -1,12 +1,17 @@
-# Mac-only conversion / offline parity environment for Phase 3a.
-# coremltools needs macOS to compile & predict ML Programs reliably.
+# Mac conversion / offline parity environment for Phase 3a.
+# coremltools needs macOS + libcoremlpython to finish/compile ML Programs.
+# Linux can import coremltools and reach torch.jit.trace, but Path A has no ONNX
+# frontend and Path B's ct.convert failed in the 2026-11 cloud spike.
 #
-# Pin ranges match community HTDemucs→Core ML converters (dexxdean / john-rocky, 2025–2026).
+# dexxdean/htdemucs-coreml verified set (prefer these on the Mac run):
+#   Python 3.9, torch 2.8.0, torchaudio 2.8.0, coremltools 9.0,
+#   demucs 4.0.1, numpy 2.0.2, einops 0.8.2
 coremltools>=8.0,<10
-torch>=2.2,<2.7
-torchaudio>=2.2,<2.7
+torch>=2.2,<2.9
+torchaudio>=2.2,<2.9
 numpy>=1.26
 onnx>=1.16
 onnxruntime>=1.17
 soundfile>=0.12
-demucs>=4.0.1
+demucs>=4.0.1,<5
+einops>=0.7

@@ -5,14 +5,16 @@ This is Path A of the Phase 3a spike: convert the exact artifact Continuity alre
 downloads (`htdemucs_ft_vocals_fp16weights.onnx` from StemSplitio) without going
 through PyTorch again.
 
-Expected outcome on a Mac with coremltools:
-  - Often FAILS on HT-Demucs because of complex STFT / MultiheadAttention / scatter_add
-    ops (see convert_pytorch_path.py and docs/coreml-stem-spike.md).
-  - If it succeeds, still MUST run parity + device RSS before any production wire-up.
+Expected outcome:
+  - On Linux / coremltools ≥7: FAILS immediately — the ONNX frontend was removed;
+    `ct.convert` only accepts source in {tensorflow, pytorch, milinternal}.
+  - On a Mac with a build that still accepted ONNX: often FAILS later on complex
+    STFT / MultiheadAttention / scatter_add (see convert_pytorch_path.py).
+  - If it somehow succeeds, still MUST run parity + device RSS before wire-up.
   - NEVER use ONNX Runtime's CoreMLExecutionProvider as a substitute — that path is
     banned in Continuity (jetsam at session creation).
 
-Usage (Apple Silicon Mac):
+Usage (Apple Silicon Mac preferred):
   python3 -m venv .venv && source .venv/bin/activate
   pip install -r requirements.txt
   python convert_onnx_try.py \\
@@ -28,6 +30,16 @@ from pathlib import Path
 
 
 SEGMENT = 343_980  # StemWindowSpec.segmentFrames
+
+
+def _onnx_frontend_available() -> bool:
+    """coremltools ≥7 dropped the ONNX frontend; Path A is dead on those builds."""
+    try:
+        import pkgutil
+        import coremltools.converters.mil.frontend as fe
+    except ImportError:
+        return False
+    return any(m.name == "onnx" for m in pkgutil.iter_modules(fe.__path__))
 
 
 def main() -> int:
@@ -57,9 +69,20 @@ def main() -> int:
         )
         return 2
 
-    precision = ct.precision.FLOAT16 if args.precision == "fp16" else ct.precision.FLOAT32
     print(f"converting {args.onnx} → {args.out} ({args.precision})")
     print("HARD RULE: this produces an .mlpackage for MLModel — not ORT CoreML EP.")
+    print(f"coremltools {ct.__version__}; ONNX frontend present: {_onnx_frontend_available()}")
+
+    if not _onnx_frontend_available():
+        print(
+            "DIRECT ONNX→Core ML UNAVAILABLE: this coremltools build has no ONNX "
+            "frontend (only tensorflow / pytorch / milinternal). Path A cannot run "
+            "here — use convert_pytorch_path.py on a Mac.",
+            file=sys.stderr,
+        )
+        return 1
+
+    precision = ct.precision.FLOAT16 if args.precision == "fp16" else ct.precision.FLOAT32
 
     try:
         mlmodel = ct.convert(
