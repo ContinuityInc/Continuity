@@ -127,6 +127,7 @@ final class CoreMLStemSeparator: StemSeparating {
 
                 let provider = try MLDictionaryFeatureProvider(
                     dictionary: [mixName: MLFeatureValue(multiArray: array)])
+                let out = try model.prediction(from: provider)
                 // Accept Continuity names first; fall back to community converter names
                 // (`sources` / flattened [1,8,T] from john-rocky / dexxdean exports).
                 let stems = out.featureValue(for: stemsName)?.multiArrayValue
