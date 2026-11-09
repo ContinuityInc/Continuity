@@ -3,156 +3,98 @@
 Anyone who merges a PR gets a free copy of the premium version of Continuity
 
 <p align="center">
-  <a href="docs/screenshots/NowPlaying.png"><img src="docs/screenshots/NowPlaying.png" alt="Continuity Now Playing screen" width="46%"></a>
+  <a href="docs/screenshots/now-playing.png"><img src="docs/screenshots/now-playing.png" alt="Now Playing" width="23%"></a>
+  <a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" alt="Library" width="23%"></a>
+  <a href="docs/screenshots/playlist.png"><img src="docs/screenshots/playlist.png" alt="Playlist detail" width="23%"></a>
+  <a href="docs/screenshots/up-next.png"><img src="docs/screenshots/up-next.png" alt="Up Next queue" width="23%"></a>
 </p>
 
-A minimal native iOS music app whose one differentiating feature is **transitions so smooth
-you don't notice a song changed** — a configurable, higher-quality take on Apple Music's
-Automix: stem-separated, beatmatched, harmonically-mixed DJ blends.
+A minimal native iOS music app with one differentiating feature: **transitions so smooth you
+don't notice a song changed**. It is a configurable, higher-quality take on Apple Music's
+Automix, with stem-separated, beatmatched, harmonically-mixed DJ blends.
 
-This is a **personal portfolio prototype**. iOS 26+, SwiftUI + `AVAudioEngine`. Music is
-sourced from YouTube (see [Caveats](#caveats)).
+A **personal portfolio prototype**: iOS 26+, SwiftUI + `AVAudioEngine`, music sourced from
+YouTube (see [Caveats](#caveats)). Artists receive a minimum **80% revenue share**.
 
-Artists receive a minimum **80% revenue share**.
+## Features
 
-## What it does
+**Transition engine.** Two decks on one `AVAudioEngine`; every track change is a blend.
 
-**The transition engine** — a dual-deck `AVAudioEngine` graph where every track change is a blend:
+- **Crossfade**: 0–16 s, with linear, equal-power or smooth curves
+- **Beatmatching**: tempo-matches the incoming track (±8%, half/double-time aware) and
+  aligns its first beat to the outgoing one
+- **Bass swap**: a low-shelf EQ fades the incoming low end in, so basslines never stack
+- **Harmonic mixing**: shifts the incoming track up to ±1 semitone into a Camelot-compatible key
+- **Vocal-aware blends**: on-device vocal/accompaniment stems (HT-Demucs on ONNX Runtime) let
+  the outgoing vocal duck under the incoming instrumental
+- **Loudness leveling**: every track is brought to −14 LUFS (BS.1770)
+- **Gapless**: leading and trailing silence is trimmed from transition timing
+- **Blend ratings**: thumbs up or down on a transition adapts how that pair blends next time
 
-- **Crossfade** — configurable duration (0–16 s) and curve (linear / equal-power / smooth)
-- **Beatmatching** — tempo-matches the incoming track (`AVAudioUnitTimePitch`, ±8% cap,
-  half/double-time aware) *and* beat-aligns its start so the incoming beat lands on an
-  outgoing beat
-- **Bass swap** — a low-shelf EQ fades the incoming low end in so basslines never stack
-- **Harmonic mixing** — nudges the incoming track up to ±1 semitone into a Camelot-compatible
-  key (DJ "key sync"); chained transitions track the effective key
-- **Vocal-aware blends** — tracks are split into vocals + accompaniment stems on-device
-  (HT-Demucs via ONNX Runtime, CPU execution provider only — CoreML EP is banned; it
-  jetsams at session creation), so the outgoing vocal can duck under the incoming
-  instrumental: duck / instrumental-overlap / hard-swap modes
-- **Loudness leveling** — integrated loudness is measured per track (BS.1770 K-weighting +
-  gating) and per-deck makeup gain brings every track to −14 LUFS, so a quiet master never
-  lurches into a loud one mid-blend
-- **Gapless** — leading/trailing silence is detected per track and trimmed from transition
-  timing (opt-out), so blends never run in dead air
+**Analysis.** BPM, beat grid and musical key are computed once per track, cached, and
+versioned so analyzer improvements re-analyze old libraries.
 
-**Analysis** — BPM + beat grid (spectral flux + autocorrelation with a perceptual tempo prior)
-and musical key (tuning-corrected chroma → Krumhansl profiles → Camelot code), computed once
-per track and cached; results are versioned so analyzer improvements re-analyze old libraries.
+**Player.** The app opens *playing*: a three-control Now Playing screen that resumes the last
+session, with the library one page above and Up Next one page below. Forward skips are
+budgeted radio-style (3, earned back by finishing tracks); going back is unlimited.
 
-**The player** — the home screen is deliberately minimal: the app opens *playing* — a Now
-Playing screen (blurred art, three controls) that resumes the previous session's song at its
-saved position. Forward skips are budgeted, radio-style: 3, earned back by finishing tracks
-and refunded when you step back (undoing a skip shouldn't leave it spent); previous-skips are
-unlimited and walk a persistent play history. The full library (playlists, mini player,
-detailed Now Playing with live transition settings and presets) lives in a sheet.
+**Up Next.** Drag to reorder, swipe to remove, "Play Next" from anywhere. **Flow** reorders
+the queue by key and tempo, like a DJ set.
 
-**Up Next** — a queue sheet shows what plays next: drag to reorder, swipe to remove, and
-"Play Next" / "Rename" context menus throughout the library (a rename edits only the
-displayed title and artist — audio, stems and analysis stay put). A **Flow** toggle reorders the upcoming
-tracks by key and tempo, like a DJ set — Camelot-wheel compatibility plus BPM proximity
-(half/double-time pairs count as equal tempo), anchored on the current track. Pure logic in
-`ContinuityCore/FlowOrdering`.
+**Import.** One "+" hub takes a YouTube, Spotify or SoundCloud link, a connected account's
+playlists and likes (OAuth + PKCE), Apple Music, or local files. Catalog search adds single
+songs and albums. Spotify, SoundCloud and Apple Music supply tracklists only; audio is matched
+from YouTube. Tracks download, analyze and stem-separate in the background, and source-backed
+playlists sync with their remote.
 
-**Ingestion** — one "+" hub: paste a YouTube video/playlist, Spotify playlist/album/track,
-or SoundCloud set/track link; **connect** a Spotify, YouTube or SoundCloud account (OAuth +
-PKCE) and pick from its playlists and likes through the official APIs — pasted links then
-resolve through the account too (private lists, full length), falling back to the anonymous
-page scrape when signed out; or import from Apple Music / local files. Spotify, SoundCloud and
-Apple Music contribute tracklists only; each song's audio is matched from YouTube. Tracks
-download (ranged, throttle-resistant), analyze, and stem-separate in the background with
-bounded concurrency. Source-backed playlists **sync** with their remote (opt-out auto-sync at
-launch, manual per-playlist and library-wide sync).
-
-**Link redirection** — three ways links reach the app besides pasting: a `continuity://`
-URL scheme (`continuity://import?url=…`); a share extension, so "share → Continuity" works
-from Spotify, YouTube or SoundCloud; and clipboard detection at launch — an importable link on the
-clipboard triggers an import offer. Clipboard reads are privacy-conscious: pattern detection
-(banner-free) runs *before* any read, each clipboard generation is inspected once, and every
-path confirms with the user before importing.
+**Links in.** A `continuity://import?url=…` scheme, a share extension, and a clipboard offer
+at launch. Every path asks before importing.
 
 ## Project layout
 
 ```
-project.yml                      XcodeGen spec — the project is generated, not committed
-App/Continuity/                  thin app target: SwiftUI screens + wiring
-  Views/                         minimal Now Playing, Library, Playlist, Up Next,
-                                 Now Playing, Mini Player, Transition settings
-  Library/                       link → import routing, sample data, orphaned-file cleanup
-App/ShareExtension/              ContinuityShare target ("share → Continuity")
-Packages/ContinuityCore/         pure-Swift, dependency-free core: crossfade curves,
-                                 transition plan, beat/tempo math, BPM tracker, key
-                                 detector, Camelot + flow ordering, loudness meter, silence
-                                 trimming, YouTube/Spotify/SoundCloud link/page + API parsing,
-                                 OAuth PKCE flow
+project.yml                     XcodeGen spec; the Xcode project is generated, not committed
+App/Continuity/                 app target: SwiftUI views + wiring
+App/ShareExtension/             "share → Continuity"
+Packages/ContinuityCore/        pure Swift, no dependencies: transition and DSP math, BPM/key
+                                analysis, flow ordering, link/page/API parsing, OAuth PKCE
 Packages/ContinuityKit/Sources/
-  Domain/                        SwiftData models (Playlist, Track), TransitionSettings,
-                                 audio/stem caches
-  Ingest/                        resolvers (YouTube/Spotify/SoundCloud/oEmbed), connected
-                                 accounts (OAuth, Keychain) + API clients, downloader,
-                                 preparation queue, analysis, stem separation (ONNX),
-                                 playlist sync
-  Playback/                      dual-deck engine (Player, Deck), Now Playing bridge,
-                                 playback-state persistence
+  Domain/                       SwiftData models, TransitionSettings, audio/stem caches
+  Ingest/                       resolvers, accounts, downloader, analysis, stem separation, sync
+  Playback/                     dual-deck engine (Player, Deck), Now Playing bridge
 ```
 
-The layering is deliberate: modules depend only downward (Playback and Ingest are siblings
-that meet through Domain), and everything fragile (page scraping) or mathematical (DSP,
-transition logic) lives in `ContinuityCore` with no UIKit/AVFoundation dependency, pinned by
-~114 unit tests. The upper layers do networking, audio I/O, and UI.
+Modules depend only downward. Anything fragile (scraping) or mathematical (DSP, transition
+logic) lives in `ContinuityCore`, pinned by unit tests that run without a simulator.
+[`AGENTS.md`](AGENTS.md) has the full architecture and gotchas.
 
-## Build & run
+## Build & test
 
-Requires Xcode 26+. The project file is generated by
-[XcodeGen](https://github.com/yonaskolb/XcodeGen):
+Requires Xcode 26+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
-brew install xcodegen          # once
-xcodegen generate              # regenerate Continuity.xcodeproj from project.yml
-open Continuity.xcodeproj      # then build/run on an iOS 26 simulator or device
-```
+brew install xcodegen                      # once
+xcodegen generate                          # generates Continuity.xcodeproj
+open Continuity.xcodeproj                  # run on an iOS 26 simulator or device
 
-## Test the core
-
-The parsing and transition math compiles and tests without the app (Linux CI runs the same
-command; Accelerate BPM/key sources are excluded on Linux via `Package.swift`):
-
-```sh
-cd Packages/ContinuityCore && swift test
+cd Packages/ContinuityCore && swift test   # core tests; also runs on Linux
 ```
 
 ## Caveats
 
-- **YouTube sourcing violates YouTube's ToS.** Acceptable only because this is a private
-  prototype on `main`; it is not App-Store-shippable as-is. The engine is source-agnostic —
-  local files drop in with no engine changes. The App Store / local-files line lives on
-  `release/app-store*` and `appStoreReleaseCandidate` (YouTube downloading stripped; see
-  those branches for the shippable variant).
-- **First stem separation downloads the model** (~165 MB, HT-Demucs fp16, cached after in
-  Application Support).
-- **Stem separation is CPU-only** on device and Simulator (ORT CPU execution provider;
-  ~2–4 min/track on sim). Never enable ORT's CoreML EP — session creation alone has hit
-  the per-process jetsam limit (~3.4 GB). A future native Core ML `.mlpackage` path is a
-  separate experiment, not flipping that EP.
-- **Spotify playlists cap at ~50 tracks without an account** (anonymous embed API limit);
-  connecting Spotify lifts it. OAuth client ids come from `SPOTIFY_CLIENT_ID` /
-  `GOOGLE_CLIENT_ID` / `SOUNDCLOUD_CLIENT_ID` (+ `SOUNDCLOUD_CLIENT_SECRET`) build settings —
-  empty in a plain checkout / unset TestFlight secrets on purpose, so the hub shows
-  "Sign-in not set up in this build · links still work" until you fill them (owner checklist
-  in `AGENTS.md`).
-- Playlist sync is **polling** (launch + manual) — push would need server infrastructure.
+- **YouTube sourcing violates YouTube's ToS**, so `main` is a private prototype and not
+  App-Store-shippable. The engine is source-agnostic; the local-files variant lives on
+  `appStoreReleaseCandidate`.
+- **Stem separation is CPU-only** (~2–4 min per track on the simulator) and downloads a
+  ~158 MB model on first use. Never enable ONNX Runtime's CoreML execution provider: session
+  creation alone hits the jetsam limit.
+- **Spotify playlists cap at ~50 tracks without an account.** Account sign-in needs OAuth
+  client ids at build time (checklist in [`AGENTS.md`](AGENTS.md)); until then links still
+  import by scraping.
+- **Playlist sync is polling** (launch + manual). Push would need a server.
 
 ## Status
 
-All planned milestones (M0–M5) are built: scaffold, YouTube/Spotify ingestion, dual-deck
-crossfades, analysis + beatmatching, on-device stem separation with vocal-aware blends, and
-config/persistence/stability polish. Device validation continues (CPU stem-separation timing
-under `StemSeparationBudget`, memory behavior under Jetsam).
-
-## Screenshots
-
-<p align="center">
-  <a href="docs/screenshots/LibraryNew.png"><img src="docs/screenshots/LibraryNew.png" alt="Continuity music library" width="31%"></a>
-  <a href="docs/screenshots/Playlist.png"><img src="docs/screenshots/Playlist.png" alt="Continuity playlist detail" width="31%"></a>
-  <a href="docs/screenshots/Queue.png"><img src="docs/screenshots/Queue.png" alt="Continuity Up Next queue" width="31%"></a>
-</p>
+Milestones M0–M5 are built: ingestion, dual-deck crossfades, analysis and beatmatching,
+on-device stems with vocal-aware blends, and persistence and stability polish. Device
+validation of stem-separation timing and memory behaviour continues.
