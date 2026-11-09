@@ -161,10 +161,10 @@ simulator: 0/8 tracks ready before, 8/8 after (full files, BPM analysed). See th
 gotcha for the diagnosis recipe.
 
 ### Catalog search (PR #108)
-iTunes Search API (no key) for songs/albums; custom in-app keyboard with
-`CatalogAutocorrect` (ContinuityCore, Linux-tested) learning vocabulary from results + the
-user's library. Songs → "From Search" playlist; albums → imported playlists. Both ride the
-existing `searchQuery` → YouTube ingest path.
+iTunes Search API (no key) for songs/albums; native keyboard with
+`CatalogAutocorrect` suggestion chips (ContinuityCore, Linux-tested) learning vocabulary from
+results + the user's library. Songs → "From Search" playlist; albums → imported playlists.
+Both ride the existing `searchQuery` → YouTube ingest path.
 
 ### Import hub + connected accounts (Oct 2026)
 The library toolbar's three add buttons (link / Apple Music / files) collapsed into one "+"
@@ -233,9 +233,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
   hydrates every row's `beatTimes`.
 - **Liquid Glass is the real API, everywhere.** `glassEffect` via `continuityGlass` /
   `continuityGlassCapsule` — no `Material` stand-ins, no hand-drawn hairlines. Groups of glass
-  elements (the keyboard's key grid, the transition chips) sit in a `GlassEffectContainer` with
-  `spacing: 0` so they composite in one pass without merging into blobs, and glass is never
-  layered directly on glass (the keyboard plane stays an opaque fill).
+  elements (the transition chips) sit in a `GlassEffectContainer` with `spacing: 0` so they
+  composite in one pass without merging into blobs, and glass is never layered directly on glass.
 - `CatalogAutocorrect` and `LoudnessMeter` are allocation-/division-light on purpose; both have
   differential checks behind them (identical suggestions over thousands of fuzzed queries;
   bit-identical LUFS). Re-verify the same way before changing their loops.
