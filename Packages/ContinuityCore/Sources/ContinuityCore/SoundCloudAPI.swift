@@ -116,12 +116,11 @@ public enum SoundCloudAPI {
         let id = (dict["id"] as? NSNumber)?.intValue
             ?? (dict["urn"] as? String).flatMap { $0.split(separator: ":").last.flatMap { Int($0) } }
             ?? 0
-        let ms = (dict["duration"] as? NSNumber)?.doubleValue
         let soundcloud = SoundCloudTrack(
             id: id,
             title: title,
             artist: JSONNav.string(dict, ["publisher_metadata", "artist"]) ?? JSONNav.string(dict, ["user", "username"]),
-            durationSeconds: ms.flatMap { $0 > 0 ? Int(($0 / 1000).rounded()) : nil },
+            durationSeconds: DurationParsing.seconds(fromMillisecondsNumber: dict["duration"] as? NSNumber),
             permalinkURL: dict["permalink_url"] as? String
         )
         return ServiceTrack(soundcloud)
