@@ -156,7 +156,8 @@ final class Deck {
             setAccompFormat(synthFormat)
             let buffer = ToneSynth.makeLoop(seed: track.gradientSeed, format: synthFormat)
             scheduled = accompPlayer.guardedScheduleLoopingBuffer(buffer)
-            loadedDuration = track.durationSeconds > 0 ? track.durationSeconds : 30
+            let modelDuration = track.durationSeconds
+            loadedDuration = modelDuration.isFinite && modelDuration > 0 ? modelDuration : 30
         }
         // A failed schedule means the engine died under us; flag it exactly like an engine
         // stop so `ensureCurrentLoaded` reschedules before the next play.
@@ -282,8 +283,12 @@ final class Deck {
         let fileDuration = PlaybackClock.durationSeconds(
             frameLength: file.length, sampleRate: file.processingFormat.sampleRate
         )
-        if track.durationSeconds <= 0, fileDuration > 0 { track.durationSeconds = fileDuration }
-        let resolved = track.durationSeconds > 0 ? track.durationSeconds : fileDuration
+        // A non-finite stored value (written by an older ingest path) counts as missing, so the
+        // file's real length replaces it instead of the deck resolving to 0 for good.
+        let stored = track.durationSeconds
+        let storedIsUsable = stored.isFinite && stored > 0
+        if !storedIsUsable, fileDuration > 0 { track.durationSeconds = fileDuration }
+        let resolved = storedIsUsable ? stored : fileDuration
         return resolved.isFinite && resolved > 0 ? resolved : 0
     }
 
