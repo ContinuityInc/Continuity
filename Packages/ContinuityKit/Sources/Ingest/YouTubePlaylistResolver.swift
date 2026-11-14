@@ -107,6 +107,11 @@ final class YouTubePlaylistResolver: PlaylistResolving {
     }
 
     /// One `youtubei/v1/browse` continuation call, parsed by ContinuityCore.
+    ///
+    /// Honours the shared `IngestThrottle` gate: the first playlist page already goes through
+    /// `Retry.run`, but continuations used to fire raw `URLSession` calls. A long import could
+    /// then page InnerTube while the cool-down was armed (or get a 429 that never armed it),
+    /// and the subsequent per-track resolve/download burst would walk straight into the throttle.
     private func fetchContinuation(
         token: String,
         config: InnerTubeConfig
@@ -114,6 +119,7 @@ final class YouTubePlaylistResolver: PlaylistResolving {
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/browse?key=\(config.apiKey)") else {
             throw IngestError.invalidURL
         }
+        await IngestThrottle.shared.gate()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -127,9 +133,29 @@ final class YouTubePlaylistResolver: PlaylistResolving {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw IngestError.resolveFailed("continuation HTTP \(http.statusCode)")
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            await IngestThrottle.shared.noteThrottled(isRateLimit: false)
+            throw IngestError.network(String(describing: error))
+        }
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300:
+                await IngestThrottle.shared.noteSuccess()
+            case 429:
+                await IngestThrottle.shared.noteThrottled(isRateLimit: true)
+                throw IngestError.rateLimited
+            case 500..<600:
+                await IngestThrottle.shared.noteThrottled(isRateLimit: false)
+                throw IngestError.network("continuation HTTP \(http.statusCode)")
+            default:
+                throw IngestError.resolveFailed("continuation HTTP \(http.statusCode)")
+            }
+        } else {
+            await IngestThrottle.shared.noteSuccess()
         }
         return YouTubePlaylist.parseContinuationResponse(data)
     }
