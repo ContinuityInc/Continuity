@@ -30,9 +30,9 @@ struct ImportHubView: View {
 
     @State private var showingFilePicker = false
     @State private var isImportingFiles = false
-    /// Account-level failures (sign-in cancelled, provider refused) show as an alert, since they
-    /// aren't about the link field.
-    @State private var accountError: String?
+    /// Hub-level failures (sign-in cancelled, provider refused, empty file pick) show as an
+    /// alert — they aren't about the link field.
+    @State private var hubError: String?
 
     private var trimmedLink: String {
         linkText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,18 +75,25 @@ struct ImportHubView: View {
             guard case .success(let urls) = result, !urls.isEmpty else { return }
             isImportingFiles = true
             Task {
-                _ = await prepQueue.importLocalFiles(urls, in: modelContext)
+                let imported = await prepQueue.importLocalFiles(urls, in: modelContext)
                 isImportingFiles = false
-                dismiss()
+                // Zero imports used to still dismiss — empty folders, all-duplicates, or
+                // non-music picks looked like a successful import with nothing new in the
+                // library. Keep the hub open and explain why nothing landed.
+                if imported > 0 {
+                    dismiss()
+                } else {
+                    hubError = "No new audio files found. Pick songs (or a folder of them) that aren’t already in Local Files."
+                }
             }
         }
         .alert(
-            "Couldn't Connect",
-            isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })
+            "Couldn't Add Music",
+            isPresented: Binding(get: { hubError != nil }, set: { if !$0 { hubError = nil } })
         ) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(accountError ?? "")
+            Text(hubError ?? "")
         }
     }
 
@@ -188,7 +195,7 @@ struct ImportHubView: View {
         Section {
             ForEach(MusicService.allCases) { service in
                 ConnectedServiceRow(service: service) { error in
-                    accountError = LinkImporter.errorMessage(error, noun: "account")
+                    hubError = LinkImporter.errorMessage(error, noun: "account")
                 }
             }
             NavigationLink(value: AppleMusicDestination()) {
