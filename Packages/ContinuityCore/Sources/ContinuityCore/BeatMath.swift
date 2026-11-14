@@ -107,8 +107,15 @@ public enum BeatMath {
         incomingFirstBeatOffset: Double,
         sampleRate: Double
     ) -> Int {
-        precondition(sampleRate > 0, "sampleRate must be positive")
-        let startSeconds = outgoingBeatTime - incomingFirstBeatOffset
-        return Int((startSeconds * sampleRate).rounded())
+        // Total like PlaybackClock: non-finite / non-positive rate or times used to trap in
+        // `Int((seconds * rate).rounded())` (`+inf` passed `sampleRate > 0`). Degenerate → 0;
+        // valid but out-of-Int-range products saturate so callers still see a finite frame.
+        guard sampleRate.isFinite, sampleRate > 0,
+              outgoingBeatTime.isFinite, incomingFirstBeatOffset.isFinite else { return 0 }
+        let raw = ((outgoingBeatTime - incomingFirstBeatOffset) * sampleRate).rounded()
+        guard raw.isFinite else { return 0 }
+        if raw >= Double(Int.max) { return Int.max }
+        if raw <= Double(Int.min) { return Int.min }
+        return Int(raw)
     }
 }
