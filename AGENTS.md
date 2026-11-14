@@ -152,7 +152,13 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   Configuration-change recovery must go through `scheduleRecoverPlayback` (never call
   `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
   posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
-  residual crash class after the shim.
+  residual crash class after the shim. `scheduleRecoverPlayback` also coalesces *queued*
+  requests (`ContinuityCore.PlaybackRecoveryCoalescer`, Linux-tested) and `recoverPlayback`
+  no-ops once the engine is up and the deck rescheduled — never add a path that reconnects or
+  reschedules on a running engine. Never let an `AVAudioEngine` deallocate inside a
+  notification handler (`-[AVAudioEngine dealloc]` hops synchronously onto its internal queue
+  and traps/deadlocks there); `handleMediaServicesReset` parks the dead stack and releases it
+  later for that reason.
 - **20 Hz tick fields stay in leaf views.** `player.position` / `displayProgress` /
   `transitionProgress` / `secondsUntilTransition` / `transitionCountdownSeconds` may only be
   read by the allowlisted leaves (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`,
