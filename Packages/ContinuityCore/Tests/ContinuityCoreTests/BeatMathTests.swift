@@ -150,4 +150,49 @@ final class BeatMathTests: XCTestCase {
         )
         XCTAssertLessThan(frame, 0)
     }
+
+    /// Non-finite / overflowing products used to trap in `Int(_:)` (`+inf` passed the old
+    /// `sampleRate > 0` precondition). Degenerate → 0; oversize finite → saturate.
+    func testAlignmentStartFrameRejectsNonFiniteWithoutTrapping() {
+        XCTAssertEqual(
+            BeatMath.alignmentStartFrame(
+                outgoingBeatTime: 180,
+                incomingFirstBeatOffset: 0.5,
+                sampleRate: .nan
+            ),
+            0
+        )
+        XCTAssertEqual(
+            BeatMath.alignmentStartFrame(
+                outgoingBeatTime: 180,
+                incomingFirstBeatOffset: 0.5,
+                sampleRate: .infinity
+            ),
+            0
+        )
+        XCTAssertEqual(
+            BeatMath.alignmentStartFrame(
+                outgoingBeatTime: .nan,
+                incomingFirstBeatOffset: 0.5,
+                sampleRate: 44_100
+            ),
+            0
+        )
+        XCTAssertEqual(
+            BeatMath.alignmentStartFrame(
+                outgoingBeatTime: 180,
+                incomingFirstBeatOffset: .infinity,
+                sampleRate: 44_100
+            ),
+            0
+        )
+        XCTAssertEqual(
+            BeatMath.alignmentStartFrame(
+                outgoingBeatTime: 1e308,
+                incomingFirstBeatOffset: 0,
+                sampleRate: 44_100
+            ),
+            Int.max
+        )
+    }
 }
