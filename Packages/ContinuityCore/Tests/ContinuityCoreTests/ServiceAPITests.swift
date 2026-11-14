@@ -99,6 +99,9 @@ final class ServiceAPITests: XCTestCase {
         XCTAssertEqual(YouTubeDataAPI.parseISO8601Duration("PT45S"), 45)
         XCTAssertEqual(YouTubeDataAPI.parseISO8601Duration("P0D"), 0)
         XCTAssertNil(YouTubeDataAPI.parseISO8601Duration("3:33"))
+        // Hostile ISO hour component: n * 3600 used to overflow Int and abort.
+        XCTAssertNil(YouTubeDataAPI.parseISO8601Duration("PT2562047788015216H"))
+        XCTAssertNil(YouTubeDataAPI.parseISO8601Duration("PT999999999999999999S"))
 
         let videos = """
         {"items":[{"id":"dQw4w9WgXcQ","contentDetails":{"duration":"PT3M33S"}}]}
