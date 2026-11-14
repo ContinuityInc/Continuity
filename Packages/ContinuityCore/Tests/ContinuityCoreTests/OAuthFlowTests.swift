@@ -38,6 +38,7 @@ final class OAuthFlowTests: XCTestCase {
         XCTAssertEqual(google.callbackScheme, "com.googleusercontent.apps.1234-abc")
         let googleURL = try XCTUnwrap(OAuthFlow.authorizationURL(config: google, state: "s", challenge: "c"))
         XCTAssertTrue(googleURL.absoluteString.contains("access_type=offline"))
+        XCTAssertTrue(googleURL.absoluteString.contains("prompt=consent"))
         XCTAssertFalse(OAuthProviders.google(clientID: "").isConfigured)
     }
 
