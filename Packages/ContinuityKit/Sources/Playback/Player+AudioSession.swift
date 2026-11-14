@@ -143,14 +143,31 @@ extension Player {
         persistState()       // lock screen should show paused immediately
     }
 
-    /// Posts recovery onto the next main-queue turn so a notification delivered synchronously
+    /// Posts recovery onto a later main-queue turn so a notification delivered synchronously
     /// from inside `engine.start()` / session activation cannot re-enter `recoverPlayback`.
+    ///
+    /// Requests are coalesced: while one recovery is pending, further requests fold into it
+    /// (a forced request upgrades a pending soft one) instead of queueing their own, and
+    /// attempts are spaced at least `recoveryMinimumIntervalSeconds` apart. Around a route
+    /// change this is called from the engine notification, its 50 ms recheck, the
+    /// interruption-ended handler and every 20 Hz tick that finds the engine stopped —
+    /// before, each of those ran a full recovery of its own.
     func scheduleRecoverPlayback(force: Bool) {
-        DispatchQueue.main.async { [weak self] in
+        guard let delay = recoveryCoalescer.request(force: force, now: Player.monotonicNow()) else {
+            return   // folded into the pending recovery
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
-                self?.recoverPlayback(force: force)
+                guard let self else { return }
+                let force = self.recoveryCoalescer.fire()
+                self.recoverPlayback(force: force)
             }
         }
+    }
+
+    /// Monotonic seconds for recovery spacing — never wall-clock, which jumps.
+    static func monotonicNow() -> TimeInterval {
+        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 
     /// Restarts the engine and reschedules the current track at the current position. `force`
@@ -170,13 +187,31 @@ extension Player {
         resumeAfterInterruption = false
         // Observers only exist once the stack does, so `audio` is always live here.
         guard currentTrack != nil, let audio else { return }
+        // A recovery that arrives after an earlier one (or a deck-start retry) already brought
+        // the engine back and rescheduled the deck has nothing to do. Running it anyway means
+        // disconnecting/reconnecting a playing node and rescheduling on a live engine — an
+        // audible skip at best, and the kind of graph churn AVFAudio asserts on at worst.
+        if PlaybackRecoveryCoalescer.isRecoveryRedundant(
+            engineIsRunning: audio.engine.isRunning,
+            deckNeedsReschedule: audio.current.needsRescheduleAfterEngineStart,
+            deckHasTrack: audio.current.track != nil,
+            isPlaying: isPlaying
+        ) {
+            Logger.audio.info("recoverPlayback skipped — engine already running and deck rescheduled")
+            return
+        }
+        recoveryCoalescer.recordAttempt(now: Player.monotonicNow())
         let transitionWasInterrupted = isTransitioning
         // Rebuild player→mixer connections while the engine is still stopped. A route change
         // can leave the previous bus formats unconvertible for the new hardware rate; starting
         // first and reconnecting later is what raised
-        // `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` mid-recovery.
-        audio.deckA.reconnectAfterConfigurationChange()
-        audio.deckB.reconnectAfterConfigurationChange()
+        // `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` mid-recovery. Never do this
+        // on a running engine: if another path restarted it since the request was made, the
+        // bus formats it started with are the valid ones.
+        if !audio.engine.isRunning {
+            audio.deckA.reconnectAfterConfigurationChange()
+            audio.deckB.reconnectAfterConfigurationChange()
+        }
         guard ensureRunning() else {
             if transitionWasInterrupted {
                 // The idle deck's schedule is no longer trustworthy. Clear the blend flags even
@@ -196,7 +231,14 @@ extension Player {
             cancelTransition()
         }
         // Engine stops invalidate node schedules — reschedule from where the clock stood.
-        if audio.current.seekRealFile(to: position) {
+        if audio.current.track == nil {
+            // The deck-start failure funnel unloaded the deck and staged the position in
+            // `pendingSeekSeconds`. Reload through the first-play funnel (which applies that
+            // seek) rather than the synth-deck fallback below, which would restart from 0.
+            guard ensureCurrentLoaded(), startCurrentDeck(context: "recoverPlayback(reload)") else { return }
+            isPlaying = true
+            startTimer()
+        } else if audio.current.seekRealFile(to: position) {
             baselineSeconds = position
             // A refusal stages the position, pauses and persists through the failure funnel.
             guard startCurrentDeck(context: "recoverPlayback") else { return }
