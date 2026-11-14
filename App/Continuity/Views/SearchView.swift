@@ -26,7 +26,11 @@ final class CatalogSearchModel {
     private(set) var songs: [CatalogSong] = []
     private(set) var albums: [CatalogAlbum] = []
     private(set) var isSearching = false
+    /// Primary Search failure (blocks empty results). Cleared on the next successful query.
     private(set) var errorMessage: String?
+    /// Add/import failure while results are on screen. Separate so it can't cover the lists
+    /// until the next keystroke the way `errorMessage` used to.
+    private(set) var actionError: String?
 
     /// Songs already added / albums already imported this session (drives the ✓ badges).
     private(set) var addedSongIDs: Set<Int> = []
@@ -63,6 +67,11 @@ final class CatalogSearchModel {
 
     func clear() {
         query = ""
+        actionError = nil
+    }
+
+    func dismissActionError() {
+        actionError = nil
     }
 
     // MARK: Query edits
@@ -129,6 +138,7 @@ final class CatalogSearchModel {
             songs = results.songs
             albums = results.albums
             errorMessage = nil
+            actionError = nil
             // Every result set teaches the suggestion engine the vocabulary being explored.
             autocorrect.learn(phrases:
                 results.songs.map(\.title) + results.songs.map(\.artist)
@@ -160,7 +170,7 @@ final class CatalogSearchModel {
                 try await queue.importCatalogAlbum(album, in: context)
                 importedAlbumIDs.insert(album.id)
             } catch {
-                errorMessage = LinkImporter.errorMessage(error, noun: "album")
+                actionError = LinkImporter.errorMessage(error, noun: "album")
             }
         }
     }
@@ -183,6 +193,24 @@ struct SearchView: View {
         VStack(spacing: 0) {
             header(query: $model.query)
             SuggestionBar(model: model)
+            if let actionError = model.actionError {
+                Button {
+                    model.dismissActionError()
+                } label: {
+                    Label(actionError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .continuityGlass(cornerRadius: 12, interactive: true)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+                .accessibilityLabel(actionError)
+                .accessibilityHint("Dismisses the error")
+            }
             resultsSplit
         }
         // Duo inner / mirrored wide windows: keep the field, suggestions, and result
