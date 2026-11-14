@@ -126,14 +126,17 @@ struct TransitionSettingsView: View {
                     ) {
                         Label("Export Diagnostics Report", systemImage: "square.and.arrow.up")
                     }
+                    .accessibilityLabel("Export Diagnostics Report")
+                    .accessibilityHint("Shares a diagnostics file with crash and audio-fault details")
                 } header: {
                     Text("Diagnostics")
                 } footer: {
-                    Text("Unclean exits counts sessions that ended while the app was in the foreground without a normal exit. Audio faults absorbed are audio-engine errors this session that would previously have crashed the app. The report includes the system's crash records for Continuity and contains no library or account data.")
+                    Text("Unclean exits counts sessions that ended while the app was in the foreground without a normal exit. Audio faults absorbed are audio-engine errors this session that would previously have crashed the app. The report's stem/playback budget card includes AdaptiveQuality tier, AVFAudio exception count, and RSS peaks from mem breadcrumbs, plus the system's crash records. It contains no library or account data.")
                 }
             }
             .navigationTitle("Transition")
             .navigationBarTitleDisplayMode(.inline)
+            .readableScrollColumn()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

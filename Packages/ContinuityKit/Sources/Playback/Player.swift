@@ -200,6 +200,25 @@ public final class Player {
     /// automatic retries in `Player+DeckFailure`. Reset by `startCurrentFresh` and user play.
     @ObservationIgnored var deckStartFailures = 0
 
+    /// Coalesces nested `recoverPlayback` entries. `engine.start()` / session activation can
+    /// post `.AVAudioEngineConfigurationChange` synchronously on the main queue; without this
+    /// flag the observer re-enters recovery mid-reschedule and double-touches the decks.
+    @ObservationIgnored var isRecoveringPlayback = false
+
+    /// Folds every *queued* recovery request (engine notification, spurious-change recheck,
+    /// interruption end, each 20 Hz tick that sees a stopped engine) into one pending
+    /// recovery and spaces attempts apart (`ContinuityCore.PlaybackRecoveryCoalescer`). The
+    /// nesting flag above only covers synchronous re-entry; without this, every extra
+    /// request re-ran the full disconnect/connect/reschedule on an engine the first recovery
+    /// had already restarted — graph surgery on a live, playing engine, repeated at tick rate
+    /// while a route flapped.
+    @ObservationIgnored var recoveryCoalescer = PlaybackRecoveryCoalescer(
+        minimumInterval: Player.recoveryMinimumIntervalSeconds
+    )
+    /// Floor between two recovery attempts. Long enough for CoreAudio to settle a route
+    /// change, short enough that a real recovery is never audibly late.
+    static let recoveryMinimumIntervalSeconds: TimeInterval = 0.25
+
     /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
     /// can drop the old registrations instead of stacking duplicate handlers.
     var audioEnvironmentObservers: [NSObjectProtocol] = []
@@ -516,7 +535,9 @@ public final class Player {
         // asynchronously. Never let transition scheduling touch player nodes in that gap.
         guard audio.engine.isRunning else {
             Logger.audio.error("playback tick found stopped engine — recovering")
-            recoverPlayback(force: true)
+            // Async: the tick runs under the display timer; keep recovery off this call stack
+            // so a nested configuration-change notification cannot reenter mid-tick.
+            scheduleRecoverPlayback(force: true)
             return
         }
         // If the clock baseline has been corrupted (a stale render time survived long enough
@@ -538,11 +559,21 @@ public final class Player {
         // Playback memory heartbeat (~10 s): the jetsam RCA's remaining blind spot is memory
         // that ramps during PLAIN playback (no ingest/stems activity, so no other breadcrumb
         // fires). The decay slope across these lines names the leak rate; the value at the
-        // last line before a kill names the floor. Cheap enough to leave in release.
+        // last line before a kill names the floor. Mirrored into MemoryBudgetRecorder for the
+        // Diagnostics budget card. Cheap enough to leave in release.
         memTicks += 1
         if memTicks >= 200 {
             memTicks = 0
-            Logger.audio.info("mem[playback] \(os_proc_available_memory() / 1_048_576, privacy: .public) MB headroom")
+            let headroom = Int(os_proc_available_memory() / 1_048_576)
+            let rss = ProcessMemory.residentMB
+            MemoryBudgetRecorder.shared.record(
+                MemoryBreadcrumbSample(label: "playback", headroomMB: headroom, rssMB: rss)
+            )
+            if let rss {
+                Logger.audio.info("mem[playback] \(headroom, privacy: .public) MB headroom \(rss, privacy: .public) MB rss")
+            } else {
+                Logger.audio.info("mem[playback] \(headroom, privacy: .public) MB headroom")
+            }
         }
         // Periodic save (~5 s) so a kill/crash resumes near the right spot next launch.
         ticksSincePersist += 1

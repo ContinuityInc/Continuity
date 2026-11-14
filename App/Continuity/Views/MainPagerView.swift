@@ -24,9 +24,13 @@ struct MainPagerView: View {
             // made it three insets' worth shorter than the content it backs; centred as a
             // `.background`, that left an uncovered band of flat `systemGroupedBackground` at
             // the top and bottom (black in dark mode) and slid the album gradient out of
-            // register with the Now Playing page. Add the insets back so the backdrop spans
-            // exactly the three pages it is drawing.
-            let pageHeight = proxy.size.height + insets.top + insets.bottom
+            // register with the Now Playing page. `DuoLayout.pageHeight` adds the insets back
+            // (Linux-tested) so the backdrop spans exactly the three pages it is drawing.
+            let pageHeight = CGFloat(DuoLayout.pageHeight(
+                safeAreaHeight: Double(proxy.size.height),
+                topInset: Double(insets.top),
+                bottomInset: Double(insets.bottom)
+            ))
             ScrollView(.vertical) {
                 // Library / Up Next are full-bleed NavigationStacks: a safe-area restorer
                 // re-injects the window insets so their bars extend under the status bar
@@ -45,6 +49,13 @@ struct MainPagerView: View {
                     mounted(.nowPlaying) { NowPlayingView() }
                         .padding(.top, insets.top)
                         .padding(.bottom, insets.bottom)
+                        // iPhone Duo's inner display puts the status bar on the RIGHT edge, so
+                        // the side insets are real there (and in landscape-shaped windows).
+                        .padding(.leading, insets.leading)
+                        .padding(.trailing, insets.trailing)
+                        // Now Playing reads these for Duo top-chrome compensation; Library /
+                        // Up Next already get them via `pagerNavigationPage`.
+                        .environment(\.pagerSafeAreaInsets, insets)
                         .containerRelativeFrame(.vertical)
                         .id(MainPagerState.Page.nowPlaying)
                     mounted(.upNext) { UpNextView() }

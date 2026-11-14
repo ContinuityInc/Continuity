@@ -12,6 +12,21 @@ extension Player {
         if historyIDs.count > 200 { historyIDs.removeFirst(historyIDs.count - 200) }
     }
 
+    /// Republishes lock-screen / Control Center info after `track`'s title or artist was edited.
+    /// In-app views observe the model directly, but `MPNowPlayingInfoCenter` only hears from
+    /// us on playback discontinuities (or the ~5 s periodic save) — so without this a rename
+    /// of the current song lingers on the lock screen.
+    public func refreshNowPlayingMetadata(for track: Track) {
+        guard let current = currentTrack, current.id == track.id else { return }
+        nowPlayingBridge.update(
+            track: current,
+            duration: duration,
+            position: position,
+            isPlaying: isPlaying,
+            skipsRemaining: skipsRemaining
+        )
+    }
+
     /// Saves the full playback session (queue, position, skips, history) for the next launch,
     /// and mirrors the same state to the lock screen / Control Center. Every playback
     /// discontinuity funnels through here, which is exactly when both need updating.

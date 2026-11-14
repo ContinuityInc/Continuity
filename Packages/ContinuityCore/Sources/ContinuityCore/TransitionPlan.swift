@@ -19,7 +19,14 @@ public struct TransitionPlan: Equatable, Sendable {
     ///   - trackDuration: total length of the outgoing track.
     ///   - hasNextTrack: whether there is a track to transition into.
     public func shouldStart(position: TimeInterval, trackDuration: TimeInterval, hasNextTrack: Bool) -> Bool {
-        guard hasNextTrack, duration > 0, trackDuration > 0 else { return false }
+        // Non-finite clocks (poisoned deck / unset duration) must not start a blend:
+        // `+inf >= trackDuration - duration` is true in Swift, which would fire a transition
+        // from a disturbed render clock the same way NaN used to poison progress.
+        guard hasNextTrack,
+              duration.isFinite, duration > 0,
+              trackDuration.isFinite, trackDuration > 0,
+              position.isFinite
+        else { return false }
         // Only crossfade when the track is meaningfully longer than the blend itself.
         guard trackDuration > duration else { return false }
         return position >= trackDuration - duration
@@ -27,8 +34,12 @@ public struct TransitionPlan: Equatable, Sendable {
 
     /// Normalized progress (0...1) of a transition that began at `startPosition`, given the
     /// outgoing track's current `position`.
+    ///
+    /// Non-finite inputs (a poisoned deck clock) must not produce NaN: `min`/`max` do not
+    /// sanitize NaN, and a NaN progress used to reach deck gains / SwiftUI trim.
     public func progress(position: TimeInterval, startPosition: TimeInterval) -> Double {
-        guard duration > 0 else { return 1 }
+        guard duration.isFinite, duration > 0 else { return 1 }
+        guard position.isFinite, startPosition.isFinite else { return 0 }
         return min(max((position - startPosition) / duration, 0), 1)
     }
 

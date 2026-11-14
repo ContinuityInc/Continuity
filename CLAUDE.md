@@ -92,14 +92,40 @@ never finish the job. Fixes (keep all):
  a real trap in its first run (`Double(Int64.max)` rounds up → `Int64(_:)` overflow), which is
  the point: crash-class math must be testable without a phone.
 - Field evidence: `App/Continuity/Library/CrashDiagnostics.swift` subscribes to MetricKit
- (crash signal/exception type/termination reason/ObjC exception message → `crash` log
- category + JSON in Application Support/Diagnostics) and keeps a dirty-session marker
- (unclean foreground exits counted even without a payload). Transition settings →
- Diagnostics → "Export Diagnostics Report" shares it. **Ask for that report before reasoning
- about a crash from symptoms.**
+  (crash signal/exception type/termination reason/ObjC exception message → `crash` log
+  category + JSON in Application Support/Diagnostics) and keeps a dirty-session marker
+  (unclean foreground exits counted even without a payload). Transition settings →
+  Diagnostics → "Export Diagnostics Report" shares it. **Ask for that report before reasoning
+  about a crash from symptoms.**
+- Residual "transient" crashes after the shim (Nov 2026): the shim stopped *node* calls from
+  aborting, but recovery itself could still kill the process. Root cause: NotificationCenter
+  delivers main-queue observers **synchronously** when the poster is on main, and
+  `engine.start()` / session activation inside `recoverPlayback` posts
+  `.AVAudioEngineConfigurationChange`. That re-entered recovery mid-reschedule (double
+  disconnect/connect/schedule → format assertions the shim then had to absorb on a half-built
+  graph, or a nested start that never settled). Fix: `isRecoveringPlayback` coalesce flag,
+  always `scheduleRecoverPlayback` (next main-queue turn) from observers + the tick path,
+  reconnect both decks' player→mixer buses *before* `ensureRunning`, and open `AVAudioFile` /
+  write time-pitch params through the same ObjC boundary. Keep asking for the diagnostics
+  report — `AVFAudio exceptions caught this session` should now climb instead of the process
+  dying when a route flaps during recovery.
+- Recovery storms (Nov 2026, after #170): the nesting flag only covered *synchronous*
+  re-entry. Around one route flap the engine notification, its 50 ms recheck, the
+  interruption-ended handler and every 20 Hz tick that saw a stopped engine each queued their
+  own `recoverPlayback`; the first restarted the engine, the rest re-ran disconnect/connect/
+  stop/schedule/play on the now-running, playing graph — repeated at tick rate while the route
+  kept flapping. Fix: `PlaybackRecoveryCoalescer` (ContinuityCore, Linux-tested) folds queued
+  requests into one and spaces attempts ≥ 250 ms; `recoverPlayback` returns early when the
+  engine is already running and the current deck is rescheduled, only reconnects the decks on
+  a stopped engine, and reloads (via `ensureCurrentLoaded`, honouring the staged seek) a deck
+  the failure funnel had unloaded instead of falling into the synth-deck `startCurrentFresh`
+  branch that restarted the song from 0. Same PR: `handleMediaServicesReset` no longer lets the
+  dead `AVAudioEngine` deallocate inside the notification callout (`-[AVAudioEngine dealloc]`
+  does a synchronous hop onto its internal queue — a `__DISPATCH_WAIT_FOR_QUEUE__` trap with no
+  app frame) and rebuilds on the next main turn instead of inside the handler.
 - Stacked-PR trap: #158/#159 were merged into their *base branches* after #157 had merged
- into main, so GitHub showed them merged while main never got the code (re-landed in #161).
- Merge stacks top-down, or delete head branches on merge so GitHub retargets.
+  into main, so GitHub showed them merged while main never got the code (re-landed in #161).
+  Merge stacks top-down, or delete head branches on merge so GitHub retargets.
 
 ### UI architecture decisions
 - **20 Hz `position` writes must not reach heavy views**: only leaf views
@@ -125,6 +151,16 @@ never finish the job. Fixes (keep all):
   tracks don't end in an audible cut. `isUserInitiatedSkipTransition` prevents double-spend.
   `Player.displayProgress` blends outgoing/incoming fractions by `transitionProgress` so
   progress UI glides across song changes.
+- **iPhone Duo (foldable, Oct 2026)**: the inner display hands the app a wide, near-square,
+  regular/regular window that resizes on fold/unfold, with the status bar on the RIGHT edge
+  (top inset ≈ 0). Layout decisions come from measured page size (`ContinuityCore.NowPlayingLayout`
+  + `DuoLayout`, pinned by Linux tests), never from idiom, orientation, size-class-as-iPad or
+  `UIScreen`. Now Playing goes side-by-side when wide; Library grid splits evenly around the
+  physical fold (panel midpoint, insets included); search keyboard and readable chrome stay
+  phone-width; every page honours leading/trailing insets; chevrons get a minimum top margin
+  when the top inset collapses. Landscape is allowed for the outer-display tent pose. Apps
+  built with the iOS 26 SDK are letterboxed on the inner display; edge-to-edge needs the
+  iOS 27.1 SDK (Xcode 27.1) — the TestFlight job uses the newest Xcode on the runner.
 - `Player.prepare`/`restore` stay **metadata-only** (no engine build, no `notifyUpcoming()`)
   — see AGENTS.md jetsam gotcha.
 
@@ -139,16 +175,26 @@ simulator: 0/8 tracks ready before, 8/8 after (full files, BPM analysed). See th
 gotcha for the diagnosis recipe.
 
 ### Catalog search (PR #108)
-iTunes Search API (no key) for songs/albums; custom in-app keyboard with
-`CatalogAutocorrect` (ContinuityCore, Linux-tested) learning vocabulary from results + the
-user's library. Songs → "From Search" playlist; albums → imported playlists. Both ride the
-existing `searchQuery` → YouTube ingest path.
+iTunes Search API (no key) for songs/albums; native keyboard with
+`CatalogAutocorrect` suggestion chips (ContinuityCore, Linux-tested) learning vocabulary from
+results + the user's library. Songs → "From Search" playlist; albums → imported playlists.
+Both ride the existing `searchQuery` → YouTube ingest path.
+
+### Import hub + connected accounts (Oct 2026)
+The library toolbar's three add buttons (link / Apple Music / files) collapsed into one "+"
+(`ImportHubView`), which also hosts Spotify / YouTube / SoundCloud sign-in (`ServiceAuthManager`,
+OAuth PKCE via `ASWebAuthenticationSession`, Keychain) and a per-account playlist/likes picker.
+Pasted links of any of the three services prefer the account's API and fall back to scraping;
+SoundCloud sets/tracks are new (hydration-JSON scrape, metadata-only → YouTube audio). Client ids
+are build settings / TestFlight secrets of the same names — until filled, hub rows say
+"Sign-in not set up in this build · links still work" (intentional; scrape still works). Owner
+checklist: AGENTS.md gotcha **"Connected accounts need client ids at build time"**.
 
 ## CI / TestFlight operations
 
-- `.github/workflows/core-tests.yml`: assembles the non-Accelerate ContinuityCore subset and
-  runs `swift test` on Linux for every PR. New pure Core files + tests are picked up
-  automatically (keep them Accelerate-free or add them to the exclusion list).
+- `.github/workflows/core-tests.yml`: runs `swift test --package-path Packages/ContinuityCore`
+  on Linux for every PR. `Package.swift` excludes Accelerate sources (`BeatTracker` /
+  `KeyDetector`) on Linux; keep new Core files Accelerate-free or add them to that list.
 - `.github/workflows/testflight.yml`: on every push to `main` (+ `workflow_dispatch`), builds
   on `macos-26` with **cloud signing** — no certs/profiles in the repo. Secrets: `ASC_KEY_ID`
   / `ASC_ISSUER_ID` / `ASC_KEY_P8` (base64 .p8). The API key **must be Admin role** — an App
@@ -156,6 +202,10 @@ existing `searchQuery` → YouTube ingest path.
   'com.sanylax.continuity'". Build number = `github.run_number`; export method
   `app-store-connect`, destination `upload`, team `KP832RV67A`. Internal testers get builds
   automatically after processing.
+- **OAuth client secrets (optional, separate from ASC):** `SPOTIFY_CLIENT_ID`,
+  `GOOGLE_CLIENT_ID`, `SOUNDCLOUD_CLIENT_ID`, `SOUNDCLOUD_CLIENT_SECRET`. Empty → Connect
+  disabled, link imports still scrape. Register redirect URIs before expecting sign-in to
+  work once filled — full checklist in the AGENTS.md connected-accounts gotcha.
 - Known failure modes already hit: App-Manager-role key (fixed — Admin key created);
   empty/placeholder secrets from copy-pasted commands; **ITMS error 90382 "Upload limit
   reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix;
@@ -180,7 +230,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
 - **Nothing on the 20 Hz tick path but leaves.** `position`, `transitionProgress` and anything
   derived from them (`secondsUntilTransition`, `displayProgress`) may only be read by tiny leaf
   views: `TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`, `BlendPlayhead`,
-  `TransitionCountdownPill`. The Now Playing transition panel used to read the countdown, so
+  `TransitionCountdownPill`. `Scripts/check-tick-leaf-readers.sh` fails CI if a new reader
+  appears outside that allowlist. The Now Playing transition panel used to read the countdown, so
   every tick re-ran `TransitionPreview.make`, re-read both tracks' `beatTimes` out of SwiftData
   and redrew two Canvases. `Player.transitionCountdownSeconds` publishes the countdown at 1 Hz
   for exactly this reason; `TransitionVisualizationView` resolves beat positions and curve
@@ -202,9 +253,8 @@ Each of these was a measured cost, not a style preference. Don't undo them.
   hydrates every row's `beatTimes`.
 - **Liquid Glass is the real API, everywhere.** `glassEffect` via `continuityGlass` /
   `continuityGlassCapsule` — no `Material` stand-ins, no hand-drawn hairlines. Groups of glass
-  elements (the keyboard's key grid, the transition chips) sit in a `GlassEffectContainer` with
-  `spacing: 0` so they composite in one pass without merging into blobs, and glass is never
-  layered directly on glass (the keyboard plane stays an opaque fill).
+  elements (the transition chips) sit in a `GlassEffectContainer` with `spacing: 0` so they
+  composite in one pass without merging into blobs, and glass is never layered directly on glass.
 - `CatalogAutocorrect` and `LoudnessMeter` are allocation-/division-light on purpose; both have
   differential checks behind them (identical suggestions over thousands of fuzzed queries;
   bit-identical LUFS). Re-verify the same way before changing their loops.
