@@ -1,6 +1,7 @@
 import Foundation
 import Domain
 import SwiftData
+import os
 
 /// Removes cached files (imported audio + separated stems + extracted artwork) for deleted
 /// tracks — but only when no surviving track still shares the same stem key (a legacy
@@ -18,7 +19,8 @@ public enum LibraryCleanup {
 
     @MainActor
     public static func removeOrphanedFiles(keys: [String], in context: ModelContext) {
-        let referenced = referencedStemKeys(in: context)
+        // Unknown survivors → keep everything; a shared key may still belong to a live track.
+        guard let referenced = referencedStemKeys(in: context) else { return }
         let orphaned = Set(keys).subtracting(referenced)
         guard !orphaned.isEmpty else { return }
         Task.detached(priority: .utility) { removeCachedFiles(keys: orphaned) }
@@ -29,19 +31,26 @@ public enum LibraryCleanup {
     /// on disk after the delete-time cleanup had already run.
     @MainActor
     public static func sweepOrphanedFiles(in context: ModelContext) {
-        let referenced = referencedStemKeys(in: context)
+        // Unknown survivors → skip the sweep. Treating a failed fetch as "no tracks" made every
+        // cached file an orphan and deleted the whole library's audio, stems and artwork —
+        // and imported local files have no other copy to re-download from.
+        guard let referenced = referencedStemKeys(in: context) else { return }
         Task.detached(priority: .utility) { sweep(referenced: referenced) }
     }
 
-    /// Stem keys still claimed by a surviving track. Only `id` and `youtubeVideoID` feed
-    /// `Track.stemKey`, so the fetch asks for those rather than hydrating every row's analysis
-    /// arrays.
+    /// Stem keys still claimed by a surviving track, or nil when the store couldn't answer —
+    /// callers must then delete nothing. Only `id` and `youtubeVideoID` feed `Track.stemKey`,
+    /// so the fetch asks for those rather than hydrating every row's analysis arrays.
     @MainActor
-    private static func referencedStemKeys(in context: ModelContext) -> Set<String> {
+    private static func referencedStemKeys(in context: ModelContext) -> Set<String>? {
         var descriptor = FetchDescriptor<Track>()
         descriptor.propertiesToFetch = [\.id, \.youtubeVideoID]
-        guard let tracks = try? context.fetch(descriptor) else { return [] }
-        return Set(tracks.map(\.stemKey))
+        do {
+            return Set(try context.fetch(descriptor).map(\.stemKey))
+        } catch {
+            Logger.ingest.error("orphan cleanup skipped — track fetch failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     // MARK: - Filesystem passes (off the main actor)
