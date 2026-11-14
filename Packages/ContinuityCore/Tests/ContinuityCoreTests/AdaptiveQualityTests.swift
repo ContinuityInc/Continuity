@@ -48,6 +48,7 @@ final class AdaptiveQualityTests: XCTestCase {
             .constrained
         )
         XCTAssertTrue(AdaptiveQuality.shouldDeferStemSeparation(for: .constrained))
+        XCTAssertEqual(AdaptiveQuality.stemWindowFloorMB, 600)
         XCTAssertGreaterThan(
             AdaptiveQuality.stemRequiredStartMB(for: .constrained),
             AdaptiveQuality.stemRequiredStartMB(for: .full)
@@ -66,6 +67,13 @@ final class AdaptiveQualityTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             AdaptiveQuality.rowArtworkMaxPixel(for: .full),
             AdaptiveQuality.rowArtworkMaxPixel(for: .constrained)
+        )
+        // Backdrop palette/blur budget is fixed across tiers and always ≤ hero so a
+        // shared ImageIO pass can feed both consumers (see ArtworkDecodeCoalesce).
+        XCTAssertEqual(AdaptiveQuality.backdropArtworkMaxPixel(for: .full), 512)
+        XCTAssertEqual(
+            AdaptiveQuality.backdropArtworkMaxPixel(for: .full),
+            AdaptiveQuality.backdropArtworkMaxPixel(for: .constrained)
         )
     }
 }

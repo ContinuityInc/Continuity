@@ -19,7 +19,7 @@ enum StemSeparationBudget {
     /// Scales up on low-RAM / thermal tiers so Air-class devices don't open ORT into a hitch.
     static var requiredStartMB: Int { AdaptiveQuality.stemRequiredStartMB() }
     /// Mid-track floor: abort before the next window if headroom falls below this.
-    static let windowFloorMB = 600
+    static var windowFloorMB: Int { AdaptiveQuality.stemWindowFloorMB }
 }
 
 enum StemSeparationError: Error, Sendable {
@@ -94,7 +94,10 @@ final class OnnxStemSeparator: StemSeparating {
     static func releaseSession() {
         sessionLock.lock()
         defer { sessionLock.unlock() }
+        let hadSession = cachedSession != nil
         cachedSession = nil
+        // Budget-card anchor: RSS after weights/arenas are dropped (pairs with load begin/ready).
+        if hadSession { MemoryFootprint.breadcrumb("ort session drain") }
     }
 
     /// Set on a system memory warning; the streaming loop checks it before each window and

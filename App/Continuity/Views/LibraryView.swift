@@ -2,6 +2,7 @@ import SwiftUI
 import Ingest
 import Playback
 import Domain
+import ContinuityCore
 import SwiftData
 
 /// Minimal library: a grid of playlist/album cards. Tap a card to open its track list;
@@ -11,11 +12,37 @@ struct LibraryView: View {
     @Environment(Player.self) private var player
     @Environment(\.modelContext) private var modelContext
     @Environment(PreparationQueue.self) private var prepQueue
+    @Environment(\.pagerSafeAreaInsets) private var pagerInsets
     @State private var searchText = ""
     /// Playlist awaiting destructive confirmation — set from the context menu, cleared on dismiss.
     @State private var playlistPendingDelete: Playlist?
+    /// Visible ScrollView size (not the LazyVGrid content height) — fold/unfold rewrites this;
+    /// never on the 20 Hz tick path.
+    @State private var viewportSize: CGSize = .zero
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+    /// Phone: adaptive columns. Duo inner display: even columns on each side of the fold so a
+    /// card never sits on the hinge (see `DuoLayout.foldAwareColumnCount`).
+    private var columns: [GridItem] {
+        let width = Double(viewportSize.width)
+        let height = Double(viewportSize.height)
+        if let fold = DuoLayout.foldAwareColumnCount(
+            viewportWidth: width,
+            viewportHeight: height,
+            leadingInset: Double(pagerInsets.leading),
+            trailingInset: Double(pagerInsets.trailing)
+        ) {
+            var items = Array(
+                repeating: GridItem(.flexible(), spacing: DuoLayout.libraryCardSpacing),
+                count: fold.perSide * 2
+            )
+            // Widen the central gutter so the hinge falls between cards, not through one.
+            if fold.perSide > 0 {
+                items[fold.perSide - 1] = GridItem(.flexible(), spacing: fold.gutter)
+            }
+            return items
+        }
+        return [GridItem(.adaptive(minimum: DuoLayout.libraryCardMinimum), spacing: DuoLayout.libraryCardSpacing)]
+    }
 
     private var trimmedSearch: String {
         searchText.trimmingCharacters(in: .whitespaces)
@@ -61,7 +88,7 @@ struct LibraryView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: DuoLayout.libraryCardSpacing) {
                 ForEach(sortedPlaylists) { playlist in
                     NavigationLink {
                         PlaylistDetailView(playlist: playlist)
@@ -82,11 +109,21 @@ struct LibraryView: View {
                         } label: {
                             Label("Delete Playlist", systemImage: "trash")
                         }
+                        .accessibilityLabel("Delete \(playlist.title)")
                     }
                 }
             }
             .padding(16)
         }
+        // Measure the ScrollView viewport — measuring the LazyVGrid would use content height
+        // (always tall) and permanently disable the fold-aware column split.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            let r = DuoLayout.roundedSize(
+                width: Double(proxy.size.width),
+                height: Double(proxy.size.height)
+            )
+            return CGSize(width: r.width, height: r.height)
+        } action: { viewportSize = $0 }
         .scrollContentBackground(.hidden)
     }
 
@@ -208,6 +245,7 @@ private struct SearchSongRow: View {
     @Environment(Player.self) private var player
     @Environment(PreparationQueue.self) private var prepQueue
     @Environment(\.modelContext) private var modelContext
+    @State private var isRenaming = false
 
     var body: some View {
         Button(action: play) {
@@ -235,6 +273,11 @@ private struct SearchSongRow: View {
             } label: {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
+            Button {
+                isRenaming = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
             if !track.isDemo, track.prepState != .ready {
                 Button {
                     prepQueue.prioritize(track, in: modelContext)
@@ -242,6 +285,9 @@ private struct SearchSongRow: View {
                     Label("Download First", systemImage: "arrow.up.to.line")
                 }
             }
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameTrackSheet(track: track)
         }
     }
 }

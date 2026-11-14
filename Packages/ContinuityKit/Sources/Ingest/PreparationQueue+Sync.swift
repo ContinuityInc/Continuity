@@ -45,20 +45,19 @@ extension PreparationQueue {
         do {
             let changed: Bool
             switch kind {
-            case .youtube:
-                let resolved = try await playlistResolver.resolvePlaylist(playlistID: sourceID)
-                guard playlist.modelContext != nil, !resolved.items.isEmpty else { return }
-                changed = applyYouTubeSync(resolved.items, to: playlist, in: context)
-            case .spotifyPlaylist, .spotifyAlbum:
-                let link = SpotifyLink(kind: kind == .spotifyAlbum ? .album : .playlist, id: sourceID)
-                let resolved = try await spotifyResolver.resolvePlaylist(link)
-                guard playlist.modelContext != nil, !resolved.tracks.isEmpty else { return }
-                changed = applyMetadataSync(
-                    resolved.tracks,
-                    subtitle: "From Spotify · \(resolved.tracks.count) tracks",
-                    to: playlist,
-                    in: context
-                )
+            case .youtube, .spotifyPlaylist, .spotifyAlbum, .spotifyLiked, .soundcloudPlaylist, .soundcloudLikes:
+                // API when the service is connected (full length, private items), scrape
+                // otherwise; account-only sources throw `.notSignedIn` and back off like any
+                // other failure until the user reconnects.
+                let remote = try await fetchRemoteContents(kind: kind, sourceID: sourceID, fallbackName: playlist.title)
+                guard playlist.modelContext != nil, !remote.isEmpty else { return }
+                let subtitle = Self.subtitle(for: remote.summary.service, count: remote.tracks.count)
+                if kind == .youtube {
+                    // Video-id keyed: the tracks are the videos themselves.
+                    changed = applyYouTubeSync(remote.tracks.compactMap(\.youtubePlaylistItem), to: playlist, in: context)
+                } else {
+                    changed = applyMetadataSync(remote.tracks, subtitle: subtitle, to: playlist, in: context)
+                }
             case .appleMusic:
                 // Reads the on-device library, so this succeeds offline — but a playlist the
                 // user deleted in Music resolves to nil, and we leave the local copy alone

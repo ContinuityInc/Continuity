@@ -18,6 +18,9 @@ final class CrossfadeCurvesTests: XCTestCase {
         let curve = CrossfadeCurve.equalPower
         XCTAssertEqual(curve.gains(at: -5), curve.gains(at: 0))
         XCTAssertEqual(curve.gains(at: 5), curve.gains(at: 1))
+        let nanGains = curve.gains(at: .nan)
+        XCTAssertEqual(nanGains.outgoing, 1, accuracy: 1e-9)
+        XCTAssertEqual(nanGains.incoming, 0, accuracy: 1e-9)
     }
 
     func testEqualPowerHoldsConstantPower() {

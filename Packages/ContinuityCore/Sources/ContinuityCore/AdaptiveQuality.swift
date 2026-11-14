@@ -72,6 +72,10 @@ public enum AdaptiveQuality {
         }
     }
 
+    /// Mid-track abort floor (MB headroom). Ingest `StemSeparationBudget.windowFloorMB` reads this
+    /// so Diagnostics export and the separator gate cannot drift.
+    public static let stemWindowFloorMB = 600
+
     public static func stemHoldSeconds(for tier: AdaptiveQualityTier = current()) -> TimeInterval {
         switch tier {
         case .full: return 60
@@ -95,6 +99,15 @@ public enum AdaptiveQuality {
         case .full: return 900
         case .balanced: return 720
         case .constrained: return 540
+        }
+    }
+
+    /// Backdrop palette + pre-blur working budget. CIAreaAverage and the 160 px gaussian
+    /// do not benefit from a larger bitmap; keep this ≤ every tier's hero budget so a
+    /// hero decode can always satisfy the backdrop without a second ImageIO pass.
+    public static func backdropArtworkMaxPixel(for tier: AdaptiveQualityTier = current()) -> Double {
+        switch tier {
+        case .full, .balanced, .constrained: return 512
         }
     }
 

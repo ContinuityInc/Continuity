@@ -119,3 +119,38 @@ extension AVAudioEngine {
         return completed && started
     }
 }
+
+// MARK: - AVAudioFile / AVAudioUnitTimePitch
+
+extension AVAudioFile {
+    /// Opens a file for reading inside the ObjC exception boundary. Corrupt / truncated AAC
+    /// (and a few ImageIO-adjacent AudioFile paths) can raise instead of throwing — `try?`
+    /// alone does not catch those.
+    @MainActor
+    static func guardedOpen(forReading url: URL) -> AVAudioFile? {
+        var file: AVAudioFile?
+        let completed = AVFAudioGuard.attempt("AVAudioFile(forReading:)") {
+            do {
+                file = try AVAudioFile(forReading: url)
+            } catch {
+                Logger.audio.error("AVAudioFile open failed: \(error.localizedDescription, privacy: .public)")
+                file = nil
+            }
+        }
+        return completed ? file : nil
+    }
+}
+
+extension AVAudioUnitTimePitch {
+    /// Rate writes can still raise inside the audio unit even after clamping (rare unit-state
+    /// races during a graph rebuild). Fail soft: keep the previous rate.
+    @MainActor
+    func guardedSetRate(_ value: Float) {
+        AVFAudioGuard.attempt("timePitch.rate") { self.rate = value }
+    }
+
+    @MainActor
+    func guardedSetPitch(_ value: Float) {
+        AVFAudioGuard.attempt("timePitch.pitch") { self.pitch = value }
+    }
+}

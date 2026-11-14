@@ -7,7 +7,8 @@ architecture, commands, conventions, and traps that aren't obvious from the code
 
 Native iOS 26 music app. Flagship: **transitions so smooth you don't notice the song changed** —
 stem-separated, beatmatched, harmonically-mixed DJ blends. Audio is sourced from YouTube;
-Spotify contributes tracklists only (its audio is DRM-locked). Personal prototype — not
+Spotify, SoundCloud and Apple Music contribute tracklists only (their audio is DRM-locked / not
+ours to stream). Personal prototype — not
 App-Store-shippable as-is (YouTube ToS). See `README.md` for the feature tour.
 
 ## Architecture
@@ -21,7 +22,7 @@ depend *downward*; the compiler blocks reaching into another layer.
 |---|---|---|---|
 | **ContinuityCore** | `Packages/ContinuityCore` | all scraping/parsing + all DSP/math. NO UIKit/AVFoundation/SwiftData. ~114 unit tests. | *(nothing)* |
 | **Domain** | `Packages/ContinuityKit/Sources/Domain` | `@Model` `Track`/`Playlist`, `TransitionSettings`, `AudioCache`/`StemCache` | ContinuityCore |
-| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
+| **Ingest** | `Packages/ContinuityKit/Sources/Ingest` | resolvers, connected accounts (`ServiceAuth/`, `ConnectedLibraries`), download, analysis, stems, `PreparationQueue`, `LibraryCleanup` | Domain, ContinuityCore, YouTubeKit, onnxruntime |
 | **Playback** | `Packages/ContinuityKit/Sources/Playback` | `Player`, `Deck`, `NowPlayingBridge`, `PlaybackStateStore`, `ToneSynth` | Domain, ContinuityCore |
 | **app target** | `App/Continuity` (`Views/*`, `Library/SampleData`) | SwiftUI, app wiring | all package products |
 
@@ -35,8 +36,12 @@ extension files (`Player+Transport.swift`, `PreparationQueue+Sync.swift`, …) s
 different concerns of the same type don't collide; stored properties + `init` stay in the core
 file, methods move to the extensions.
 
-Data flow: `AddMusicView` → `PreparationQueue` (resolve → download → analyze → stems, bounded
-concurrency) → SwiftData. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
+Data flow: `ImportHubView` (the single "+": pasted link / connected-account picker / Apple Music /
+files) → `PreparationQueue` (resolve → download → analyze → stems, bounded concurrency) →
+SwiftData. Every remote collection — YouTube, Spotify, SoundCloud, by link or by account — is
+normalised to `ContinuityCore.ServicePlaylistContents` and goes through
+`PreparationQueue.fetchRemoteContents` (official API when that service is connected, anonymous
+scrape otherwise) → `importServicePlaylist`; sync reuses the same fetch. `Player` owns one `AVAudioEngine` with two `Deck`s; transitions blend
 via `ContinuityCore.TransitionPlan`.
 
 ## Build & test
@@ -45,8 +50,12 @@ Requires **Xcode 26+**. `xcode-select` points at CommandLineTools, so prefix Xco
 `DEVELOPER_DIR`:
 
 ```sh
-# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change):
-cd Packages/ContinuityCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+# ContinuityCore tests (fast, no simulator — run for any ContinuityCore change).
+# On Linux CI / cloud agents the same command works; Package.swift excludes the
+# Accelerate sources (BeatTracker / KeyDetector) so the Foundation suite is first-class.
+cd Packages/ContinuityCore && swift test
+# On a Mac with CommandLineTools as default, prefix with Xcode's toolchain:
+#   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 # App + modules build (regenerate the project first if you added/removed/renamed a file):
 xcodegen generate
@@ -120,6 +129,11 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
   `CONTINUITY_LIVE_PROBE=1 … -only-testing:IngestTests/LiveIngestProbeTests` (simulator) —
   it prints the failing stage and exact error per track. Beware: a scratch SwiftPM harness
   that depends on `branch: "main"` silently resolves upstream HEAD, not the app's pin.
+- **YouTubeKit import site is `YouTubeStreamResolver` only** (the `AudioStreamResolving`
+  implementation). Map `YouTubeKit.Stream` → `AudioStreamCandidate`, then call
+  `AudioStreamSelector.selectDownloadable` — selection + host allowlist stay in ContinuityCore.
+  `Scripts/check-youtubekit-boundary.sh` fails CI on any other `import YouTubeKit`, on
+  `YouTubeKit.` type refs outside that file, or if the SPM pin leaves `exact:`.
 - **Scrapers are fragile by design.** YouTube/Spotify change their embedded JSON shapes without
   notice (YouTube moved playlists to `lockupViewModel` mid-project). Parsers handle multiple
   shapes and are pinned by tests against real fixtures. Resolvers retry transient failures
@@ -130,12 +144,67 @@ or commit it. Bundle id `com.sanylax.continuity` (share extension
 - **Deleting tracks**: call `Player.handleDeleted` *before* the SwiftData delete — a deck/queue
  reference to a freed `@Model` crashes.
 - **Never call an AVFAudio node/engine method raw in Playback.** `play()/stop()/pause()/
- schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
- engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
- inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
- `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
- Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
-- **Spotify caps ~50 tracks** (anonymous embed API). YouTube playlists paginate to ~500.
+  schedule*()/connect()/start()` raise ObjC exceptions Swift can't catch (= SIGABRT) whenever the
+  engine stops under you. Use the `guarded*` wrappers in `Playback/AVFAudioGuard.swift` (they run
+  inside the `AVFAudioShim` `@try/@catch` and return `Bool`), and route deck starts through
+  `Player.startCurrentDeck(context:)`. `Scripts/check-avfaudio-boundary.sh` fails CI otherwise.
+  Clock/segment/timePitch arithmetic belongs in `ContinuityCore.PlaybackClock` — Linux-tested.
+  Configuration-change recovery must go through `scheduleRecoverPlayback` (never call
+  `recoverPlayback` synchronously from a NotificationCenter main-queue observer): `engine.start()`
+  posts `.AVAudioEngineConfigurationChange` on the same queue, and a nested recovery was the
+  residual crash class after the shim. `scheduleRecoverPlayback` also coalesces *queued*
+  requests (`ContinuityCore.PlaybackRecoveryCoalescer`, Linux-tested) and `recoverPlayback`
+  no-ops once the engine is up and the deck rescheduled — never add a path that reconnects or
+  reschedules on a running engine. Never let an `AVAudioEngine` deallocate inside a
+  notification handler (`-[AVAudioEngine dealloc]` hops synchronously onto its internal queue
+  and traps/deadlocks there); `handleMediaServicesReset` parks the dead stack and releases it
+  later for that reason.
+- **20 Hz tick fields stay in leaf views.** `player.position` / `displayProgress` /
+  `transitionProgress` / `secondsUntilTransition` / `transitionCountdownSeconds` may only be
+  read by the allowlisted leaves (`TrackProgressRing`, `ScrubberBar`, `MiniProgressLine`,
+  `BlendPlayhead`, `TransitionCountdownPill`). `Scripts/check-tick-leaf-readers.sh` fails CI
+  otherwise — extend that allowlist deliberately if a new leaf is intentional.
+- **Connected accounts need client ids at build time (owner checklist).** "Sign-in not set
+  up in this build · links still work" in `ImportHubView` is intentional when those ids are
+  empty — not a broken OAuth path. Checklist:
+
+  1. **Secret / build-setting names** (same string in `project.yml`, Info.plist
+     `ContinuityServiceAuth`, and GitHub Actions secrets consumed by
+     `.github/workflows/testflight.yml`):
+     - `SPOTIFY_CLIENT_ID`
+     - `GOOGLE_CLIENT_ID` (iOS OAuth client for YouTube sign-in)
+     - `SOUNDCLOUD_CLIENT_ID`
+     - `SOUNDCLOUD_CLIENT_SECRET` (required for SoundCloud's token exchange; shipping it in
+       the binary is a known trade-off — see `project.yml` comment)
+  2. **Empty by design in `project.yml`.** Local builds stay scrape-only until you pass the
+     settings (`SPOTIFY_CLIENT_ID=… xcodebuild …` or a private xcconfig). Unset TestFlight
+     secrets expand to `""` the same way. `ServiceAuthConfiguration.fromBundle` treats
+     unexpanded `$(VAR)` placeholders as empty.
+  3. **Redirect URIs to register** with each provider console (callback intercepted by
+     `ASWebAuthenticationSession` — no extra Info.plist URL type beyond the existing
+     `continuity` scheme):
+     - Spotify: `continuity://auth/spotify`
+     - SoundCloud: `continuity://auth/soundcloud`
+     - Google: reversed-client-id scheme derived from `GOOGLE_CLIENT_ID` (iOS client type;
+       see `OAuthProviders.google`)
+  4. **Scrape still works when empty.** Pasted Spotify / YouTube / SoundCloud links keep
+     using the anonymous scrape / embed path; only the hub "Connect" button is disabled.
+  5. **Tokens live in Keychain** via `KeychainStore` after a successful sign-in — never in
+     UserDefaults or the repo. OAuth maths (`OAuthFlow`) and API JSON parsers stay in
+     ContinuityCore (Linux-tested).
+  6. **ASC signing secrets are separate.** `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8`
+     (Admin role) upload the build; they do not populate OAuth ids. See CLAUDE.md
+     "CI / TestFlight operations".
+- **SoundCloud scraping has two moving parts.** Set/track pages embed `window.__sc_hydration`
+  with only the first ~5 tracks hydrated; the rest are `{id, kind}` stubs fetched from
+  `api-v2.soundcloud.com/tracks?ids=…` with a `client_id` scraped out of the
+  `a-v2.sndcdn.com/assets/*.js` bundles (`SoundCloudPlaylist.clientID(inScript:)`). If every
+  SoundCloud import fails while Spotify/YouTube work, check those two first; `on.soundcloud.com`
+  short links are resolved by following the redirect. API-imported sets are keyed by permalink
+  path so they stay syncable after a disconnect; URN-only identities need the account.
+- **Spotify caps ~50 tracks** (anonymous embed API; a connected account reads the full list).
+  YouTube playlists paginate to ~500. Connected-account imports stop at 1 000 tracks
+  (`connectedLibraryMaxTracks`).
 - **git push hangs** on this machine (GCM GUI dialog). Push with:
   `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.https://github.com.helper='!/opt/homebrew/bin/gh auth git-credential' push -u origin <branch>`
 
@@ -163,16 +232,14 @@ built or run here**. Plan work accordingly:
   code review + the ContinuityCore unit tests they rely on; real build/run must happen on a Mac.
 - **A Linux Swift toolchain is preinstalled** via `swiftly` (added to `~/.profile`, so `swift` is
   on `PATH` in login shells). Use `swift`, not `DEVELOPER_DIR`/`xcodebuild`, on this VM.
-- **`swift test` in `Packages/ContinuityCore` FAILS to compile on Linux**, even though the README
-  implies it's portable: `BeatTracker.swift` and `KeyDetector.swift` `import Accelerate` (Apple's
-  vDSP — no Linux module). Since SwiftPM compiles the target as a unit, those two files break the
-  whole build/test, including the 15 pure-Foundation files.
-- **To run the platform-agnostic tests on Linux**, build a throwaway SwiftPM package that includes
-  only the non-`Accelerate` sources + tests (exclude `BeatTracker.swift`, `KeyDetector.swift`,
-  `BeatTrackerTests.swift`, `KeyDetectorTests.swift`, `KeyDetectorAccuracyTests.swift`). That runs
-  **111 of ~114** real `XCTest` cases (Camelot/flow ordering, crossfade curves, transition plan,
-  loudness, silence trimming, YouTube/Spotify URL + page parsing). The BPM/beat-grid and
-  musical-key suites (Accelerate) can only be exercised on a Mac. Test fixtures are inline string
-  literals — no external resource files needed.
+- **`swift test` in `Packages/ContinuityCore` is first-class on Linux.** `Package.swift` uses
+  `#if os(Linux)` to `exclude` `BeatTracker.swift` / `KeyDetector.swift` (and their three test
+  files) — those `import Accelerate` (Apple vDSP). Run:
+  `cd Packages/ContinuityCore && swift test` (CI: `swift test --package-path Packages/ContinuityCore`).
+  That covers the Foundation suite (Camelot/flow ordering, crossfade curves, transition plan,
+  loudness, silence trimming, YouTube/Spotify/SoundCloud parsers, PlaybackClock, Duo layout, …).
+  New pure-Core files are picked up automatically; keep them Accelerate-free or add them to the
+  Linux `exclude` lists in `Package.swift`. The BPM/beat-grid and musical-key suites still need
+  a Mac (Xcode toolchain). Test fixtures are inline string literals — no external resource files.
 - **The core package has zero external SwiftPM dependencies**, so there is nothing to fetch on
   startup; the update script only warms the build graph.
