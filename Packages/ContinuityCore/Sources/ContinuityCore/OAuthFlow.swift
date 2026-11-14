@@ -264,7 +264,10 @@ public enum OAuthProviders {
             clientID: clientID,
             redirectURI: googleRedirectURI(clientID: clientID),
             scopes: ["https://www.googleapis.com/auth/youtube.readonly"],
-            extraAuthorizationParameters: ["access_type": "offline"]
+            // access_type=offline requests a refresh token; prompt=consent forces Google to
+            // re-issue one on reconnect after a Keychain wipe (without it, re-auth often
+            // returns access-only and the YouTube link dies when the hour-long token expires).
+            extraAuthorizationParameters: ["access_type": "offline", "prompt": "consent"]
         )
     }
 
