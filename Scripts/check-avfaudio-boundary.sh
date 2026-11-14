@@ -7,7 +7,9 @@
 # Every such call must therefore go through the `guarded*` wrappers in
 # Packages/ContinuityKit/Sources/Playback/AVFAudioGuard.swift, which run it inside the
 # AVFAudioShim @try/@catch. This script fails CI if a raw call appears anywhere else in
-# Playback, so the boundary can't erode one convenient `.play()` at a time.
+# Playback, so the boundary can't erode one convenient `.play()` at a time. It also locks
+# AVAudioFile(forReading:) and timePitch rate/pitch writes to the guard, and requires
+# recoverPlayback to stay behind scheduleRecoverPlayback's deferred hop.
 #
 # Usage: Scripts/check-avfaudio-boundary.sh   (exit 0 = clean, 1 = violations listed)
 set -eu
@@ -50,6 +52,42 @@ if [ -n "$importers" ]; then
   status=1
 fi
 
+# AVAudioFile(forReading:) can raise on corrupt/truncated AAC — only guardedOpen may call it.
+file_opens=$(grep -rnE --include='*.swift' 'AVAudioFile\(forReading:' "$PLAYBACK" \
+  | grep -v "^$GUARD:" \
+  | grep -vE '^\S+:[0-9]+:\s*///?' || true)
+if [ -n "$file_opens" ]; then
+  echo "error: raw AVAudioFile(forReading:) outside $GUARD (use AVAudioFile.guardedOpen):" >&2
+  echo "$file_opens" >&2
+  status=1
+fi
+
+# timePitch.rate / .pitch writes raise on out-of-range / non-finite values during graph churn.
+# Deck setters must go through guardedSetRate / guardedSetPitch.
+pitch_writes=$(grep -rnE --include='*.swift' '\b(timePitch|self)\.(rate|pitch)\s*=' "$PLAYBACK" \
+  | grep -v "^$GUARD:" \
+  | grep -vE '^\S+:[0-9]+:\s*///?' || true)
+if [ -n "$pitch_writes" ]; then
+  echo "error: raw timePitch rate/pitch writes outside $GUARD (use guardedSetRate/guardedSetPitch):" >&2
+  echo "$pitch_writes" >&2
+  status=1
+fi
+
+# recoverPlayback must only run from the deferred scheduleRecoverPlayback path — a sync call
+# from a NotificationCenter main-queue observer re-enters mid-start and is a crash class.
+# Drop comment lines, the definition, string literals (e.g. startCurrentDeck context labels),
+# and the one allowed call site inside scheduleRecoverPlayback's asyncAfter.
+recover_calls=$(grep -rnE --include='*.swift' '\brecoverPlayback\s*\(' "$PLAYBACK" \
+  | grep -vE '^\S+:[0-9]+:\s*///?' \
+  | grep -vE 'func recoverPlayback\s*\(' \
+  | grep -v '"' \
+  | grep -vE 'Player\+AudioSession\.swift:[0-9]+:\s*self\.recoverPlayback\(force:' || true)
+if [ -n "$recover_calls" ]; then
+  echo "error: recoverPlayback called outside scheduleRecoverPlayback's deferred block:" >&2
+  echo "$recover_calls" >&2
+  status=1
+fi
+
 # Every guarded wrapper must actually be wrapped in AVFAudioGuard.attempt.
 raw_in_guard=$(grep -nE "$NODE_RE|$ENGINE_RE|\bself\.(play\(\)|play\(at:|pause\(\)|stop\(\)|scheduleFile\(|scheduleSegment\(|scheduleBuffer\(|start\(\)|attach\(|connect\(|disconnectNodeOutput\()" "$GUARD" \
   | grep -vE '^\s*[0-9]+:\s*///?' || true)
@@ -62,6 +100,6 @@ if [ "$raw_count" -gt "$attempts" ]; then
 fi
 
 if [ "$status" -eq 0 ]; then
-  echo "AVFAudio boundary OK: all node/engine calls in $PLAYBACK go through $GUARD"
+  echo "AVFAudio boundary OK: node/engine/file/timePitch calls in $PLAYBACK go through $GUARD; recoverPlayback stays deferred"
 fi
 exit "$status"
