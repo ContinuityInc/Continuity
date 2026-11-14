@@ -279,8 +279,9 @@ public final class PreparationQueue {
                 track.localRelativePath = AudioCache.relativePath(for: fileURL)
 
                 // Real duration for the row (bare-ID adds start at 0, which renders as "0:00").
-                if track.durationSeconds <= 0, let file = try? AVAudioFile(forReading: fileURL) {
-                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+                if !Self.hasUsableDuration(track), let file = try? AVAudioFile(forReading: fileURL),
+                   let seconds = Self.fileDurationSeconds(file) {
+                    track.durationSeconds = seconds
                 }
 
                 // NOTE: the real title/channel (oEmbed) is deliberately NOT fetched here — it
@@ -418,6 +419,23 @@ public final class PreparationQueue {
         return true
     }
 
+    /// Whether the stored duration is a real length. Non-finite values count as missing so a row
+    /// poisoned by an older build (`length / 0` stored `.infinity`) heals on the next backfill.
+    static func hasUsableDuration(_ track: Track) -> Bool {
+        track.durationSeconds.isFinite && track.durationSeconds > 0
+    }
+
+    /// A file's length in seconds, or nil when its format can't say. Goes through
+    /// `PlaybackClock` like `Deck.resolveDuration`: a header with an unset sample rate makes
+    /// `length / sampleRate` infinite, and an infinite `durationSeconds` traps SwiftUI layout
+    /// (`Theme.time`, the scrubber) the moment the row renders.
+    static func fileDurationSeconds(_ file: AVAudioFile) -> Double? {
+        let seconds = PlaybackClock.durationSeconds(
+            frameLength: file.length, sampleRate: file.processingFormat.sampleRate
+        )
+        return seconds > 0 ? seconds : nil
+    }
+
     /// Whether the track still shows the "YouTube Video (abc123)" placeholder from a bare-ID add.
     private static func hasPlaceholderMetadata(_ track: Track) -> Bool {
         track.youtubeVideoID != nil && track.title.hasPrefix("YouTube Video (")
@@ -435,7 +453,7 @@ public final class PreparationQueue {
     /// oEmbed requests (which hitch launch and thrash memory).
     func backfillTrackDetails(_ track: Track, in context: ModelContext) {
         let needsTitle = Self.hasPlaceholderMetadata(track)
-        let needsDuration = track.durationSeconds <= 0 && track.localRelativePath != nil
+        let needsDuration = !Self.hasUsableDuration(track) && track.localRelativePath != nil
         let needsSilenceScan = track.audibleEndSeconds == nil && track.localRelativePath != nil
         let needsReanalysis = track.localRelativePath != nil
             && (track.analysisVersion ?? 0) < TrackAnalyzer.analysisVersion
@@ -449,8 +467,9 @@ public final class PreparationQueue {
                 let url = AudioCache.url(forRelativePath: relativePath)
                 await ingestLimiter.acquire()
                 if needsDuration, track.modelContext != nil,
-                   let file = try? AVAudioFile(forReading: url) {
-                    track.durationSeconds = Double(file.length) / file.processingFormat.sampleRate
+                   let file = try? AVAudioFile(forReading: url),
+                   let seconds = Self.fileDurationSeconds(file) {
+                    track.durationSeconds = seconds
                 }
                 if needsSilenceScan, track.modelContext != nil {
                     MemoryFootprint.breadcrumb("silence scan begin")
