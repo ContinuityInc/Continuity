@@ -15,7 +15,9 @@ public enum LoudnessMeter {
 
     /// Integrated loudness in LUFS, or nil for silence (nothing above the absolute gate).
     public static func integratedLUFS(samples: [Float], sampleRate: Double) -> Double? {
-        guard sampleRate > 0, !samples.isEmpty else { return nil }
+        // Finite rate first: `sampleRate > 0` alone accepts `+inf`, and `Int(0.4 * rate)`
+        // then traps — same Double→Int crash class as PlaybackClock / SilenceTrimmer.
+        guard sampleRate.isFinite, sampleRate > 0, !samples.isEmpty else { return nil }
 
         // K-weighting: stage 1 high-shelf (+~4 dB above ~1.5 kHz), stage 2 high-pass (~38 Hz).
         var shelf = Biquad.highShelf(f0: 1681.974450955533, gainDB: 3.999843853973347,
@@ -23,10 +25,15 @@ public enum LoudnessMeter {
         var highPass = Biquad.highPass(f0: 38.13547087602444, q: 0.5003270373238773,
                                        sampleRate: sampleRate)
 
-        // 400 ms blocks, 100 ms hop (75% overlap).
-        let block = Int(0.4 * sampleRate)
-        let hop = Int(0.1 * sampleRate)
-        guard block > 0, hop > 0, samples.count >= block else { return nil }
+        // 400 ms blocks, 100 ms hop (75% overlap). Bound in Double before Int conversion.
+        let rawBlock = 0.4 * sampleRate
+        let rawHop = 0.1 * sampleRate
+        guard rawBlock.isFinite, rawHop.isFinite,
+              rawBlock >= 1, rawHop >= 1,
+              rawBlock <= Double(Int.max), rawHop <= Double(Int.max) else { return nil }
+        let block = Int(rawBlock)
+        let hop = Int(rawHop)
+        guard samples.count >= block else { return nil }
 
         // Single streaming pass: weighted samples land in a block-sized ring instead of a
         // full-length buffer (which cost ~127 MB on a 6-minute track — a jetsam-feeding spike
@@ -94,7 +101,10 @@ public enum LoudnessMeter {
         maxBoostDB: Double = 6,
         maxCutDB: Double = 12
     ) -> Double {
-        min(maxBoostDB, max(-maxCutDB, targetLUFS - measuredLUFS))
+        // `min`/`max` do not sanitize NaN — a poisoned LUFS would flow into `pow(10, gain/20)`.
+        guard measuredLUFS.isFinite, targetLUFS.isFinite,
+              maxBoostDB.isFinite, maxCutDB.isFinite else { return 0 }
+        return min(maxBoostDB, max(-maxCutDB, targetLUFS - measuredLUFS))
     }
 
     /// One RBJ-cookbook biquad section (direct form II transposed).
