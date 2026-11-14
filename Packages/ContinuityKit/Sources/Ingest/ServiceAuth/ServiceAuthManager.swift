@@ -29,6 +29,11 @@ public final class ServiceAuthManager {
     private var credentials: [MusicService: ServiceCredentials] = [:]
     /// In-flight refreshes, so concurrent API calls share one token request.
     private var refreshes: [MusicService: Task<String, Error>] = [:]
+    /// Bumped whenever a service's credentials are replaced or removed. A refresh captures the
+    /// value it started under and only writes back (or disconnects) if it still matches, so a
+    /// refresh that was in flight when the user tapped Disconnect can't quietly reconnect the
+    /// account — and a stale one failing late can't sign out a newer sign-in.
+    private var credentialGeneration: [MusicService: Int] = [:]
     /// The live browser session must be retained for its whole lifetime.
     private var activeSession: ASWebAuthenticationSession?
     private let presenter = WebAuthPresenter()
@@ -99,6 +104,7 @@ public final class ServiceAuthManager {
     /// Forgets the account locally. Provider-side consent is left alone (revoking needs
     /// another API call per provider and the user can do it from their account page).
     public func signOut(_ service: MusicService) {
+        credentialGeneration[service, default: 0] += 1
         refreshes[service]?.cancel()
         refreshes[service] = nil
         credentials[service] = nil
@@ -125,6 +131,7 @@ public final class ServiceAuthManager {
         }
 
         let provider = configuration.provider(for: service)
+        let generation = credentialGeneration[service, default: 0]
         let task = Task<String, Error> { [weak self] in
             guard let self else { throw IngestError.notSignedIn(service) }
             do {
@@ -132,19 +139,30 @@ public final class ServiceAuthManager {
                     provider: provider,
                     body: OAuthFlow.refreshRequestBody(config: provider, refreshToken: refreshToken)
                 )
+                // The user signed out (or back in) while the token request was in flight.
+                // Persisting now would write the old account back into the Keychain.
+                guard self.credentialGeneration[service, default: 0] == generation else {
+                    if let newer = self.credentials[service] { return newer.accessToken }
+                    throw IngestError.notSignedIn(service)
+                }
                 let refreshed = current.refreshed(with: response)
                 self.persist(refreshed, for: service)
                 return refreshed.accessToken
             } catch let error as IngestError where error.isRetryable {
                 throw error   // transient: keep the account, let the caller retry later
             } catch {
-                authLog.error("\(service.rawValue, privacy: .public) refresh rejected — disconnecting: \(String(describing: error), privacy: .public)")
-                self.invalidate(service)
+                // Only tear down the credentials this refresh was for, never a newer sign-in.
+                if self.credentialGeneration[service, default: 0] == generation {
+                    authLog.error("\(service.rawValue, privacy: .public) refresh rejected — disconnecting: \(String(describing: error), privacy: .public)")
+                    self.invalidate(service)
+                }
+                if let newer = self.credentials[service] { return newer.accessToken }
                 throw IngestError.notSignedIn(service)
             }
         }
         refreshes[service] = task
-        defer { refreshes[service] = nil }
+        // Clear only our own entry: a sign-out + new refresh may have replaced it meanwhile.
+        defer { if refreshes[service] == task { refreshes[service] = nil } }
         return try await task.value
     }
 
@@ -156,6 +174,7 @@ public final class ServiceAuthManager {
     // MARK: - Private
 
     private func persist(_ creds: ServiceCredentials, for service: MusicService) {
+        credentialGeneration[service, default: 0] += 1
         credentials[service] = creds
         connectedServices.insert(service)
         if let data = try? JSONEncoder().encode(creds) {
