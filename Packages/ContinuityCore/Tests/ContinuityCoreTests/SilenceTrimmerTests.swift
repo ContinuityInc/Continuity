@@ -63,4 +63,27 @@ final class SilenceTrimmerTests: XCTestCase {
         XCTAssertGreaterThan(bounds.audibleEnd, 3.0)   // most of the fade is audible
         XCTAssertLessThan(bounds.audibleEnd, 4.05)     // but it ends by the fade's end
     }
+
+    /// Non-finite / overflowing rate×window used to trap in `Int(_:)` before the empty guard.
+    func testNonFiniteOrHugeRateReturnsEmptyBoundsWithoutTrapping() {
+        let samples: [Float] = [0.5, -0.5, 0.25]
+        let empty = SilenceTrimmer.Bounds(audibleStart: 0, audibleEnd: 0)
+        XCTAssertEqual(SilenceTrimmer.audibleBounds(samples: samples, sampleRate: .nan), empty)
+        XCTAssertEqual(SilenceTrimmer.audibleBounds(samples: samples, sampleRate: .infinity), empty)
+        XCTAssertEqual(SilenceTrimmer.audibleBounds(samples: samples, sampleRate: -.infinity), empty)
+        XCTAssertEqual(SilenceTrimmer.audibleBounds(samples: samples, sampleRate: 0), empty)
+        XCTAssertEqual(
+            SilenceTrimmer.audibleBounds(samples: samples, sampleRate: sr, windowSeconds: .nan),
+            empty
+        )
+        XCTAssertEqual(
+            SilenceTrimmer.audibleBounds(samples: samples, sampleRate: sr, windowSeconds: .infinity),
+            empty
+        )
+        // Finite but absurd: windowSeconds * rate > Int.max.
+        XCTAssertEqual(
+            SilenceTrimmer.audibleBounds(samples: samples, sampleRate: 1e308, windowSeconds: 0.05),
+            empty
+        )
+    }
 }

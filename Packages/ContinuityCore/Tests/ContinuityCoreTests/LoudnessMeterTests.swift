@@ -53,6 +53,19 @@ final class LoudnessMeterTests: XCTestCase {
         XCTAssertEqual(LoudnessMeter.makeupGainDB(measuredLUFS: -16, targetLUFS: -14), 2, accuracy: 1e-9)
         XCTAssertEqual(LoudnessMeter.makeupGainDB(measuredLUFS: -30, targetLUFS: -14), 6, accuracy: 1e-9)   // boost cap
         XCTAssertEqual(LoudnessMeter.makeupGainDB(measuredLUFS: -1, targetLUFS: -14), -12, accuracy: 1e-9)  // cut cap
+        XCTAssertEqual(LoudnessMeter.makeupGainDB(measuredLUFS: .nan), 0, accuracy: 1e-9)
+        XCTAssertEqual(LoudnessMeter.makeupGainDB(measuredLUFS: -16, targetLUFS: .infinity), 0, accuracy: 1e-9)
+    }
+
+    /// `sampleRate > 0` used to accept `+inf`, then `Int(0.4 * rate)` SIGILLed.
+    func testNonFiniteOrHugeSampleRateReturnsNilWithoutTrapping() {
+        let samples = sine(dBFS: -20, seconds: 1)
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: .nan))
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: .infinity))
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: -.infinity))
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: 0))
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: -44_100))
+        XCTAssertNil(LoudnessMeter.integratedLUFS(samples: samples, sampleRate: 1e308))
     }
 
     /// The streaming ring-buffer implementation must reproduce the straightforward
@@ -75,7 +88,7 @@ final class LoudnessMeterTests: XCTestCase {
 
     /// The pre-optimization implementation: full-length weighted buffer, then blocks.
     private static func referenceLUFS(samples: [Float], sampleRate: Double) -> Double? {
-        guard sampleRate > 0, !samples.isEmpty else { return nil }
+        guard sampleRate.isFinite, sampleRate > 0, !samples.isEmpty else { return nil }
         var shelf = LoudnessMeter.Biquad.highShelf(f0: 1681.974450955533, gainDB: 3.999843853973347,
                                                    q: 0.7071752369554196, sampleRate: sampleRate)
         var highPass = LoudnessMeter.Biquad.highPass(f0: 38.13547087602444, q: 0.5003270373238773,
@@ -84,9 +97,14 @@ final class LoudnessMeterTests: XCTestCase {
         for i in 0..<samples.count {
             weighted[i] = highPass.process(shelf.process(Double(samples[i])))
         }
-        let block = Int(0.4 * sampleRate)
-        let hop = Int(0.1 * sampleRate)
-        guard block > 0, hop > 0, weighted.count >= block else { return nil }
+        let rawBlock = 0.4 * sampleRate
+        let rawHop = 0.1 * sampleRate
+        guard rawBlock.isFinite, rawHop.isFinite,
+              rawBlock >= 1, rawHop >= 1,
+              rawBlock <= Double(Int.max), rawHop <= Double(Int.max),
+              weighted.count >= Int(rawBlock) else { return nil }
+        let block = Int(rawBlock)
+        let hop = Int(rawHop)
         var blockLoudness: [Double] = []
         var blockMeanSquare: [Double] = []
         var start = 0

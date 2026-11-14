@@ -35,9 +35,19 @@ public enum SilenceTrimmer {
         thresholdDB: Double = -48,
         windowSeconds: Double = 0.05
     ) -> Bounds {
+        // Guard before any `Double → Int` conversion: non-finite / huge rate×window products
+        // trap in `Int(_:)` the same way a poisoned PlaybackClock used to.
+        guard !samples.isEmpty,
+              sampleRate.isFinite, sampleRate > 0,
+              windowSeconds.isFinite, windowSeconds > 0 else {
+            return Bounds(audibleStart: 0, audibleEnd: 0)
+        }
         let duration = Double(samples.count) / sampleRate
-        let window = max(1, Int(windowSeconds * sampleRate))
-        guard !samples.isEmpty, sampleRate > 0 else { return Bounds(audibleStart: 0, audibleEnd: 0) }
+        let rawWindow = windowSeconds * sampleRate
+        guard rawWindow.isFinite, rawWindow >= 1, rawWindow <= Double(Int.max) else {
+            return Bounds(audibleStart: 0, audibleEnd: 0)
+        }
+        let window = Int(rawWindow)
 
         let threshold = pow(10.0, thresholdDB / 20.0)   // dBFS → linear amplitude
 
