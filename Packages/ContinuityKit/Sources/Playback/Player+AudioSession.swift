@@ -116,18 +116,35 @@ extension Player {
         clearTransitionState()
         isPlaying = false
         stopTimer()
+        // Detach the dead stack from the player, but do NOT let it deallocate here.
+        // `-[AVAudioEngine dealloc]` tears the engine down with a synchronous hop onto its
+        // internal queue; AVFAudio documents that doing so from inside a notification
+        // callout can deadlock, and in the field it shows up as a `__DISPATCH_WAIT_FOR_QUEUE__`
+        // trap under `-[AVAudioEngine dealloc]` — a crash with no app frame in it. Keep the
+        // orphan alive past this callout and let it go on a later main turn.
+        let orphaned = audio
         audio = nil
         resumeAfterInterruption = false
         if resumePosition > 0 { pendingSeekSeconds = resumePosition }
-        if wasPlaying {
-            // ensureCurrentLoaded() builds the fresh stack, reloads the current track, and
-            // applies the staged seek — the same funnel as first play after launch.
-            if ensureCurrentLoaded(), startCurrentDeck(context: "mediaServicesReset") {
-                isPlaying = true
-                startTimer()
+        persistState()       // lock screen shows paused at the preserved position
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withExtendedLifetime(orphaned) {}
+        }
+        guard wasPlaying else { return }
+        // Rebuild on the next main turn, outside the notification callout: the fresh engine's
+        // first `mainMixerNode` access is a CoreAudio RPC against a server that has only just
+        // come back, and nothing here must run with the dead stack still mid-teardown.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.isPlaying, self.audio == nil, self.currentTrack != nil else { return }
+                // ensureCurrentLoaded() builds the fresh stack, reloads the current track, and
+                // applies the staged seek — the same funnel as first play after launch.
+                guard self.ensureCurrentLoaded(), self.startCurrentDeck(context: "mediaServicesReset") else { return }
+                self.isPlaying = true
+                self.startTimer()
+                self.persistState()
             }
         }
-        persistState()
     }
 
     /// Clean pause in response to the environment (vs. the user's pause button): remembers that
