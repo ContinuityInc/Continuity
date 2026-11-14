@@ -94,8 +94,8 @@ public enum SpotifyAPI {
         guard let name = dict["name"] as? String, !name.isEmpty else { return nil }
         let artists = (dict["artists"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         let artist = artists.isEmpty ? nil : artists.joined(separator: ", ")
-        let ms = (dict["duration_ms"] as? NSNumber)?.doubleValue
-        let spotify = SpotifyTrack(title: name, artist: artist, durationSeconds: ms.map { Int(($0 / 1000).rounded()) })
+        let seconds = DurationParsing.seconds(fromMillisecondsNumber: dict["duration_ms"] as? NSNumber)
+        let spotify = SpotifyTrack(title: name, artist: artist, durationSeconds: seconds)
         return ServiceTrack(spotify)
     }
 }

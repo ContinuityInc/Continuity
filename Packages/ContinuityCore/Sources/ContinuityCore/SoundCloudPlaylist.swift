@@ -240,8 +240,8 @@ public enum SoundCloudPlaylist {
         guard let id = integer(dict["id"]), let title = nonEmpty(dict["title"] as? String) else { return nil }
         let publisherArtist = nonEmpty(JSONNav.string(dict, ["publisher_metadata", "artist"]))
         let username = nonEmpty(JSONNav.string(dict, ["user", "username"]))
-        let ms = (dict["duration"] as? NSNumber)?.doubleValue ?? (dict["full_duration"] as? NSNumber)?.doubleValue
-        let seconds = ms.flatMap { $0 > 0 ? Int(($0 / 1000).rounded()) : nil }
+        let seconds = DurationParsing.seconds(fromMillisecondsNumber: dict["duration"] as? NSNumber)
+            ?? DurationParsing.seconds(fromMillisecondsNumber: dict["full_duration"] as? NSNumber)
         return SoundCloudTrack(
             id: id,
             title: title,
