@@ -209,6 +209,15 @@ final class YouTubePlaylistTests: XCTestCase {
         XCTAssertNil(YouTubePlaylist.parseClock("not a clock"))
     }
 
+    /// Hostile overlay text that matches `isClock` but overflows `Int` multiply must return nil,
+    /// not SIGILL — the same crash class as PlaybackClock's Double→Int64 firewall.
+    func testParseClockRejectsOverflowWithoutTrapping() {
+        XCTAssertTrue(YouTubePlaylist.isClock("999999999999999999:59:59"))
+        XCTAssertNil(YouTubePlaylist.parseClock("999999999999999999:59:59"))
+        XCTAssertNil(YouTubePlaylist.parseClock("49:00:00")) // above 48h badge cap
+        XCTAssertEqual(YouTubePlaylist.parseClock("48:00:00"), 48 * 3600)
+    }
+
     func testExtractBracedObjectMatchesBalancedBraces() {
         let html = #"prefix ytInitialData = {"a":{"b":"}"},"c":1} trailing junk {ignored}"#
         let json = YouTubePlaylist.extractBracedObject(in: html, afterMarker: "ytInitialData")
