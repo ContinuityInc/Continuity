@@ -219,9 +219,16 @@ checklist: AGENTS.md gotcha **"Connected accounts need client ids at build time"
 
 Branch `appStoreReleaseCandidate` (PR #104) is the shippable variant: YouTube downloading and
 its external packages removed; "+" imports local audio files (`.fileImporter`, "My Music"
-playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`). Remaining v1 items (not started
-unless asked): `PrivacyInfo.xcprivacy`, ASC metadata (privacy policy/support URLs,
-screenshots), accessibility-label pass, `DEVELOPMENT_TEAM` removal from project.yml.
+playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`).
+
+Already on `main` (do not re-open as greenfield): `App/Continuity/PrivacyInfo.xcprivacy`;
+ASC listing tooling (`Scripts/fill_asc_metadata.py`, `asc-metadata.yml`, `docs/site/`
+privacy/support pages); primary VoiceOver labels on interactive controls (#197).
+
+Still open unless asked: screenshot set for the listing, enable GitHub Pages (or keep the
+jsDelivr fallback), publish the App Privacy questionnaire once in ASC UI, and remove
+`DEVELOPMENT_TEAM` from `project.yml` if local Automatic signing should stop baking the
+team id into the generated project.
 
 ## Performance invariants (from the perf + Liquid Glass audit)
 
