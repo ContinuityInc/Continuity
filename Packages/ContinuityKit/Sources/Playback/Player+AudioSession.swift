@@ -198,12 +198,20 @@ extension Player {
             Logger.audio.info("recoverPlayback coalesced (already in flight)")
             return
         }
-        guard force || resumeAfterInterruption else { return }
+        // Intent is evaluated at fire time, not schedule time: a forced request queued while
+        // playing must not restart audio after an explicit pause (or a no-auto-resume unplug)
+        // landed in the coalescer window. Soft resumes still run via resumeAfterInterruption.
+        guard PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: force,
+            isPlaying: isPlaying,
+            resumeAfterInterruption: resumeAfterInterruption
+        ) else { return }
+        // Need a live stack before clearing the resume flag — a media-services race can nil
+        // `audio` between schedule and fire; keep the soft-resume intent for the rebuild path.
+        guard currentTrack != nil, let audio else { return }
         isRecoveringPlayback = true
         defer { isRecoveringPlayback = false }
         resumeAfterInterruption = false
-        // Observers only exist once the stack does, so `audio` is always live here.
-        guard currentTrack != nil, let audio else { return }
         // A recovery that arrives after an earlier one (or a deck-start retry) already brought
         // the engine back and rescheduled the deck has nothing to do. Running it anyway means
         // disconnecting/reconnecting a playing node and rescheduling on a live engine — an

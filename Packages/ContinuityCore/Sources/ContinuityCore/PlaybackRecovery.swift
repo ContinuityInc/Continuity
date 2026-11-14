@@ -77,4 +77,19 @@ public struct PlaybackRecoveryCoalescer: Equatable, Sendable {
     ) -> Bool {
         engineIsRunning && !deckNeedsReschedule && deckHasTrack && isPlaying
     }
+
+    /// Whether a fired recovery request should run its body, given transport intent *now*.
+    ///
+    /// Forced requests are scheduled while `isPlaying` is still true (config-change observer,
+    /// tick). Soft requests carry `resumeAfterInterruption` from an environment pause. Between
+    /// `request` and `fire` the user (or a headphone-unplug pause that clears auto-resume) can
+    /// take control — a forced recovery must not restart audio against that pause. A pending
+    /// soft resume (interruption end, deck-start retry) still runs even while paused.
+    public static func shouldRunRecovery(
+        force: Bool,
+        isPlaying: Bool,
+        resumeAfterInterruption: Bool
+    ) -> Bool {
+        (force && isPlaying) || resumeAfterInterruption
+    }
 }
