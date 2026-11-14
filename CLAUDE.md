@@ -109,6 +109,20 @@ never finish the job. Fixes (keep all):
   write time-pitch params through the same ObjC boundary. Keep asking for the diagnostics
   report — `AVFAudio exceptions caught this session` should now climb instead of the process
   dying when a route flaps during recovery.
+- Recovery storms (Nov 2026, after #170): the nesting flag only covered *synchronous*
+  re-entry. Around one route flap the engine notification, its 50 ms recheck, the
+  interruption-ended handler and every 20 Hz tick that saw a stopped engine each queued their
+  own `recoverPlayback`; the first restarted the engine, the rest re-ran disconnect/connect/
+  stop/schedule/play on the now-running, playing graph — repeated at tick rate while the route
+  kept flapping. Fix: `PlaybackRecoveryCoalescer` (ContinuityCore, Linux-tested) folds queued
+  requests into one and spaces attempts ≥ 250 ms; `recoverPlayback` returns early when the
+  engine is already running and the current deck is rescheduled, only reconnects the decks on
+  a stopped engine, and reloads (via `ensureCurrentLoaded`, honouring the staged seek) a deck
+  the failure funnel had unloaded instead of falling into the synth-deck `startCurrentFresh`
+  branch that restarted the song from 0. Same PR: `handleMediaServicesReset` no longer lets the
+  dead `AVAudioEngine` deallocate inside the notification callout (`-[AVAudioEngine dealloc]`
+  does a synchronous hop onto its internal queue — a `__DISPATCH_WAIT_FOR_QUEUE__` trap with no
+  app frame) and rebuilds on the next main turn instead of inside the handler.
 - Stacked-PR trap: #158/#159 were merged into their *base branches* after #157 had merged
   into main, so GitHub showed them merged while main never got the code (re-landed in #161).
   Merge stacks top-down, or delete head branches on merge so GitHub retargets.

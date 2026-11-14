@@ -205,6 +205,20 @@ public final class Player {
     /// flag the observer re-enters recovery mid-reschedule and double-touches the decks.
     @ObservationIgnored var isRecoveringPlayback = false
 
+    /// Folds every *queued* recovery request (engine notification, spurious-change recheck,
+    /// interruption end, each 20 Hz tick that sees a stopped engine) into one pending
+    /// recovery and spaces attempts apart (`ContinuityCore.PlaybackRecoveryCoalescer`). The
+    /// nesting flag above only covers synchronous re-entry; without this, every extra
+    /// request re-ran the full disconnect/connect/reschedule on an engine the first recovery
+    /// had already restarted — graph surgery on a live, playing engine, repeated at tick rate
+    /// while a route flapped.
+    @ObservationIgnored var recoveryCoalescer = PlaybackRecoveryCoalescer(
+        minimumInterval: Player.recoveryMinimumIntervalSeconds
+    )
+    /// Floor between two recovery attempts. Long enough for CoreAudio to settle a route
+    /// change, short enough that a real recovery is never audibly late.
+    static let recoveryMinimumIntervalSeconds: TimeInterval = 0.25
+
     /// Live audio-environment observer tokens. Kept so a stack rebuild (media-services reset)
     /// can drop the old registrations instead of stacking duplicate handlers.
     var audioEnvironmentObservers: [NSObjectProtocol] = []
