@@ -77,26 +77,34 @@ struct AppleMusicImportView: View {
         List {
             Section {
                 ForEach(playlists) { playlist in
+                    let selected = selection.contains(playlist.id)
+                    let title = playlist.name ?? "Untitled Playlist"
+                    let detail = "\(playlist.tracks.count) songs"
                     Button {
                         toggle(playlist.id)
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(playlist.name ?? "Untitled Playlist")
+                                Text(title)
                                     .foregroundStyle(.primary)
-                                Text("\(playlist.tracks.count) songs")
+                                Text(detail)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if selection.contains(playlist.id) {
+                            if selected {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)
+                                    .accessibilityHidden(true)
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(title)
+                    .accessibilityValue(detail)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityHint(selected ? "Deselects playlist" : "Selects playlist for import")
                 }
             } footer: {
                 Text("Songs are matched to YouTube for audio — Apple Music's own files are protected and can't be mixed.")

@@ -61,6 +61,7 @@ struct ServicePlaylistPickerView: View {
         List {
             Section {
                 ForEach(playlists) { playlist in
+                    let selected = selection.contains(playlist.id)
                     Button {
                         toggle(playlist.id)
                     } label: {
@@ -68,6 +69,7 @@ struct ServicePlaylistPickerView: View {
                             Image(systemName: playlist.kind == .likes ? "heart.fill" : (playlist.kind == .album ? "opticaldisc" : "music.note.list"))
                                 .foregroundStyle(playlist.kind == .likes ? .pink : .secondary)
                                 .frame(width: 24)
+                                .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(playlist.name)
                                     .foregroundStyle(.primary)
@@ -76,14 +78,19 @@ struct ServicePlaylistPickerView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if selection.contains(playlist.id) {
+                            if selected {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)
+                                    .accessibilityHidden(true)
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(playlist.name)
+                    .accessibilityValue(detail(for: playlist))
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityHint(selected ? "Deselects playlist" : "Selects playlist for import")
                 }
             } footer: {
                 if service == .youtube {
