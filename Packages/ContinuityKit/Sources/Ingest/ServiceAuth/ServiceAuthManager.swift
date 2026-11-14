@@ -47,6 +47,9 @@ public final class ServiceAuthManager {
                let stored = try? JSONDecoder().decode(ServiceCredentials.self, from: data) {
                 credentials[service] = stored
                 connectedServices.insert(service)
+                // Re-save once so items written by older builds move to the current
+                // accessibility class (`SecItemUpdate` rewrites it in place).
+                store.save(data, account: service.rawValue)
             }
         }
     }

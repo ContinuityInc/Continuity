@@ -10,8 +10,10 @@ protocol CredentialStore: Sendable {
 }
 
 /// Generic-password Keychain items under one service name, one per connected account.
-/// `kSecAttrAccessibleAfterFirstUnlock` so a background sync tick after a reboot can still
-/// refresh tokens; items are not synced to iCloud Keychain (a token tied to this install).
+/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`: after-first-unlock so a background sync
+/// tick after a reboot can still refresh tokens, and *this-device-only* so the tokens stay tied
+/// to this install — the plain `AfterFirstUnlock` class rides along in encrypted backups and is
+/// restored onto other devices. Not synced to iCloud Keychain either way.
 struct KeychainStore: CredentialStore {
     private static let service = "com.continuity.app.oauth"
 
@@ -36,7 +38,7 @@ struct KeychainStore: CredentialStore {
         ]
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let status = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
