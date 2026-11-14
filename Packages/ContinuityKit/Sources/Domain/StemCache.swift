@@ -29,8 +29,12 @@ public enum StemCache {
         return dir
     }()
 
-    public static func vocalsURL(key: String) -> URL { directory.appendingPathComponent("\(key)-vocals.m4a") }
-    public static func accompanimentURL(key: String) -> URL { directory.appendingPathComponent("\(key)-accompaniment.m4a") }
+    public static func vocalsURL(key: String) -> URL {
+        directory.appendingPathComponent("\(safeKey(key))-vocals.m4a")
+    }
+    public static func accompanimentURL(key: String) -> URL {
+        directory.appendingPathComponent("\(safeKey(key))-accompaniment.m4a")
+    }
 
     public static func relativePath(for url: URL) -> String { url.lastPathComponent }
     public static func url(forRelativePath path: String) -> URL {
@@ -48,11 +52,18 @@ public enum StemCache {
     /// Existing on-disk stem file for a key/kind, preferring the current `.m4a` format and
     /// falling back to a legacy `.caf` from older builds.
     public static func stemFile(key: String, kind: String) -> URL? {
+        let safe = safeKey(key)
         for ext in ["m4a", "caf"] {
-            let url = directory.appendingPathComponent("\(key)-\(kind).\(ext)")
+            let url = directory.appendingPathComponent("\(safe)-\(kind).\(ext)")
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }
         return nil
+    }
+
+    /// Writers emit `Track.stemKey` (YouTube video ID or UUID); readers must not trust a
+    /// corrupted SwiftData value with `..`/`/` the way `AudioCache.fileURL` already doesn't.
+    private static func safeKey(_ key: String) -> String {
+        CachePath.isSafeFileName(key) ? key : "rejected"
     }
 
     /// Extracts the cache key from a stem file's base name ("<key>-vocals" / "<key>-accompaniment").
@@ -68,10 +79,11 @@ public enum StemCache {
 
     /// Deletes all stem files for a key, across format generations (m4a + legacy caf).
     public static func removeStems(key: String) {
+        let safe = safeKey(key)
         for kind in ["vocals", "accompaniment"] {
             for ext in ["m4a", "caf"] {
                 try? FileManager.default.removeItem(
-                    at: directory.appendingPathComponent("\(key)-\(kind).\(ext)"))
+                    at: directory.appendingPathComponent("\(safe)-\(kind).\(ext)"))
             }
         }
     }
