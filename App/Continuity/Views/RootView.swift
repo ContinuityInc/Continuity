@@ -18,6 +18,8 @@ struct RootView: View {
     /// Link awaiting user confirmation (from the URL scheme, a shared https URL, or the clipboard).
     @State private var pendingImport: PendingLinkImport?
     @State private var importError: String?
+    /// Shown once per launch when the library store couldn't be opened (see `LibraryStore`).
+    @State private var showLibraryUnavailable = LibraryStore.isDegraded
     /// Debounce: a clipboard URL is offered at most once, even across launches.
     @AppStorage("lastOfferedClipboardURL") private var lastOfferedClipboardURL = ""
     /// Last pasteboard generation we inspected — gates the banner-triggering reads below.
@@ -100,7 +102,11 @@ struct RootView: View {
                     let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                     return ids.compactMap { byID[$0] }
                 }
-                LibraryCleanup.sweepOrphanedFiles(in: modelContext)
+                // Never sweep against the in-memory stand-in: it references nothing, so every
+                // cached song would look orphaned.
+                if !LibraryStore.isDegraded {
+                    LibraryCleanup.sweepOrphanedFiles(in: modelContext)
+                }
                 // Restore the last song before walking the library for resume/sync — otherwise
                 // a large unfinished import occupies the main actor until the first frame.
                 restorePlaybackSession()
@@ -144,6 +150,11 @@ struct RootView: View {
                 Button("Cancel", role: .cancel) {}
             } message: { pending in
                 Text(pending.host)
+            }
+            .alert("Library Unavailable", isPresented: $showLibraryUnavailable) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Your library couldn't be opened, so a temporary one is in use. Nothing you add this session will be saved. Your songs and playlists are still on this device — updating the app may restore them.")
             }
             .alert(
                 "Import Failed",

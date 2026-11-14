@@ -3,6 +3,7 @@ import Ingest
 import Playback
 import Domain
 import SwiftData
+import os
 
 @main
 struct ContinuityApp: App {
@@ -16,23 +17,52 @@ struct ContinuityApp: App {
         // could itself crash. Cheap — one small file write and a subscriber registration.
         CrashDiagnostics.shared.start()
         Self.configureURLCache()
-        do {
-            let schema = Schema([Playlist.self, Track.self, TransitionVote.self])
-            // Pin the store to the app container. `groupContainer` defaults to `.automatic`,
-            // which (with our share-extension app group entitlement) put SwiftData in the
-            // group container — unused by the extension, noisy on first launch, and desynced
-            // from the `UserDefaults.standard` seed flag.
-            Self.migrateStoreOutOfAppGroupIfNeeded()
-            let configuration = ModelConfiguration(
-                schema: schema,
-                isStoredInMemoryOnly: false,
-                groupContainer: .none
-            )
-            let container = try ModelContainer(for: schema, configurations: configuration)
+        let schema = Schema([Playlist.self, Track.self, TransitionVote.self])
+        // Pin the store to the app container. `groupContainer` defaults to `.automatic`,
+        // which (with our share-extension app group entitlement) put SwiftData in the
+        // group container — unused by the extension, noisy on first launch, and desynced
+        // from the `UserDefaults.standard` seed flag.
+        Self.migrateStoreOutOfAppGroupIfNeeded()
+        let container = Self.makeContainer(schema: schema)
+        // Seeding latches a defaults flag; doing it into the throwaway in-memory library would
+        // leave the real store unseeded once it opens again.
+        if !LibraryStore.isDegraded {
             SampleData.seed(into: container.mainContext)
-            self.container = container
+        }
+        self.container = container
+    }
+
+    /// Opens the persistent library, degrading instead of crashing when it can't.
+    ///
+    /// This used to `fatalError` on any failure, and the failure modes here are persistent —
+    /// a schema migration SwiftData can't perform, a damaged store, a full disk — so one bad
+    /// store meant a crash on every launch with no way back in short of deleting the app (and
+    /// with it every downloaded song). Now: one retry for a transient I/O failure, then an
+    /// in-memory library for this launch. The on-disk store is left exactly as it was, so a
+    /// build that fixes the cause opens it again; `LibraryStore.isDegraded` keeps destructive
+    /// maintenance (the orphan-file sweep) from treating the empty stand-in as the truth.
+    private static func makeContainer(schema: Schema) -> ModelContainer {
+        let configuration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            groupContainer: .none
+        )
+        var lastError: Error?
+        for attempt in 1...2 {
+            do {
+                return try ModelContainer(for: schema, configurations: configuration)
+            } catch {
+                lastError = error
+                Logger.crash.fault("library store open failed (attempt \(attempt, privacy: .public)): \(String(describing: error), privacy: .public)")
+            }
+        }
+        LibraryStore.markDegraded(reason: lastError.map { String(describing: $0) } ?? "unknown error")
+        do {
+            let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            return try ModelContainer(for: schema, configurations: memory)
         } catch {
-            fatalError("Failed to create ModelContainer: \(error)")
+            // An in-memory store failing means the schema itself is unusable — nothing to fall back to.
+            fatalError("Failed to create even an in-memory ModelContainer: \(error)")
         }
     }
 
@@ -86,5 +116,21 @@ struct ContinuityApp: App {
             guard fm.fileExists(atPath: src.path) else { continue }
             try? fm.moveItem(at: src, to: appSupport.appendingPathComponent(name))
         }
+    }
+}
+
+/// Whether this launch is running on the real library. Set once during `ContinuityApp.init`.
+@MainActor
+enum LibraryStore {
+    /// True when the on-disk store couldn't be opened and an empty in-memory library stands in
+    /// for it. Nothing the user does this session is saved, and anything that deletes files
+    /// based on "what the library references" must not run.
+    private(set) static var isDegraded = false
+    /// The open error, for the in-app alert and the diagnostics log.
+    private(set) static var degradedReason: String?
+
+    static func markDegraded(reason: String) {
+        isDegraded = true
+        degradedReason = reason
     }
 }
