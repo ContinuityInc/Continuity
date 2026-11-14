@@ -185,6 +185,11 @@ struct SearchView: View {
             SuggestionBar(model: model)
             resultsSplit
         }
+        // Duo inner / mirrored wide windows: keep the field, suggestions, and result
+        // halves at phone-readable width (CLAUDE.md Duo invariant). A full-bleed
+        // fullScreenCover otherwise stretches chrome across ~900 pt.
+        .frame(maxWidth: CGFloat(DuoLayout.readableColumnMaxWidth))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
         .task {
             // One-shot seed, fetching only the two strings we read — @Query here hydrated
