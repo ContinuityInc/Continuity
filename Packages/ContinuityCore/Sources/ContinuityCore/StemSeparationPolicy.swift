@@ -107,20 +107,25 @@ public enum StemSeparationPolicy {
             return end > 0 ? [0..<end] : []
 
         case .edgesOnly:
-            let edge = min(positiveFinite(edgeSeconds) ?? defaultEdgeSeconds, cap)
-            guard edge > 0 else { return [] }
+            let requestedEdge = positiveFinite(edgeSeconds) ?? defaultEdgeSeconds
+            guard requestedEdge > 0 else { return [] }
 
-            // Short enough that head+tail cover the whole track → one contiguous range.
-            if duration <= edge * 2 {
-                let end = min(duration, cap)
-                return end > 0 ? [0..<end] : []
+            // Short enough that head+tail cover the whole track → one contiguous range,
+            // but only when that range still fits the budget. Over budget must keep a
+            // real outro edge (the point of edgesOnly) instead of a prefix that drops it.
+            if duration <= requestedEdge * 2, duration <= cap {
+                return [0..<duration]
             }
+
+            // Half the budget per edge, never larger than the caller asked for. When we
+            // skipped the merge because duration > cap, edge ≤ cap/2 < duration/2 so the
+            // two ranges stay non-overlapping and total work ≤ cap.
+            let edge = min(requestedEdge, cap / 2)
+            guard edge > 0 else { return [] }
 
             let head = 0..<edge
             let tailStart = duration - edge
             let tail = tailStart..<duration
-            // Two edges are already short vs absoluteMax; if a caller passes a huge edge that
-            // somehow still split, keep both (blend coverage beats the CPU-hour cap here).
             return [head, tail]
         }
     }
