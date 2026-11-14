@@ -152,4 +152,33 @@ final class PlaybackRecoveryTests: XCTestCase {
             engineIsRunning: true, deckNeedsReschedule: false, deckHasTrack: true, isPlaying: false
         ))
     }
+
+    // MARK: fire-time intent
+
+    func testForcedRecoveryRunsOnlyWhileStillPlaying() {
+        XCTAssertTrue(PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: true, isPlaying: true, resumeAfterInterruption: false
+        ))
+        // User pause (or no-auto-resume unplug) between schedule and fire must win.
+        XCTAssertFalse(PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: true, isPlaying: false, resumeAfterInterruption: false
+        ))
+    }
+
+    func testSoftResumeRunsWhilePaused() {
+        XCTAssertTrue(PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: false, isPlaying: false, resumeAfterInterruption: true
+        ))
+        XCTAssertFalse(PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: false, isPlaying: false, resumeAfterInterruption: false
+        ))
+    }
+
+    func testPendingSoftResumeKeepsAForcedRequestAliveAfterPause() {
+        // Deck-start failure / interruption staged a resume; a forced request that fires after
+        // isPlaying flipped false must still run so the deferred resume isn't dropped.
+        XCTAssertTrue(PlaybackRecoveryCoalescer.shouldRunRecovery(
+            force: true, isPlaying: false, resumeAfterInterruption: true
+        ))
+    }
 }

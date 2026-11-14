@@ -192,25 +192,37 @@ checklist: AGENTS.md gotcha **"Connected accounts need client ids at build time"
 
 ## CI / TestFlight operations
 
-- `.github/workflows/core-tests.yml`: runs `swift test --package-path Packages/ContinuityCore`
-  on Linux for every PR. `Package.swift` excludes Accelerate sources (`BeatTracker` /
-  `KeyDetector`) on Linux; keep new Core files Accelerate-free or add them to that list.
-- `.github/workflows/testflight.yml`: on every push to `main` (+ `workflow_dispatch`), builds
-  on `macos-26` with **cloud signing** — no certs/profiles in the repo. Secrets: `ASC_KEY_ID`
-  / `ASC_ISSUER_ID` / `ASC_KEY_P8` (base64 .p8). The API key **must be Admin role** — an App
-  Manager key fails with "Cloud signing permission error / No profiles for
-  'com.sanylax.continuity'". Build number = `github.run_number`; export method
-  `app-store-connect`, destination `upload`, team `KP832RV67A`. Internal testers get builds
-  automatically after processing.
+- `.github/workflows/core-tests.yml`: on every PR (+ push to `main`) runs the three boundary
+  scripts (`Scripts/check-avfaudio-boundary.sh`, `check-youtubekit-boundary.sh`,
+  `check-tick-leaf-readers.sh`) then `swift test --package-path Packages/ContinuityCore` on
+  Linux. `Package.swift` excludes Accelerate sources (`BeatTracker` / `KeyDetector`) on
+  Linux; keep new Core files Accelerate-free or add them to that list.
+- `.github/workflows/testflight.yml`: on every push to **`alpha`** (+ `workflow_dispatch`),
+  builds on `macos-26` with **cloud signing** — no certs/profiles in the repo.
+  `install_distribution_signing.py` writes Manual Release xcconfigs and
+  `Signing/ExportOptions.plist` at run time (those files are not committed). Secrets:
+  `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8` (base64 .p8). The API key **must be Admin
+  role** — an App Manager key fails with "Cloud signing permission error / No profiles for
+  'com.sanylax.continuity'". Build number = `1000 + github.run_number` (raw `run_number`
+  collides with older Xcode Cloud builds); export method `app-store-connect`, destination
+  `upload`, team `KP832RV67A`. Internal testers get builds automatically after processing.
 - **OAuth client secrets (optional, separate from ASC):** `SPOTIFY_CLIENT_ID`,
   `GOOGLE_CLIENT_ID`, `SOUNDCLOUD_CLIENT_ID`, `SOUNDCLOUD_CLIENT_SECRET`. Empty → Connect
   disabled, link imports still scrape. Register redirect URIs before expecting sign-in to
   work once filled — full checklist in the AGENTS.md connected-accounts gotcha.
+- **GitHub Pages** (`.github/workflows/pages.yml`, `workflow_dispatch`): optional HTTPS home
+  for privacy/support. Until Pages is enabled (Settings → Pages → Source = GitHub Actions)
+  `continuityinc.github.io/Continuity/…` 404s; `Scripts/fill_asc_metadata.py` falls back to
+  jsDelivr/`PRIVACY.md`/Issues. Listing workflow: `asc-metadata.yml` (main path filters +
+  dispatch).
 - Known failure modes already hit: App-Manager-role key (fixed — Admin key created);
   empty/placeholder secrets from copy-pasted commands; **ITMS error 90382 "Upload limit
   reached"** = Apple's per-app daily cap — wait for the 24h window, nothing to fix;
   **Archive step exits 65 after ~30s** = no `Continuity` scheme in the generated project
-  (see the AGENTS.md scheme gotcha) — `project.yml` must keep the target-level `scheme:`.
+  (see the AGENTS.md scheme gotcha) — `project.yml` must keep the target-level `scheme:`;
+  **`FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`** during Install App Store signing =
+  renew the Apple Developer / Paid Apps agreement in App Store Connect (/business) — not a
+  code or secrets bug.
 - App Store Connect still has a legacy **Xcode Cloud "Archive – iOS"** workflow producing
   `action_required` checks on PRs; it's ASC-side, unrelated to code, and competes for upload
   quota — worth disabling in ASC.
@@ -219,9 +231,16 @@ checklist: AGENTS.md gotcha **"Connected accounts need client ids at build time"
 
 Branch `appStoreReleaseCandidate` (PR #104) is the shippable variant: YouTube downloading and
 its external packages removed; "+" imports local audio files (`.fileImporter`, "My Music"
-playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`). Remaining v1 items (not started
-unless asked): `PrivacyInfo.xcprivacy`, ASC metadata (privacy policy/support URLs,
-screenshots), accessibility-label pass, `DEVELOPMENT_TEAM` removal from project.yml.
+playlist, `Track.stemKey = youtubeVideoID ?? id.uuidString`).
+
+Already on `main` (do not re-open as greenfield): `App/Continuity/PrivacyInfo.xcprivacy`;
+ASC listing tooling (`Scripts/fill_asc_metadata.py`, `asc-metadata.yml`, `docs/site/`
+privacy/support pages); primary VoiceOver labels on interactive controls (#197).
+
+Still open unless asked: screenshot set for the listing, enable GitHub Pages (or keep the
+jsDelivr fallback), publish the App Privacy questionnaire once in ASC UI, and remove
+`DEVELOPMENT_TEAM` from `project.yml` if local Automatic signing should stop baking the
+team id into the generated project.
 
 ## Performance invariants (from the perf + Liquid Glass audit)
 

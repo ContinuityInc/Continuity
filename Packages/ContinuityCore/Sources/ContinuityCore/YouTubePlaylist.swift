@@ -300,11 +300,21 @@ public enum YouTubePlaylist {
         return true
     }
 
-    /// Parses "m:ss" or "h:mm:ss" into total seconds.
+    /// Parses "m:ss" or "h:mm:ss" into total seconds. Returns nil on overflow — a hostile
+    /// badge like `999999999999999999:59:59` used to trap in `reduce { $0 * 60 + $1 }`.
     static func parseClock(_ text: String) -> Int? {
-        let parts = text.split(separator: ":").map { Int($0) }
-        guard !parts.isEmpty, parts.allSatisfy({ $0 != nil }) else { return nil }
-        return parts.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        let rawParts = text.split(separator: ":")
+        let parts = rawParts.compactMap { Int($0) }
+        guard parts.count == rawParts.count, (2...3).contains(parts.count) else { return nil }
+        var total = 0
+        for part in parts {
+            // total * 60 + part must stay inside Int without trapping.
+            if part < 0 || total > (Int.max - part) / 60 { return nil }
+            total = total * 60 + part
+        }
+        // Video length badges above ~48h are not real overlay clocks.
+        guard total <= 48 * 3600 else { return nil }
+        return total
     }
 
     /// The playlist's own title, from whichever renderer carries it in this page shape.

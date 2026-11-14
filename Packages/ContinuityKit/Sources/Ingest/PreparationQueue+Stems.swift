@@ -239,8 +239,11 @@ struct CacheIndex: Sendable {
 
     /// Mirrors `StemCache.stemFile(key:kind:)` — current `.m4a` first, legacy `.caf` second.
     func stemFileName(key: String, kind: String) -> String? {
+        // Same safe-key rule as `StemCache` writers — a corrupted stemKey must not miss
+        // (or invent) a different basename than the on-disk path helpers use.
+        let safe = CachePath.isSafeFileName(key) ? key : "rejected"
         for ext in ["m4a", "caf"] {
-            let name = "\(key)-\(kind).\(ext)"
+            let name = "\(safe)-\(kind).\(ext)"
             if stemFiles.contains(name) { return name }
         }
         return nil

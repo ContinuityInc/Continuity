@@ -82,6 +82,23 @@ final class StemSeparationPolicyTests: XCTestCase {
         XCTAssertEqual(ranges, [0..<60])
     }
 
+    /// When edges would cover the whole track but the track exceeds `maxSeconds`, a merged
+    /// prefix would drop the outro — the opposite of edgesOnly. Keep head+tail within budget.
+    func testEdgesOnlyKeepsOutroWhenMergeWouldExceedBudget() {
+        let ranges = StemSeparationPolicy.separationRanges(
+            trackDuration: 700,
+            mode: .edgesOnly,
+            edgeSeconds: 400,
+            maxSeconds: 600
+        )
+        XCTAssertEqual(ranges.count, 2)
+        XCTAssertEqual(ranges[0], 0..<300)           // cap/2
+        XCTAssertEqual(ranges[1], 400..<700)         // outro edge preserved
+        let total = ranges.reduce(0.0) { $0 + ($1.upperBound - $1.lowerBound) }
+        XCTAssertEqual(total, 600, accuracy: 1e-9)
+        XCTAssertLessThanOrEqual(total, 600)
+    }
+
     func testUnusableDurationYieldsEmptyRanges() {
         XCTAssertEqual(
             StemSeparationPolicy.separationRanges(trackDuration: 0, mode: .fullPrefix),

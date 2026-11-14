@@ -64,8 +64,7 @@ public enum SpotifyPlaylist {
             guard let title = (dict["title"] as? String), !title.isEmpty else { return nil }
 
             let artist = (dict["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            let ms = (dict["duration"] as? NSNumber)?.doubleValue
-            let seconds = ms.map { Int(($0 / 1000).rounded()) }
+            let seconds = DurationParsing.seconds(fromMillisecondsNumber: dict["duration"] as? NSNumber)
             return SpotifyTrack(title: title, artist: artist, durationSeconds: seconds)
         }
 
@@ -89,8 +88,9 @@ public enum SpotifyPlaylist {
 
         let artistNames = (entity["artists"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         let artist = artistNames.isEmpty ? (entity["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 } : artistNames.joined(separator: ", ")
-        let ms = (entity["duration"] as? NSNumber)?.doubleValue ?? (entity["duration_ms"] as? NSNumber)?.doubleValue
-        return SpotifyTrack(title: title, artist: artist, durationSeconds: ms.map { Int(($0 / 1000).rounded()) })
+        let seconds = DurationParsing.seconds(fromMillisecondsNumber: entity["duration"] as? NSNumber)
+            ?? DurationParsing.seconds(fromMillisecondsNumber: entity["duration_ms"] as? NSNumber)
+        return SpotifyTrack(title: title, artist: artist, durationSeconds: seconds)
     }
 
     /// Returns the contents of the `<script id="__NEXT_DATA__" …>{ … }</script>` tag.

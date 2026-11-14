@@ -227,15 +227,30 @@ private struct SearchSongRow: View {
     @Environment(Player.self) private var player
     @State private var isRenaming = false
 
+    private var isCurrent: Bool { player.currentTrack?.id == track.id }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [track.title, track.artist, Theme.time(track.durationSeconds)]
+        if isCurrent { parts.append("Now Playing") }
+        if track.isDemo { parts.append("Demo") }
+        switch track.prepState {
+        case .pending, .preparing: parts.append("Preparing")
+        case .failed: parts.append("Unavailable")
+        case .ready: break
+        }
+        return parts.joined(separator: ", ")
+    }
+
     var body: some View {
         Button(action: play) {
             HStack(spacing: 12) {
                 RemoteArtworkView(url: track.artworkURL, symbol: track.artworkSymbol,
                                   seed: track.gradientSeed, cornerRadius: 8)
                     .frame(width: 44, height: 44)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title)
-                        .foregroundStyle(player.currentTrack?.id == track.id
+                        .foregroundStyle(isCurrent
                                          ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         .lineLimit(1)
                     Text(track.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -244,10 +259,12 @@ private struct SearchSongRow: View {
                 Text(Theme.time(track.durationSeconds))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(track.title), \(track.artist)")
+        .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityHint("Plays this track")
         .contextMenu {
             Button {
                 player.playNext(track)

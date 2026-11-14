@@ -208,13 +208,14 @@ def localization(path: str, locale: str = "en-US") -> dict[str, Any]:
 
 
 def latest_ios_version(app_id: str) -> dict[str, Any]:
+    # Do not pass `sort` — ASC returns PARAMETER_ERROR.ILLEGAL for sort on this relationship
+    # (run 38382773089). Prefer an editable version; otherwise take the first page entry.
     resp = api(
         "GET",
         f"/v1/apps/{app_id}/appStoreVersions",
         params={
             "filter[platform]": "IOS",
             "limit": "20",
-            "sort": "-versionString",
         },
     )
     versions = resp.get("data") or []

@@ -89,6 +89,8 @@ public enum YouTubeDataAPI {
     }
 
     /// `PT1H2M3S` → seconds. Only the H/M/S designators YouTube emits.
+    /// Returns nil when a component would overflow `Int` multiply/add — hostile ISO strings
+    /// like `PT2562047788015216H` used to trap in `total += n * 3600`.
     public static func parseISO8601Duration(_ value: String) -> Int? {
         guard value.hasPrefix("PT") else { return value == "P0D" ? 0 : nil }
         var total = 0
@@ -98,15 +100,23 @@ public enum YouTubeDataAPI {
                 number.append(character)
                 continue
             }
-            guard let n = Int(number) else { return nil }
+            guard let n = Int(number), n >= 0 else { return nil }
+            let factor: Int
             switch character {
-            case "H": total += n * 3600
-            case "M": total += n * 60
-            case "S": total += n
+            case "H": factor = 3600
+            case "M": factor = 60
+            case "S": factor = 1
             default: return nil
             }
+            if n > 0, factor > Int.max / n { return nil }
+            let contribution = n * factor
+            if total > Int.max - contribution { return nil }
+            total += contribution
             number = ""
         }
-        return number.isEmpty ? total : nil
+        guard number.isEmpty else { return nil }
+        // ~11.5 days — real uploads are far shorter; hostile ISO totals must not land on a Track.
+        guard total <= 1_000_000 else { return nil }
+        return total
     }
 }
